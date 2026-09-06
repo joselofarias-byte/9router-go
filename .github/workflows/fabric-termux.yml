@@ -1,0 +1,28 @@
+name: Fabric - Termux ARM64
+on:
+  push:
+    branches: ['fabric/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Static analysis
+        run: go vet ./...
+      - name: Isolated Fabric regression tests
+        run: go test -race ./internal/db ./internal/handlers/chat ./internal/handlers ./internal/middleware ./internal/updater ./internal/proxy -run '^(TestFabric|TestUpstreamError)' -count=1
+      - name: Compile native Android ARM64
+        run: bash scripts/build-termux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 9router-go-termux-arm64
+          path: dist/termux/
+          if-no-files-found: error
+          retention-days: 30

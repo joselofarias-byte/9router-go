@@ -3,8 +3,11 @@ package chat
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 
 	"9router/proxy/internal/constants"
@@ -86,6 +89,7 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			excludeSet[id] = true
 		}
 
+		connections = h.rotateConnections(provider, connections)
 		conn = nil
 		for _, c := range connections {
 			if excludeSet[c.ID] {
@@ -108,6 +112,19 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		}
 	}
 
+	// A pinned account must obey the same eligibility checks as automatic selection.
+	if conn.IsActive != 1 || slices.Contains(excludeIDs, conn.ID) {
+		return nil, nil, fmt.Errorf("connection unavailable")
+	}
+	if conn.Provider != provider && CredentialFallbacks[provider] != conn.Provider {
+		return nil, nil, fmt.Errorf("connection provider mismatch")
+	}
+	if model != "" {
+		locked, lockErr := h.Repo.IsConnectionModelLocked(conn.ID, model)
+		if lockErr != nil || locked || (provider == "antigravity" && IsAntigravityModelBlocked(conn.ID, model)) {
+			return nil, nil, fmt.Errorf("connection model unavailable")
+		}
+	}
 	var connData ConnectionData
 	if conn.Data != "" {
 		if err := json.Unmarshal([]byte(conn.Data), &connData); err != nil {
@@ -278,4 +295,48 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
 	// URL rewriting and x-relay headers are handled at request time.
 	return h.Client
+}
+
+// Rotate only within a priority tier; lower-priority accounts remain fallbacks.
+func (h *ChatHandler) rotateConnections(provider string, conns []*models.ProviderConnection) []*models.ProviderConnection {
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return conns
+	}
+	strategy := settings.ProviderStrategies[provider].RotateStrategy
+	if strategy != "round-robin" && strategy != "random" {
+		return conns
+	}
+	out := append([]*models.ProviderConnection(nil), conns...)
+	h.accountMu.Lock()
+	defer h.accountMu.Unlock()
+	if h.accountTurns == nil {
+		h.accountTurns = make(map[string]uint64)
+	}
+	turn := h.accountTurns[provider]
+	h.accountTurns[provider]++
+	priority := func(c *models.ProviderConnection) int {
+		if c.Priority == nil {
+			return 999999
+		}
+		return *c.Priority
+	}
+	for i := 0; i < len(out); {
+		j := i + 1
+		for j < len(out) && priority(out[j]) == priority(out[i]) {
+			j++
+		}
+		n := j - i
+		offset := int(turn % uint64(n))
+		if strategy == "random" {
+			offset = rand.IntN(n)
+		}
+		group := append([]*models.ProviderConnection(nil), out[i:j]...)
+		sort.Slice(group, func(a, b int) bool { return group[a].ID < group[b].ID })
+		for k := 0; k < n; k++ {
+			out[i+k] = group[(k+offset)%n]
+		}
+		i = j
+	}
+	return out
 }

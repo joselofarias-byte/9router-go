@@ -873,8 +873,8 @@ func TestResolveModel_PrefixProvider(t *testing.T) {
 	if info.Model != "claude-sonnet-4.5" {
 		t.Errorf("expected model 'claude-sonnet-4.5', got '%s'", info.Model)
 	}
-	if info.ConnectionID != "conn-bn" {
-		t.Errorf("expected connectionID 'conn-bn', got '%s'", info.ConnectionID)
+	if info.ConnectionID != "" {
+		t.Errorf("expected unpinned connection, got '%s'", info.ConnectionID)
 	}
 }
 

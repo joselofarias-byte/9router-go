@@ -67,7 +67,9 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 
 	now := time.Now().UTC()
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
-	reqMsgs := extractRequestMessages(requestBody)
+	// Persist metrics only: never conversation content.
+	var reqMsgs []map[string]string
+	respContent = ""
 
 	reqData, err := json.Marshal(map[string]any{
 		"id": reqID, "provider": info.Provider, "model": info.Model,

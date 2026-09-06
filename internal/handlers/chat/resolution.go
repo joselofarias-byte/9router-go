@@ -249,21 +249,20 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 }
 
 // resolvePrefixProvider checks if a provider name is a providerNode prefix.
-// If so, it finds the matching connection and returns a pinned ModelInfo.
+// Keep account selection in fallback so prefixes rotate and recover normally.
 func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelInfo {
 	node, _, err := h.Repo.GetProviderNodeByPrefix(prefix)
 	if err != nil || node == nil {
 		return nil
 	}
 
-	conn, _, err := h.getBestConnection(node.ID, "", nil, model)
-	if err != nil || conn == nil {
+	conns, err := h.Repo.GetProviderConnections(node.ID, true)
+	if err != nil || len(conns) == 0 {
 		return nil
 	}
 
 	return &ModelInfo{
-		Provider:     node.ID,
-		Model:        model,
-		ConnectionID: conn.ID,
+		Provider: node.ID,
+		Model:    model,
 	}
 }

@@ -157,8 +157,8 @@ func TestResolvePrefixProvider_ResolvesConnection(t *testing.T) {
 	if info.Provider != "openai-compatible-chat-bn" {
 		t.Errorf("expected provider node id, got %s", info.Provider)
 	}
-	if info.ConnectionID != "conn-bn" {
-		t.Errorf("expected pinned connection id, got %s", info.ConnectionID)
+	if info.ConnectionID != "" {
+		t.Errorf("expected automatic account fallback, got pinned %s", info.ConnectionID)
 	}
 }
 

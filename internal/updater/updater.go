@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	json "encoding/json/v2"
 	"fmt"
@@ -358,6 +359,12 @@ func matchReleaseAsset(assets []struct {
 // When expectedSHA256 is non-empty, the downloaded asset (after archive extraction) is verified against it before
 // the binary is written to disk; a mismatch aborts the update and keeps the running binary intact.
 func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
+	publicKey := os.Getenv("NINEROUTER_UPDATE_PUBLIC_KEY")
+	decodedKey, keyErr := base64.StdEncoding.DecodeString(strings.TrimSpace(publicKey))
+	if keyErr != nil || len(decodedKey) != 32 {
+		return fmt.Errorf("signed updates require a trusted NINEROUTER_UPDATE_PUBLIC_KEY")
+	}
+
 	if downloadURL == "" {
 		return fmt.Errorf("missing download URL for platform %s_%s", runtime.GOOS, runtime.GOARCH)
 	}
@@ -416,6 +423,21 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 			return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualSHA)
 		}
 		log.Info("updater", "SHA256 checksum verified", "sha256", actualSHA)
+	}
+
+	// A checksum from the same server is not authenticity evidence. Require a
+	// detached signature over extracted executable bytes, with an operator-pinned key.
+	sigResponse, err := client.Get(downloadURL + ".sig")
+	if err != nil {
+		return fmt.Errorf("download signature failed")
+	}
+	sigBytes, readErr := io.ReadAll(io.LimitReader(sigResponse.Body, 1025))
+	sigResponse.Body.Close()
+	if readErr != nil || sigResponse.StatusCode != http.StatusOK || len(sigBytes) > 1024 {
+		return fmt.Errorf("missing or invalid update signature")
+	}
+	if err := verifyUpdateSignature(binaryBytes, string(sigBytes), publicKey); err != nil {
+		return err
 	}
 
 	// Create temporary binary file in the target directory

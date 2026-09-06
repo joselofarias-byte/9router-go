@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestUpstreamError_IncludesBody(t *testing.T) {
+func TestUpstreamError_OmitsBody(t *testing.T) {
 	e := &UpstreamError{StatusCode: 400, Body: []byte(`{"error":{"message":"Invalid tool parameters"}}`)}
 	msg := e.Error()
 	if !strings.HasPrefix(msg, "upstream returned 400") {
 		t.Errorf("expected prefix 'upstream returned 400', got %q", msg)
 	}
-	if !strings.Contains(msg, "Invalid tool parameters") {
-		t.Errorf("expected error body included in message, got %q", msg)
+	if strings.Contains(msg, "Invalid tool parameters") {
+		t.Errorf("private body must not appear in message, got %q", msg)
 	}
 }
 
@@ -23,8 +23,8 @@ func TestUpstreamError_TruncatesLongBody(t *testing.T) {
 	if len(msg) >= 2000 {
 		t.Errorf("expected truncated message, got length %d", len(msg))
 	}
-	if !strings.HasSuffix(msg, "... (truncated)") {
-		t.Errorf("expected truncation suffix, got %q", msg[:min(len(msg), 30)])
+	if msg != "upstream returned 502" {
+		t.Errorf("expected status only, got %q", msg[:min(len(msg), 30)])
 	}
 }
 

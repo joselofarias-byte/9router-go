@@ -113,7 +113,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
-		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &upstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: errBody}
 	}
 
 	if isStream {

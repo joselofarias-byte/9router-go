@@ -69,7 +69,7 @@ func (h *ChatHandler) forwardRequest(
 		if err != nil {
 			return fmt.Errorf("read upstream error body: %w", err)
 		}
-		return &upstreamError{StatusCode: resp.StatusCode, Body: respBody}
+		return &upstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: respBody}
 	}
 
 	start := time.Now()

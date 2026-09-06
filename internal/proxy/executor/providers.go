@@ -210,9 +210,9 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		if readErr != nil {
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: []byte("failed to read error body")}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: []byte("failed to read error body")}
 		}
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: errBody}
 	}
 
 	if req.IsStream {
@@ -266,9 +266,9 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		if readErr != nil {
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: []byte("failed to read error body")}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: []byte("failed to read error body")}
 		}
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: errBody}
 	}
 
 	return handleCommandcodeStream(w, req, resp.Body, oreq.Model)
@@ -341,7 +341,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: errBody}
 		}
 
 		return handleCodexStream(w, req, resp.Body)

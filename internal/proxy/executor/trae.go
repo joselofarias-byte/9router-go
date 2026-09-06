@@ -365,7 +365,7 @@ func traeCreateSession(ctx context.Context, client *http.Client, baseURL string,
 		return "", "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", "", &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: respBody}
+		return "", "", &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: respBody}
 	}
 	var out struct {
 		Code int `json:"code"`
@@ -399,7 +399,7 @@ func traeStreamUpstream(ctx context.Context, client *http.Client, baseURL string
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: body}
 	}
 
 	reader := bufio.NewReader(resp.Body)

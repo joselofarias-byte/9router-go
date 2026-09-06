@@ -406,7 +406,7 @@ func ForwardWindsurf(w http.ResponseWriter, req *Request) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: body}
 	}
 
 	responseID := fmt.Sprintf("chatcmpl-ws-%d", time.Now().UnixMilli())

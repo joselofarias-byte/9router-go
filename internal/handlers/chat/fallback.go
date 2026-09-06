@@ -6,8 +6,9 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +39,17 @@ func (h *ChatHandler) handleAccountFallback(
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
 		log.Debug("fallback", "pinned", "pinnedConn", pinnedConnectionID, "connObj", connObj.ID)
-		return h.tryForwardWithConnection(ctx, w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
+		err = h.tryForwardWithConnection(ctx, w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
+		// Pinning prevents fallback, not cooldown: repeated probes must respect quota.
+		var ue *upstreamError
+		if errors.As(err, &ue) && (providers.RetryableStatusCodes[ue.StatusCode] || ue.StatusCode >= 500 && ue.StatusCode <= 599) {
+			c := providers.ClassifyError(ue.StatusCode, extractErrorText(ue.Body), h.Repo.GetConnectionBackoffLevel(connObj.ID))
+			seconds := max(int((c.CooldownMs+999)/1000), accountRetryDelay(ue, time.Now()))
+			if lockErr := h.Repo.LockConnectionModel(connObj.ID, model, seconds, c.NewBackoffLevel); lockErr != nil {
+				return lockErr
+			}
+		}
+		return err
 	}
 
 	if !h.Repo.IsProviderAvailable(provider, model) {
@@ -60,14 +71,15 @@ func (h *ChatHandler) handleAccountFallback(
 
 	var excludeIDs []string
 	var lastErr error
-	for _, c := range allConns {
-		if slices.Contains(excludeIDs, c.ID) {
-			continue
+	for range allConns {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
+		connObj, connData, err := h.getBestConnection(provider, "", excludeIDs, model)
 		if err != nil || connObj == nil {
-			continue
+			break
 		}
+		excludeIDs = append(excludeIDs, connObj.ID)
 		apiKey := extractAPIKey(connData)
 		if apiKey == "" {
 			providerCfg, pErr := h.getProviderConfig(provider, connData)
@@ -77,14 +89,27 @@ func (h *ChatHandler) handleAccountFallback(
 				continue
 			}
 		}
-		log.Debug("fallback", "connection", "conn", c.ID, "connObj", connObj.ID)
-		if err := h.tryForwardWithConnection(ctx, w, provider, model, c.ID, connData, body, isStream, translateResponse, endpoint); err == nil {
+		log.Debug("fallback", "connection", "conn", connObj.ID, "connObj", connObj.ID)
+		if err := h.tryForwardWithConnection(ctx, w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint); err == nil {
 			return nil
 		} else {
 			lastErr = err
 		}
+		if cw, ok := w.(interface{ IsCommitted() bool }); ok && cw.IsCommitted() {
+			return lastErr
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var ne net.Error
+		if errors.As(lastErr, &ne) && ne.Timeout() {
+			if err := h.Repo.LockConnectionModel(connObj.ID, model, 30, 0); err != nil {
+				return err
+			}
+			continue
+		}
 		var ue *upstreamError
-		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
+		if errors.As(lastErr, &ue) && (providers.RetryableStatusCodes[ue.StatusCode] || ue.StatusCode >= 500 && ue.StatusCode <= 599) {
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
@@ -92,13 +117,15 @@ func (h *ChatHandler) handleAccountFallback(
 			// Classify error to get dynamic cooldown
 			classification := providers.ClassifyError(ue.StatusCode, errorText, currentBackoffLevel)
 			cooldownSec := int((classification.CooldownMs + 999) / 1000) // ceil to seconds
+			cooldownSec = max(cooldownSec, accountRetryDelay(ue, time.Now()))
 			errMsg := errorText
 			if errMsg == "" {
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
 			}
-			h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
+			if err := h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel); err != nil {
+				return err
+			}
 			log.Warn("fallback", "connection locked", "conn", connObj.ID, "provider", provider, "model", model, "status", ue.StatusCode, "cooldown_s", cooldownSec)
-			excludeIDs = append(excludeIDs, c.ID)
 			continue
 		}
 		return lastErr
@@ -262,9 +289,9 @@ func (h *ChatHandler) tryForwardWithConnection(
 		// antigravity with a cached "no project" verdict already logged its
 		// one-time onboarding hint — don't re-WARN on every retried request.
 		if projectProbeCached(connectionID) {
-			log.Debug("fallback", "upstream skipped (cached no-project)", "provider", provider, "model", model, "conn", connectionID, "error", fwdErr)
+			log.Debug("fallback", "upstream skipped (cached no-project)", "provider", provider, "model", model, "conn", connectionID, "errorType", fmt.Sprintf("%T", fwdErr))
 		} else {
-			log.Warn("fallback", "upstream failed", "provider", provider, "model", model, "conn", connectionID, "status", statusCode, "error", fwdErr)
+			log.Warn("fallback", "upstream failed", "provider", provider, "model", model, "conn", connectionID, "status", statusCode, "errorType", fmt.Sprintf("%T", fwdErr))
 		}
 	}
 	return fwdErr
@@ -379,4 +406,18 @@ func formatRetryAfter(isoTimestamp string) string {
 		parts = append(parts, fmt.Sprintf("%ds", s))
 	}
 	return "reset after " + strings.Join(parts, " ")
+}
+
+// Respect provider quota reset hints in addition to the local backoff floor.
+func accountRetryDelay(e *upstreamError, now time.Time) int {
+	delay := 0
+	if seconds, err := strconv.ParseInt(e.RetryAfter, 10, 64); err == nil && seconds > 0 {
+		delay = int(min(seconds, 31536000))
+	} else if until, err := http.ParseTime(e.RetryAfter); err == nil {
+		delay = max(0, int(until.Sub(now).Seconds()+0.999))
+	}
+	if until, err := time.Parse(time.RFC3339, extractRetryAfter(e.Body)); err == nil {
+		delay = max(delay, int(until.Sub(now).Seconds()+0.999))
+	}
+	return max(0, delay)
 }

@@ -6,26 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
 
 // UpstreamError captures a non-200 upstream response.
 type UpstreamError struct {
 	StatusCode int
+	RetryAfter string
 	Body       []byte
 }
 
 func (e *UpstreamError) Error() string {
-	// Include the upstream body (truncated) so 4xx/5xx failures are diagnosable
-	// from the fallback log alone — the body often carries Google/Antigravity's
-	// actual rejection reason ("Invalid tool parameters", unknown model, etc.).
-	body := strings.TrimSpace(string(e.Body))
-	if len(body) > 512 {
-		body = body[:512] + "... (truncated)"
-	}
-	if body != "" {
-		return fmt.Sprintf("upstream returned %d: %s", e.StatusCode, body)
-	}
+	// Error bodies may echo prompts or secrets. Keep them out of every log.
 	return fmt.Sprintf("upstream returned %d", e.StatusCode)
 }
 
@@ -50,8 +41,7 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), Body: errBody}
 	}
 	return resp, nil
 }
-

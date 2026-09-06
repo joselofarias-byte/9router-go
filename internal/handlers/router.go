@@ -35,6 +35,14 @@ func SetupRoutes(r interface {
 	mediaH := media.NewMediaHandler(repo, ts, chatH)
 	oauthH := oauth.NewOAuthHandler(repo)
 
+	// Fabric control plane: metadata-only account inspection and atomic snapshots.
+	r.Get("/admin/fabric/state", fabricState(repo))
+	r.Get("/admin/fabric/accounts", fabricAccounts(repo))
+	r.Post("/admin/fabric/apply", fabricApply(repo, false))
+	r.Post("/admin/fabric/rollback", fabricApply(repo, true))
+	r.Post("/admin/fabric/probe", chatH.HandleFabricProbe)
+	r.Post("/admin/fabric/rotation", fabricRotation(repo))
+
 	// Chat, Version & Models Domain
 	r.Get("/version", chatH.HandleVersion)
 	r.Get("/api/version", chatH.HandleVersion)
@@ -130,7 +138,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// API-key protected domain routes (includes /admin/health/reset so health
 	// state cannot be reset by an unauthenticated caller — open-source hardening)
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.RequireApiKey(repo))
+		r.Use(middleware.RequireGatewayAuth(repo))
 
 		// Health reset endpoint — dashboard calls this via headroom proxy
 		r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
