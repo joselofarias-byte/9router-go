@@ -60,3 +60,15 @@ repositorio contiene el gateway y su contrato administrativo. Las
 credenciales de SQLite conservan el formato previo; no se añade cifrado.
 Las pruebas de CI de esta rama son regresiones aisladas de Fabric y errores
 de upstream; no se ejecutan pruebas heredadas que contactan proveedores.
+
+## Iniciar una instalación nueva
+
+Configurar el token administrativo en el entorno antes de iniciar. Para una
+instalación nueva, elegir una carpeta privada y ejecutar:
+
+```sh
+DATA_DIR="$HOME/.local/share/9router-go" PORT=20128 "$HOME/.local/bin/9router-go"
+```
+
+Para una actualización, usar la ruta de datos anterior. No crear una base
+vacía por accidente: las cuentas no aparecen sin su base de datos existente.
