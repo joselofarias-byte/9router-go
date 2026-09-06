@@ -28,6 +28,7 @@ type CodexStreamState struct {
 	ToolCallNames     map[string]string
 	ToolCallArgs      map[string]string
 	ItemIDToIdx       map[string]int
+	ArgsEmitted       map[int]bool
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -236,6 +237,9 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				state.ToolCallCount++
 			}
 		}
+		if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
+			return nil
+		}
 		// If name wasn't captured before, use it now
 		if name == "" && state.ToolCallNames != nil {
 			name = state.ToolCallNames[callID]
@@ -308,10 +312,58 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			itemType, _ := item["type"].(string)
 			if itemType == "function_call" || itemType == "custom_tool_call" {
 				state.CurrentToolCallID = ""
+				itemID, _ := event["item_id"].(string)
+				if itemID == "" {
+					itemID, _ = item["id"].(string)
+				}
+				callID, _ := item["call_id"].(string)
+				if callID == "" {
+					callID = itemID
+				}
+				var idx int
+				var ok bool
+				if itemID != "" && state.ItemIDToIdx != nil {
+					idx, ok = state.ItemIDToIdx[itemID]
+				}
+				if !ok && callID != "" && state.ToolCallIdx != nil {
+					idx, ok = state.ToolCallIdx[callID]
+				}
+				fullArgs, _ := item["arguments"].(string)
+				if fullArgs != "" {
+					if state.ToolCallArgs == nil {
+						state.ToolCallArgs = make(map[string]string)
+					}
+					state.ToolCallArgs[callID] = fullArgs
+					if state.ArgsEmitted == nil {
+						state.ArgsEmitted = make(map[int]bool)
+					}
+					if !state.ArgsEmitted[idx] {
+						state.ArgsEmitted[idx] = true
+						chunk := map[string]any{
+							"id":      responseID,
+							"object":  "chat.completion.chunk",
+							"created": created,
+							"choices": []map[string]any{{
+								"index": 0,
+								"delta": map[string]any{
+									"tool_calls": []map[string]any{{
+										"index": idx,
+										"function": map[string]any{
+											"arguments": fullArgs,
+										},
+									}},
+								},
+							}},
+						}
+						b, err := json.Marshal(chunk)
+						if err == nil {
+							return []string{fmt.Sprintf("data: %s\n\n", string(b))}
+						}
+					}
+				}
 			}
 		}
 		return nil
-
 	case "response.completed":
 		state.Completed = true
 		finishReason := "stop"
