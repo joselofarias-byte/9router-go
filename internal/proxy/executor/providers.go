@@ -378,6 +378,26 @@ var opencodeGoMessagesModels = map[string]bool{
 	"qwen3.6-plus": true,
 }
 
+func deriveOpencodeSession(rawSession, clientTool, connID string) string {
+	raw := strings.TrimSpace(rawSession)
+	if raw == "" {
+		raw = strings.TrimSpace(connID)
+	}
+	if raw == "" {
+		raw = "default"
+	}
+	// Preserve valid native session
+	if strings.HasPrefix(raw, "ses_") && len(raw) == 36 {
+		return raw
+	}
+	tool := clientTool
+	if tool == "" {
+		tool = "generic"
+	}
+	h := sha256.Sum256([]byte("opencode-go\x00" + tool + "\x00" + raw))
+	return "ses_" + hex.EncodeToString(h[:16])
+}
+
 // ForwardOpencodeGo handles requests for opencode-go (paid tier).
 func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	body := InjectReasoningContent(req.Body, "opencode-go")
@@ -389,13 +409,85 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		log.Warn("executor", "opencode unmarshal body", "error", err)
 	}
 
+	sessionHeader := deriveOpencodeSession(req.SessionID, "", req.ConnectionID)
+
+	cleanModel := strings.TrimPrefix(reqObj.Model, "oc/")
+	cleanModel = strings.TrimPrefix(cleanModel, "opencode-go/")
+	cleanModel = strings.TrimPrefix(cleanModel, "opencode/")
+	if parenIdx := strings.IndexByte(cleanModel, '('); parenIdx != -1 {
+		cleanModel = cleanModel[:parenIdx]
+	}
+
+	if strings.Contains(cleanModel, "muse-spark") {
+		// Route through Responses API format: https://opencode.ai/zen/go/v1/responses (#3819, #3820)
+		transformedBody, _, err := buildResponsesBody(req.Body)
+		if err != nil {
+			return fmt.Errorf("transform body for opencode-go muse-spark: %w", err)
+		}
+
+		var m map[string]any
+		if err := json.Unmarshal(transformedBody, &m); err == nil {
+			if rEffort, ok := m["reasoning_effort"].(string); ok {
+				if rEffort == "max" {
+					rEffort = "xhigh"
+				}
+				m["reasoning"] = map[string]any{
+					"effort":  rEffort,
+					"summary": "auto",
+				}
+				delete(m, "reasoning_effort")
+			} else if rMap, ok := m["reasoning"].(map[string]any); ok {
+				if eff, ok := rMap["effort"].(string); ok && eff == "max" {
+					rMap["effort"] = "xhigh"
+				}
+				rMap["summary"] = "auto"
+			}
+			if transformedBody, err = json.Marshal(m); err != nil {
+				return fmt.Errorf("marshal opencode-go muse-spark body: %w", err)
+			}
+		}
+
+		cfg := *req.Config
+		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
+			baseURL := strings.TrimRight(cfg.BaseURL, "/")
+			if strings.HasSuffix(baseURL, "/chat/completions") {
+				baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+			}
+			cfg.BaseURL = baseURL + "/responses"
+		}
+		headers := make(map[string]string)
+		for k, v := range cfg.StaticHeaders {
+			headers[k] = v
+		}
+		headers["x-opencode-session"] = sessionHeader
+		cfg.StaticHeaders = headers
+
+		ctx := req.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, transformedBody, req.IsStream)
+		if err != nil {
+			return fmt.Errorf("ForwardOpencodeGo (muse-spark responses): %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		}
+
+		return handleCodexStream(w, req, resp.Body)
+	}
+
 	if opencodeGoMessagesModels[reqObj.Model] {
 		// Route to /zen/go/v1/messages (Anthropic/Claude format)
 		messagesURL := "https://opencode.ai/zen/go/v1/messages"
 		headers := map[string]string{
-			"Content-Type":      "application/json",
-			"x-api-key":         req.APIKey,
-			"anthropic-version": "2023-06-01",
+			"Content-Type":       "application/json",
+			"x-api-key":          req.APIKey,
+			"anthropic-version":  "2023-06-01",
+			"x-opencode-session": sessionHeader,
 		}
 		if req.IsStream {
 			headers["Accept"] = "text/event-stream"
@@ -417,11 +509,19 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 
 	// Default OpenAI format endpoint: https://opencode.ai/zen/go/v1/chat/completions
+	cfg := *req.Config
+	headers := make(map[string]string)
+	for k, v := range cfg.StaticHeaders {
+		headers[k] = v
+	}
+	headers["x-opencode-session"] = sessionHeader
+	cfg.StaticHeaders = headers
+
 	ctx := req.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := proxy.ForwardOpenAI(ctx, req.Client, req.Config, req.APIKey, body, req.IsStream)
+	resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (default route): %w", err)
 	}

@@ -154,15 +154,17 @@ func TestEnsureRootCA(t *testing.T) {
 
 func TestMITMDir(t *testing.T) {
 	dir := MITMDir("/tmp/test")
-	if !strings.HasSuffix(dir, "/tmp/test/mitm") {
-		t.Errorf("expected /tmp/test/mitm, got %s", dir)
+	want := filepath.FromSlash("/tmp/test/mitm")
+	if !strings.HasSuffix(dir, want) {
+		t.Errorf("expected suffix %s, got %s", want, dir)
 	}
 }
 
 func TestCertDir(t *testing.T) {
 	dir := CertDir("/tmp/test")
-	if !strings.HasSuffix(dir, "/tmp/test/mitm/certs") {
-		t.Errorf("expected /tmp/test/mitm/certs, got %s", dir)
+	want := filepath.FromSlash("/tmp/test/mitm/certs")
+	if !strings.HasSuffix(dir, want) {
+		t.Errorf("expected suffix %s, got %s", want, dir)
 	}
 }
 

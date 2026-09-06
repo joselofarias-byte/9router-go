@@ -445,3 +445,48 @@ func TestDefaultClaudeToolType(t *testing.T) {
 		}
 	})
 }
+
+func TestTranslateClaudeToOpenAI_AdaptiveEffortNormalization(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantEffort string
+	}{
+		{
+			name:       "adaptive with auto effort normalizes to high",
+			input:      `{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"auto"}}`,
+			wantEffort: "high",
+		},
+		{
+			name:       "adaptive with xhigh effort normalizes to high",
+			input:      `{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"xhigh"}}`,
+			wantEffort: "high",
+		},
+		{
+			name:       "adaptive with low effort preserves low",
+			input:      `{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}}`,
+			wantEffort: "low",
+		},
+		{
+			name:       "output_config alone with auto normalizes to high",
+			input:      `{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"auto"}}`,
+			wantEffort: "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := TranslateClaudeToOpenAI([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("TranslateClaudeToOpenAI failed: %v", err)
+			}
+			var oreq OpenAIRequest
+			if err := json.Unmarshal(out, &oreq); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			if oreq.ReasoningEffort != tt.wantEffort {
+				t.Errorf("got ReasoningEffort %q, want %q", oreq.ReasoningEffort, tt.wantEffort)
+			}
+		})
+	}
+}

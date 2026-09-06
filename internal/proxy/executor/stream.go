@@ -27,6 +27,8 @@ type CodexStreamState struct {
 	ToolCallIdx       map[string]int
 	ToolCallNames     map[string]string
 	ToolCallArgs      map[string]string
+	ItemIDToIdx       map[string]int
+	ArgsEmitted       map[int]bool
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -74,17 +76,30 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			if callID == "" {
 				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
 			}
+			itemID, _ := event["item_id"].(string)
+			if itemID == "" {
+				itemID, _ = item["id"].(string)
+			}
 			if state.ToolCallIdx == nil {
 				state.ToolCallIdx = make(map[string]int)
+			}
+			if state.ItemIDToIdx == nil {
+				state.ItemIDToIdx = make(map[string]int)
 			}
 			if state.ToolCallNames == nil {
 				state.ToolCallNames = make(map[string]string)
 			}
 			idx, ok := state.ToolCallIdx[callID]
+			if !ok && itemID != "" {
+				idx, ok = state.ItemIDToIdx[itemID]
+			}
 			if !ok {
 				idx = state.ToolCallCount
 				state.ToolCallIdx[callID] = idx
 				state.ToolCallCount++
+			}
+			if itemID != "" {
+				state.ItemIDToIdx[itemID] = idx
 			}
 			state.ToolCallNames[callID] = name
 			state.CurrentToolCallID = callID
@@ -120,29 +135,33 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		if delta == "" {
 			return nil
 		}
+		itemID, _ := event["item_id"].(string)
 		callID, _ := event["call_id"].(string)
-		if callID == "" {
-			callID = state.CurrentToolCallID
-		}
-		if callID == "" {
-			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
-		}
-		if state.ToolCallIdx == nil {
-			state.ToolCallIdx = make(map[string]int)
-		}
 		name, _ := event["name"].(string)
-		if name == "" && state.ToolCallNames != nil {
-			name = state.ToolCallNames[callID]
+		var idx int
+		var ok bool
+		if itemID != "" && state.ItemIDToIdx != nil {
+			idx, ok = state.ItemIDToIdx[itemID]
 		}
-		if name != "" && state.ToolCallNames != nil {
-			state.ToolCallNames[callID] = name
+		if !ok && callID != "" && state.ToolCallIdx != nil {
+			idx, ok = state.ToolCallIdx[callID]
 		}
-
-		idx, ok := state.ToolCallIdx[callID]
 		if !ok {
-			idx = state.ToolCallCount
-			state.ToolCallIdx[callID] = idx
-			state.ToolCallCount++
+			if callID == "" {
+				callID = state.CurrentToolCallID
+			}
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+			}
+			if state.ToolCallIdx == nil {
+				state.ToolCallIdx = make(map[string]int)
+			}
+			idx, ok = state.ToolCallIdx[callID]
+			if !ok {
+				idx = state.ToolCallCount
+				state.ToolCallIdx[callID] = idx
+				state.ToolCallCount++
+			}
 		}
 
 		if state.ToolCallArgs == nil {
@@ -191,21 +210,35 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	case "response.function_call_arguments.done":
 		name, _ := event["name"].(string)
 		args, _ := event["arguments"].(string)
+		itemID, _ := event["item_id"].(string)
 		callID, _ := event["call_id"].(string)
-		if callID == "" {
-			callID = state.CurrentToolCallID
+		var idx int
+		var ok bool
+		if itemID != "" && state.ItemIDToIdx != nil {
+			idx, ok = state.ItemIDToIdx[itemID]
 		}
-		if callID == "" {
-			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+		if !ok && callID != "" && state.ToolCallIdx != nil {
+			idx, ok = state.ToolCallIdx[callID]
 		}
-		if state.ToolCallIdx == nil {
-			state.ToolCallIdx = make(map[string]int)
-		}
-		idx, ok := state.ToolCallIdx[callID]
 		if !ok {
-			idx = state.ToolCallCount
-			state.ToolCallIdx[callID] = idx
-			state.ToolCallCount++
+			if callID == "" {
+				callID = state.CurrentToolCallID
+			}
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+			}
+			if state.ToolCallIdx == nil {
+				state.ToolCallIdx = make(map[string]int)
+			}
+			idx, ok = state.ToolCallIdx[callID]
+			if !ok {
+				idx = state.ToolCallCount
+				state.ToolCallIdx[callID] = idx
+				state.ToolCallCount++
+			}
+		}
+		if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
+			return nil
 		}
 		// If name wasn't captured before, use it now
 		if name == "" && state.ToolCallNames != nil {
@@ -279,10 +312,58 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			itemType, _ := item["type"].(string)
 			if itemType == "function_call" || itemType == "custom_tool_call" {
 				state.CurrentToolCallID = ""
+				itemID, _ := event["item_id"].(string)
+				if itemID == "" {
+					itemID, _ = item["id"].(string)
+				}
+				callID, _ := item["call_id"].(string)
+				if callID == "" {
+					callID = itemID
+				}
+				var idx int
+				var ok bool
+				if itemID != "" && state.ItemIDToIdx != nil {
+					idx, ok = state.ItemIDToIdx[itemID]
+				}
+				if !ok && callID != "" && state.ToolCallIdx != nil {
+					idx, ok = state.ToolCallIdx[callID]
+				}
+				fullArgs, _ := item["arguments"].(string)
+				if fullArgs != "" {
+					if state.ToolCallArgs == nil {
+						state.ToolCallArgs = make(map[string]string)
+					}
+					state.ToolCallArgs[callID] = fullArgs
+					if state.ArgsEmitted == nil {
+						state.ArgsEmitted = make(map[int]bool)
+					}
+					if !state.ArgsEmitted[idx] {
+						state.ArgsEmitted[idx] = true
+						chunk := map[string]any{
+							"id":      responseID,
+							"object":  "chat.completion.chunk",
+							"created": created,
+							"choices": []map[string]any{{
+								"index": 0,
+								"delta": map[string]any{
+									"tool_calls": []map[string]any{{
+										"index": idx,
+										"function": map[string]any{
+											"arguments": fullArgs,
+										},
+									}},
+								},
+							}},
+						}
+						b, err := json.Marshal(chunk)
+						if err == nil {
+							return []string{fmt.Sprintf("data: %s\n\n", string(b))}
+						}
+					}
+				}
 			}
 		}
 		return nil
-
 	case "response.completed":
 		state.Completed = true
 		finishReason := "stop"

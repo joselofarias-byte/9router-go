@@ -178,9 +178,12 @@ type ClaudeToolChoice struct {
 // ClaudeThinking represents the thinking configuration in a Claude request.
 type ClaudeThinking struct {
 	Type   string `json:"type"`
-	Budget int    `json:"budget_tokens"`
+	Budget int    `json:"budget_tokens,omitempty"`
 }
 
+type ClaudeOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
 // ClaudeRequest is the full Claude /v1/messages request body.
 type ClaudeRequest struct {
 	Model       string          `json:"model"`
@@ -188,10 +191,11 @@ type ClaudeRequest struct {
 	System      jsontext.Value  `json:"system,omitempty"`
 	Temperature *float64        `json:"temperature,omitempty"`
 	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Thinking    *ClaudeThinking `json:"thinking,omitempty"`
-	Tools       []ClaudeTool    `json:"tools,omitempty"`
-	ToolChoice  *jsontext.Value `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Thinking     *ClaudeThinking     `json:"thinking,omitempty"`
+	OutputConfig *ClaudeOutputConfig `json:"output_config,omitempty"`
+	Tools        []ClaudeTool        `json:"tools,omitempty"`
+	ToolChoice   *jsontext.Value     `json:"tool_choice,omitempty"`
+	Stream       bool                `json:"stream,omitempty"`
 }
 
 // OpenAIRequest is the translated OpenAI-compatible request body.

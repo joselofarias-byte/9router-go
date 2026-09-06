@@ -7,6 +7,8 @@ import (
 	json "encoding/json/v2"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,27 @@ const projectNoCacheTTL = 10 * time.Minute
 // so we do not hammer Google's RPCs during a 429 burst.
 var antigravityProbeDelay = 2 * time.Second
 
+func getOnboardMaxAttempts() int {
+	if s := os.Getenv("ONBOARD_MAX_ATTEMPTS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2 // upstream default 2 to prevent Google anti-abuse rate limits (#3813)
+}
+
+func getOnboardRetryDelay() time.Duration {
+	if antigravityProbeDelay != 2*time.Second {
+		return antigravityProbeDelay
+	}
+	if s := os.Getenv("ONBOARD_RETRY_DELAY_MS"); s != "" {
+		if ms, err := strconv.Atoi(s); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 12 * time.Second // upstream default 12s
+}
+
 // probeBackoffWait sleeps an exponential backoff for the given retry attempt
 // (attempt 1 = base, attempt 2 = 2x base, ...) and returns false if ctx was
 // cancelled mid-wait so callers can bail out promptly instead of sleeping blind.
@@ -44,7 +67,7 @@ func probeBackoffWait(ctx context.Context, attempt int) bool {
 	if attempt <= 0 {
 		return true
 	}
-	delay := antigravityProbeDelay * time.Duration(1<<uint(attempt-1))
+	delay := getOnboardRetryDelay() * time.Duration(1<<uint(attempt-1))
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -165,7 +188,8 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 }
 
 func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToken, tierID string) (pid string, authFailed, noProject bool) {
-	for attempt := 0; attempt < 3; attempt++ {
+	maxAttempts := getOnboardMaxAttempts()
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		payload, err := json.Marshal(map[string]any{
 			"tierId":   tierID,
 			"metadata": lcaMetadata,
