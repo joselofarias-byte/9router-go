@@ -29,7 +29,7 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}()
 
 	if req.IsStream {
-		stallReader := proxy.NewStallReader(resp.Body, 0, "openai")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "openai")
 		bodyCloser = stallReader
 		return execSSEStream(w, stallReader, req)
 	}
@@ -46,10 +46,12 @@ func execSSEStream(w http.ResponseWriter, upstream io.Reader, req *Request) erro
 
 // sseStream pipes SSE chunks to client with optional format translation.
 func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf io.Writer, ctx context.Context) error {
-	flusher := proxy.WriteSSEHeaders(w)
+	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
+	defer hw.Close()
+	flusher := proxy.WriteSSEHeaders(hw)
 
 	if !translate {
-		return proxy.SSECopy(w, upstream, flusher, func(chunk []byte) {
+		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			if ttft != nil && *ttft == 0 {
 				*ttft = time.Since(startTime).Milliseconds()
 			}
@@ -80,14 +82,14 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 		if buf != nil {
 			buf.Write(translated)
 		}
-		w.Write(translated)
+		hw.Write(translated)
 		if flusher != nil {
 			flusher.Flush()
 		}
 	})
 	// Same shutdown terminator as the chat path: end with [DONE] on abort.
 	if shutdown.Fired() && !finished {
-		w.Write([]byte("data: [DONE]\n\n"))
+		hw.Write([]byte("data: [DONE]\n\n"))
 		if flusher != nil {
 			flusher.Flush()
 		}

@@ -463,9 +463,12 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 	state := &CodexStreamState{}
 
 	if req.IsStream {
+		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
+		defer hw.Close()
+
 		if !req.TranslateResp {
 			// Streaming to OpenAI-compatible client
-			flusher := proxy.WriteSSEHeaders(w)
+			flusher := proxy.WriteSSEHeaders(hw)
 			doneSeen := false
 
 			err := proxy.ScanStream(upstream, func(payload []byte) {
@@ -475,7 +478,7 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				data := string(payload)
 				if data == "[DONE]" {
 					doneSeen = true
-					_ = writeSSEFinish(w, flusher, req, state, responseID, created)
+					_ = writeSSEFinish(hw, flusher, req, state, responseID, created)
 					return
 				}
 
@@ -487,7 +490,7 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 					if req.ResponseBuf != nil {
 						req.ResponseBuf.Write([]byte(chunk))
 					}
-					if _, werr := w.Write([]byte(chunk)); werr != nil {
+					if _, werr := hw.Write([]byte(chunk)); werr != nil {
 						return
 					}
 				}
@@ -497,13 +500,13 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 			})
 
 			if !doneSeen {
-				return writeSSEFinish(w, flusher, req, state, responseID, created)
+				return writeSSEFinish(hw, flusher, req, state, responseID, created)
 			}
 			return err
 		}
 
 		// Streaming with Claude translation (/v1/messages)
-		flusher := proxy.WriteSSEHeaders(w)
+		flusher := proxy.WriteSSEHeaders(hw)
 		sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
 		defer translator.ClearStreamState(sessionKey)
 
@@ -535,7 +538,7 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				if req.ResponseBuf != nil {
 					req.ResponseBuf.Write(translated)
 				}
-				if _, werr := w.Write(translated); werr != nil {
+				if _, werr := hw.Write(translated); werr != nil {
 					return
 				}
 				if flusher != nil {
@@ -548,12 +551,12 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 		if !state.Completed {
 			finishChunk := []byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, responseID, created)))
 			if translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, finishChunk); terr == nil && translated != nil {
-				w.Write(translated)
+				hw.Write(translated)
 			}
 		}
 		doneChunk := []byte("data: [DONE]\n\n")
 		if translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, doneChunk); terr == nil && translated != nil {
-			w.Write(translated)
+			hw.Write(translated)
 		}
 		if flusher != nil {
 			flusher.Flush()

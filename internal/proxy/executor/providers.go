@@ -345,6 +345,11 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 		}
 
+		if req.IsStream {
+			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "opencode-responses")
+			defer stallReader.Close()
+			return handleCodexStream(w, req, stallReader)
+		}
 		return handleCodexStream(w, req, resp.Body)
 	}
 
@@ -477,6 +482,11 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 		}
 
+		if req.IsStream {
+			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "opencode-go-responses")
+			defer stallReader.Close()
+			return handleCodexStream(w, req, stallReader)
+		}
 		return handleCodexStream(w, req, resp.Body)
 	}
 

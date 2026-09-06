@@ -2,8 +2,12 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestScanStreamChunks(t *testing.T) {
@@ -124,5 +128,77 @@ func TestStreamWriterErrors(t *testing.T) {
 	_, err2 := WriteChunk(ew, []byte("hello"))
 	if err2 == nil {
 		t.Error("expected error, got nil")
+	}
+}
+
+type mockResponseWriter struct {
+	bytes.Buffer
+	header  http.Header
+	code    int
+	flushed bool
+}
+
+func (m *mockResponseWriter) Header() http.Header {
+	if m.header == nil {
+		m.header = make(http.Header)
+	}
+	return m.header
+}
+
+func (m *mockResponseWriter) WriteHeader(code int) {
+	m.code = code
+}
+
+func (m *mockResponseWriter) Flush() {
+	m.flushed = true
+}
+
+func TestHeartbeatWriter_EmitsKeepAliveWhenIdle(t *testing.T) {
+	rec := &mockResponseWriter{}
+	hw := NewHeartbeatWriter(context.Background(), rec, 25*time.Millisecond)
+	defer hw.Close()
+
+	// Wait for 2 heartbeat ticks (idle)
+	time.Sleep(70 * time.Millisecond)
+
+	out := rec.String()
+	if !strings.Contains(out, ": keep-alive\n\n") {
+		t.Errorf("expected keep-alive in output, got %q", out)
+	}
+	if !rec.flushed {
+		t.Errorf("expected flusher to be called")
+	}
+}
+
+func TestHeartbeatWriter_ActiveStreamDelaysKeepAlive(t *testing.T) {
+	rec := &mockResponseWriter{}
+	hw := NewHeartbeatWriter(context.Background(), rec, 50*time.Millisecond)
+	defer hw.Close()
+	for range 4 {
+		time.Sleep(15 * time.Millisecond)
+		hw.Write([]byte("data: chunk\n\n"))
+	}
+
+	out := rec.String()
+	if strings.Contains(out, ": keep-alive\n\n") {
+		t.Errorf("did not expect keep-alive while stream was active, got %q", out)
+	}
+	if !strings.Contains(out, "data: chunk\n\n") {
+		t.Errorf("expected data chunks, got %q", out)
+	}
+}
+
+func TestHeartbeatWriter_ClosesOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := &mockResponseWriter{}
+	hw := NewHeartbeatWriter(ctx, rec, 20*time.Millisecond)
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	// Writing after close should return ErrClosedPipe
+	_, err := hw.Write([]byte("after close"))
+	if err == nil {
+		t.Errorf("expected write error on closed writer, got nil")
 	}
 }

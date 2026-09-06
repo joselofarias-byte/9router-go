@@ -39,20 +39,22 @@ func ForwardGemini(w http.ResponseWriter, req *Request) error {
 		}
 		unwrapped := translator.UnwrapAntigravityResponse(raw)
 		if req.IsStream {
-			return geminiStream(w, io.NopCloser(bytes.NewReader(unwrapped)))
+			return geminiStream(w, io.NopCloser(bytes.NewReader(unwrapped)), req.Ctx)
 		}
 		return geminiNonStream(w, bytes.NewReader(unwrapped))
 	}
 	if req.IsStream {
-		stallReader := proxy.NewStallReader(resp.Body, 0, "gemini")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "gemini")
 		bodyCloser = stallReader
-		return geminiStream(w, stallReader)
+		return geminiStream(w, stallReader, req.Ctx)
 	}
 	return geminiNonStream(w, resp.Body)
 }
 
-func geminiStream(w http.ResponseWriter, upstream io.Reader) error {
-	flusher := proxy.WriteSSEHeaders(w)
+func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context) error {
+	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
+	defer hw.Close()
+	flusher := proxy.WriteSSEHeaders(hw)
 	firstLine := true
 	state := &translator.GeminiStreamState{}
 	return proxy.ScanStream(upstream, func(chunk []byte) {
@@ -71,8 +73,8 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader) error {
 		if err != nil || oc == nil {
 			return
 		}
-		w.Write(oc)
-		w.Write([]byte("\n\n"))
+		hw.Write(oc)
+		hw.Write([]byte("\n\n"))
 		if flusher != nil {
 			flusher.Flush()
 		}

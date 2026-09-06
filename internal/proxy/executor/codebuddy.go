@@ -39,7 +39,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 	defer resp.Body.Close()
 
 	if req.IsStream {
-		stallReader := proxy.NewStallReader(resp.Body, 0, "codebuddy-cn")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
 		defer stallReader.Close() // stops the shutdown watcher + stall timer
 		return execSSEStream(w, stallReader, req)
 	}
