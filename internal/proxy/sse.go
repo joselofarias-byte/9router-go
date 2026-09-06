@@ -17,6 +17,9 @@ func WriteSSEHeaders(w http.ResponseWriter) http.Flusher {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	f, _ := w.(http.Flusher)
+	if f != nil {
+		f.Flush()
+	}
 	return f
 }
 
