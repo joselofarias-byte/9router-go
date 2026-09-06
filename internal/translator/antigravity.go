@@ -506,9 +506,15 @@ func fixAntigravityContents(req *GeminiRequest) bool {
 		}
 
 		if needsBackfill {
+			firstFunctionCallSeen := false
 			for idx, p := range filtered {
-				if p.FunctionCall != nil && p.ThoughtSignature == "" {
-					filtered[idx].ThoughtSignature = DefaultThinkingSignature
+				if p.FunctionCall != nil {
+					sig := p.ThoughtSignature
+					if sig == "" && !firstFunctionCallSeen {
+						sig = DefaultThinkingSignature
+					}
+					firstFunctionCallSeen = true
+					filtered[idx].ThoughtSignature = sig
 				}
 			}
 		}

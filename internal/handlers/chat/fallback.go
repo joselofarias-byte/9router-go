@@ -128,6 +128,15 @@ func (h *ChatHandler) tryForwardWithConnection(
 	if err != nil {
 		return fmt.Errorf("get config for %s/%s: %w", provider, model, err)
 	}
+	// anthropic-compatible nodes fronting a Claude model need Anthropic-Beta flags (parity #3797)
+	if (provider == "claude" || strings.HasPrefix(provider, "anthropic-compatible-") || strings.HasPrefix(provider, "anthropic")) && strings.HasPrefix(model, "claude-") {
+		if providerCfg.StaticHeaders == nil {
+			providerCfg.StaticHeaders = make(map[string]string)
+		}
+		if _, ok := providerCfg.StaticHeaders["Anthropic-Beta"]; !ok {
+			providerCfg.StaticHeaders["Anthropic-Beta"] = "prompt-caching-scope-2026-01-05, context-management-2025-06-27"
+		}
+	}
 
 	apiKey := extractAPIKey(connData)
 	if apiKey == "" {
