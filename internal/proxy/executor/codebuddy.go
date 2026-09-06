@@ -199,8 +199,16 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 	} else {
 		msg["content"] = content
 	}
-	if len(toolCalls) > 0 {
-		msg["tool_calls"] = toolCalls
+	var validToolCalls []map[string]any
+	for _, tc := range toolCalls {
+		if fn, ok := tc["function"].(map[string]any); ok {
+			if n, ok := fn["name"].(string); ok && strings.TrimSpace(n) != "" {
+				validToolCalls = append(validToolCalls, tc)
+			}
+		}
+	}
+	if len(validToolCalls) > 0 {
+		msg["tool_calls"] = validToolCalls
 	}
 	if len(reasoningParts) > 0 {
 		msg["reasoning_content"] = strings.Join(reasoningParts, "")
