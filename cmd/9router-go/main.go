@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -159,8 +159,14 @@ func runServer(cCtx *cli.Context) error {
 	}
 
 	// Start Control Plane Orchestrator (background discovery)
+
+	// Read OrcaRouter configuration from environment for Control Plane discovery
+	orcaBaseURL := os.Getenv("ORCAROUTER_BASE_URL")
+	orcaAPIKey := os.Getenv("ORCAROUTER_API_KEY")
+
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
+		discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey),
 		&discovery.RelayinAdapter{},
 		&discovery.ModelRadarAdapter{},
 		&discovery.DataAPIAdapter{},

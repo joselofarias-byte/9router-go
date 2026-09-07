@@ -129,6 +129,19 @@ func TestNewProvidersRegistry_v055(t *testing.T) {
 	}
 }
 
+func TestNewProvidersRegistry_OrcaRouter(t *testing.T) {
+	if cfg, ok := KnownProviders["orcarouter"]; !ok {
+		t.Error("expected orcarouter provider registered")
+	} else {
+		if cfg.BaseURL != "https://orcarouter.ai/v1/chat/completions" {
+			t.Errorf("orcarouter expected BaseURL https://orcarouter.ai/v1/chat/completions, got %s", cfg.BaseURL)
+		}
+		if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+			t.Errorf("orcarouter expected bearer/Authorization, got %s/%s", cfg.AuthScheme, cfg.AuthHeader)
+		}
+	}
+}
+
 func TestNewProvidersRegistry_v059(t *testing.T) {
 	if _, ok := KnownProviders["xquik"]; !ok {
 		t.Error("expected xquik provider registered")
@@ -159,4 +172,3 @@ func TestNewProvidersRegistry_v059(t *testing.T) {
 		t.Errorf("expected grok-4.6 to have reasoning and search, got %+v", grokCaps)
 	}
 }
-
