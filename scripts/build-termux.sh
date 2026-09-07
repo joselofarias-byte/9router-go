@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 out="${1:-dist/termux}"
 mkdir -p "$out"
-version="${VERSION:-v1.8.6-fabric.3}"
+version="${VERSION:-v1.8.6-fabric.4}"
 # Android needs Bionic getaddrinfo for system DNS (including private DNS/VPN).
 # A CGO-free cross-build can start successfully but fail every hostname lookup.
 if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "android/arm64" ]; then

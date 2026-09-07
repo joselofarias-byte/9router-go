@@ -47,6 +47,12 @@ func (h *ChatHandler) HandleFabricProbe(w http.ResponseWriter, r *http.Request) 
 		if errors.As(err, &ue) && ue.StatusCode >= 400 && ue.StatusCode <= 599 {
 			code = ue.StatusCode
 		}
-		handlerutil.WriteJSONError(w, code, "Account probe failed")
+		// A provider 404 may describe a route, not a model. Do not label it
+		// model_not_found through the generic status-to-error mapping.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"message": "Account probe failed", "type": "upstream_error", "code": "account_probe_failed",
+		}})
 	}
 }

@@ -1,5 +1,13 @@
 # 9router Go: Termux nativo (ARM64)
 
+## Corrección fabric.4: ruta Grok
+
+El adaptador normaliza las bases raíz y /v1 a /v1/responses y añade
+X-XAI-Token-Auth y x-grok-model-override. Las rutas personalizadas completas
+se conservan. Una prueba local verifica ruta, encabezados y propagación de
+errores sin contactar proveedores. Los probes ya no presentan todo 404 como
+model_not_found: esa condición también puede indicar una ruta inexistente.
+
 ## Corrección fabric.3: DNS Android
 
 Las compilaciones fabric.2 desactivaban CGO: podían iniciar y atender en

@@ -2,8 +2,11 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/providers"
@@ -39,10 +42,27 @@ func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.Pro
 		"User-Agent":               "grok-shell/0.2.99 (linux; x86_64)",
 		"x-grok-client-identifier": "grok-shell",
 		"x-grok-client-version":    "0.2.99",
+		"X-XAI-Token-Auth":         "xai-grok-cli",
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) == nil && payload.Model != "" {
+		headers["x-grok-model-override"] = payload.Model
 	}
 	setAuth(headers, cfg, apiKey)
 	streamHeaders(headers, isStream)
-	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
+	endpoint, err := url.Parse(cfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Grok endpoint")
+	}
+	switch strings.TrimRight(endpoint.Path, "/") {
+	case "":
+		endpoint.Path = "/v1/responses"
+	case "/v1":
+		endpoint.Path = "/v1/responses"
+	}
+	return DoRequest(ctx, client, "POST", endpoint.String(), headers, body)
 }
 
 // ForwardCodex forwards to codex / perplexity-agent using OpenAI Responses API format.
@@ -109,11 +129,11 @@ func ForwardAzure(ctx context.Context, client *http.Client, cfg *providers.Provi
 // Body transformation (force stream=true) is done by the caller.
 func ForwardCommandcode(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte) (*http.Response, error) {
 	headers := map[string]string{
-		"Content-Type":          "application/json",
-		"Authorization":         "Bearer " + apiKey,
+		"Content-Type":           "application/json",
+		"Authorization":          "Bearer " + apiKey,
 		"x-command-code-version": "0.25.7",
-		"x-cli-environment":     "cli",
-		"Accept":                "text/event-stream",
+		"x-cli-environment":      "cli",
+		"Accept":                 "text/event-stream",
 	}
 	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 }
