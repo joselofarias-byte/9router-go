@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,7 +19,6 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
-	"9router/proxy/internal/providers"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -180,8 +178,6 @@ func runServer(cCtx *cli.Context) error {
 	}
 	updater.StartBackgroundCheck(context.Background(), autoUpdate)
 	log.Printf("[config] auto-update enabled=%v", autoUpdate)
-	catalogPath := filepath.Join(filepath.Dir(cfg.DatabasePath), "model-catalog.json")
-	providers.StartBackgroundCatalogSync(context.Background(), nil, catalogPath)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
