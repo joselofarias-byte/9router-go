@@ -15,7 +15,7 @@ import (
 func TestGetActiveCandidates(t *testing.T) {
 	// Simple stub test to ensure bridge logic returns without panic
 	registry.InitRegistry(nil)
-	nodes := getActiveCandidates(context.Background(), "test-model")
+	nodes := getActiveCandidates(context.Background(), nil, "test-model")
 
 	// Should be 0 since the registry state is empty/uninitialized here
 	if len(nodes) != 0 {
@@ -68,7 +68,7 @@ func TestActiveCandidatesWithDBSync(t *testing.T) {
 	orch.RunSync(context.Background())
 
 	// Now Data Plane should correctly find the route
-	nodes := getActiveCandidates(context.Background(), "test-model")
+	nodes := getActiveCandidates(context.Background(), db, "test-model")
 	if len(nodes) != 1 {
 		t.Fatalf("expected 1 node route, got %d", len(nodes))
 	}

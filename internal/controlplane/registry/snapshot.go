@@ -47,17 +47,36 @@ func InitRegistry(db *sql.DB) error {
 
 		// Attempt LKG recovery if active snapshot was invalid or missing
 		if !isValid {
-			lkg, lkgErr := GetLastKnownGoodSnapshot(db)
-			if lkgErr == nil && lkg != nil {
-				if err := ValidateChecksum(lkg.Checksum, lkg.Payload); err == nil {
-					if state, err := FromJSON(lkg.Payload); err == nil {
-						stateMu.Lock()
-						activeState = state
-						lastKnownGood = state
-						stateMu.Unlock()
-						log.Info("registry", "Recovered from last_known_good snapshot", "version", lkg.Version)
-						return nil
+			// Flag the corrupt active snapshot as broken so it isn't erroneously cycled to LKG later
+			if snap != nil && snap.Version != "" {
+				_, _ = db.Exec("UPDATE registry_snapshots SET status = 'corrupt' WHERE version = ?", snap.Version)
+			}
+
+			// Iterate through LKGs descending to find the first valid one
+			rows, err := db.Query("SELECT version, created_at, reason, checksum, status, payload FROM registry_snapshots WHERE status = 'last_known_good' ORDER BY created_at DESC")
+			if err == nil {
+				defer rows.Close()
+				recovered := false
+				for rows.Next() {
+					var lkg Snapshot
+					var createdAtStr string
+					if err := rows.Scan(&lkg.Version, &createdAtStr, &lkg.Reason, &lkg.Checksum, &lkg.Status, &lkg.Payload); err == nil {
+						if err := ValidateChecksum(lkg.Checksum, lkg.Payload); err == nil {
+							if state, err := FromJSON(lkg.Payload); err == nil {
+								stateMu.Lock()
+								activeState = state
+								lastKnownGood = state
+								stateMu.Unlock()
+								log.Info("registry", "Recovered from last_known_good snapshot", "version", lkg.Version)
+								recovered = true
+
+								break
+							}
+						}
 					}
+				}
+				if recovered {
+					return nil
 				}
 			}
 			log.Warn("registry", "no valid snapshot or last_known_good available, falling back to empty state")
@@ -202,6 +221,15 @@ func ActivateSnapshot(db *sql.DB, version string) error {
 
 	log.Info("registry", "Activated snapshot", "version", version)
 	return nil
+}
+
+// UpdateAccounts safely replaces the accounts map in the active state.
+func UpdateAccounts(accounts map[string]*Account) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	if activeState != nil {
+		activeState.Accounts = accounts
+	}
 }
 
 // GetActiveSnapshot returns the currently active snapshot from the database.

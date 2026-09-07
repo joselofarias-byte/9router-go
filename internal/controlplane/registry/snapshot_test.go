@@ -115,3 +115,59 @@ func TestSnapshotChecksumValidation(t *testing.T) {
 		t.Fatalf("expected LKG state to have test provider, but did not")
 	}
 }
+
+func TestSnapshotLKG_CorruptChain(t *testing.T) {
+	tempDB := "test_snapshots_corrupt_chain.db"
+	defer os.Remove(tempDB)
+
+	db, _ := sql.Open("sqlite", tempDB)
+	defer db.Close()
+	_, _ = db.Exec(`
+		CREATE TABLE registry_snapshots (
+			version TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			checksum TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL
+		);
+	`)
+
+	// 1. Insert a very old valid LKG
+	validOldPayload := `{"Providers":{"old":{"id":"old"}}}`
+	_, _ = db.Exec(
+		`INSERT INTO registry_snapshots (version, created_at, reason, checksum, status, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+		"lkg-old", "2026-01-01T00:00:01Z", "test-lkg", GenerateChecksum(validOldPayload), "last_known_good", validOldPayload,
+	)
+
+	// 2. Insert a newer but CORRUPT LKG (simulating what would happen if a bad active was blindly moved to LKG)
+	corruptPayload := `{"Providers":{"corrupt":{"id":"corrupt"}}}`
+	_, _ = db.Exec(
+		`INSERT INTO registry_snapshots (version, created_at, reason, checksum, status, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+		"lkg-new-corrupt", "2026-01-02T00:00:01Z", "test-lkg", "bad-checksum", "last_known_good", corruptPayload,
+	)
+
+	// 3. Insert an active snapshot that is also corrupt
+	_, _ = db.Exec(
+		`INSERT INTO registry_snapshots (version, created_at, reason, checksum, status, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+		"active-corrupt", "2026-01-03T00:00:00Z", "test", "bad-checksum-2", "active", corruptPayload,
+	)
+
+	// InitRegistry should skip the corrupt active, skip the corrupt new LKG, and recover from the old valid LKG.
+	err := InitRegistry(db)
+	if err != nil {
+		t.Fatalf("expected InitRegistry to recover seamlessly, got %v", err)
+	}
+
+	state := GetActiveState()
+	if state == nil || state.Providers["old"] == nil {
+		t.Fatalf("expected to recover from oldest valid LKG state, but failed")
+	}
+
+	// Verify the corrupt active snapshot was flagged as corrupt
+	var activeStatus string
+	_ = db.QueryRow("SELECT status FROM registry_snapshots WHERE version = 'active-corrupt'").Scan(&activeStatus)
+	if activeStatus != "corrupt" {
+		t.Errorf("expected active snapshot to be marked corrupt, got %s", activeStatus)
+	}
+}

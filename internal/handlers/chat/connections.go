@@ -33,7 +33,7 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 	// Phase 5 Data Plane Integration: Intercept candidate lookup gracefully
 	if connectionID == "" && model != "" {
-		candidates := getActiveCandidates(nil, model)
+		candidates := getActiveCandidates(nil, h.Repo.RawDB(), model)
 		if len(candidates) > 0 {
 			// Find the best valid candidate that matches requested provider (if specified) and is not excluded
 			for _, cand := range candidates {
