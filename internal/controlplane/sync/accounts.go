@@ -9,10 +9,16 @@ import (
 	"9router/proxy/internal/log"
 )
 
+import "sync"
+
 var (
+	genMu           sync.RWMutex
 	lastSyncGenTime string
 	lastSyncGenCnt  int
 )
+
+// Injected Full Sync Query for Mock Testing Partial Failures
+var queryFullAccounts = "SELECT id, provider, isActive, createdAt, updatedAt FROM providerConnections"
 
 // SyncAccountsFromDB reads providerConnections and safely syncs metadata into the RegistryState
 // using a fast-path generation check to avoid expensive querying when no mutations occurred.
@@ -31,21 +37,25 @@ func SyncAccountsFromDB(db *sql.DB) error {
 	var currentGenTime sql.NullString
 	var currentGenCnt int
 	err := db.QueryRow("SELECT MAX(updatedAt), COUNT(*) FROM providerConnections").Scan(&currentGenTime, &currentGenCnt)
+
+	genTimeStr := ""
 	if err == nil {
-		genTimeStr := ""
 		if currentGenTime.Valid {
 			genTimeStr = currentGenTime.String
 		}
-		if genTimeStr == lastSyncGenTime && currentGenCnt == lastSyncGenCnt {
+
+		genMu.RLock()
+		isEqual := genTimeStr == lastSyncGenTime && currentGenCnt == lastSyncGenCnt
+		genMu.RUnlock()
+
+		if isEqual {
 			// No changes detected in the DB, safe to abort full sync
 			return nil
 		}
-		lastSyncGenTime = genTimeStr
-		lastSyncGenCnt = currentGenCnt
 	}
 
 	// 2. Full synchronization
-	rows, err := db.Query("SELECT id, provider, isActive, createdAt, updatedAt FROM providerConnections")
+	rows, err := db.Query(queryFullAccounts)
 	if err != nil {
 		return fmt.Errorf("failed to fetch provider connections: %w", err)
 	}
@@ -79,6 +89,12 @@ func SyncAccountsFromDB(db *sql.DB) error {
 	// Update in-memory registry securely.
 	registry.UpdateAccounts(syncedAccounts)
 	log.Info("sync", "synchronized accounts from DB", "count", len(syncedAccounts))
+
+	// Publish the new generation only after full scan succeeds
+	genMu.Lock()
+	lastSyncGenTime = genTimeStr
+	lastSyncGenCnt = currentGenCnt
+	genMu.Unlock()
 
 	return nil
 }
