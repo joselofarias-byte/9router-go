@@ -25,22 +25,44 @@ func InitRegistry(db *sql.DB) error {
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
+
+		isValid := false
 		if snap != nil {
 			if err := ValidateChecksum(snap.Checksum, snap.Payload); err != nil {
-				log.Warn("registry", "active snapshot checksum invalid, falling back to empty state", "err", err)
+				log.Warn("registry", "active snapshot checksum invalid, attempting last_known_good recovery", "err", err)
 			} else {
 				state, err := FromJSON(snap.Payload)
 				if err != nil {
-					log.Warn("registry", "failed to parse active snapshot, falling back to empty state", "err", err)
+					log.Warn("registry", "failed to parse active snapshot, attempting last_known_good recovery", "err", err)
 				} else {
 					stateMu.Lock()
 					activeState = state
 					lastKnownGood = state
 					stateMu.Unlock()
 					log.Info("registry", "Loaded active snapshot", "version", snap.Version)
-					return nil
+					isValid = true
 				}
 			}
+		}
+
+		// Attempt LKG recovery if active snapshot was invalid or missing
+		if !isValid {
+			lkg, lkgErr := GetLastKnownGoodSnapshot(db)
+			if lkgErr == nil && lkg != nil {
+				if err := ValidateChecksum(lkg.Checksum, lkg.Payload); err == nil {
+					if state, err := FromJSON(lkg.Payload); err == nil {
+						stateMu.Lock()
+						activeState = state
+						lastKnownGood = state
+						stateMu.Unlock()
+						log.Info("registry", "Recovered from last_known_good snapshot", "version", lkg.Version)
+						return nil
+					}
+				}
+			}
+			log.Warn("registry", "no valid snapshot or last_known_good available, falling back to empty state")
+		} else {
+			return nil
 		}
 	}
 
@@ -56,6 +78,30 @@ func InitRegistry(db *sql.DB) error {
 	log.Info("registry", "Initialized empty registry state")
 
 	return nil
+}
+
+// GetLastKnownGoodSnapshot returns the most recent 'last_known_good' snapshot.
+func GetLastKnownGoodSnapshot(db *sql.DB) (*Snapshot, error) {
+	if db == nil {
+		return nil, sql.ErrNoRows
+	}
+
+	var snap Snapshot
+	var createdAtStr string
+	err := db.QueryRow(
+		"SELECT version, created_at, reason, checksum, status, payload FROM registry_snapshots WHERE status = 'last_known_good' ORDER BY created_at DESC LIMIT 1",
+	).Scan(&snap.Version, &createdAtStr, &snap.Reason, &snap.Checksum, &snap.Status, &snap.Payload)
+
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := time.Parse(time.RFC3339, createdAtStr)
+	if err == nil {
+		snap.CreatedAt = t
+	}
+
+	return &snap, nil
 }
 
 // GetActiveState returns the current active registry state.

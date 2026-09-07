@@ -60,6 +60,11 @@ cross:
 	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-windows-amd64.exe ./cmd/9router-go/
 	@ls -lh $(BINARY_NAME)-*
 
+## build-termux — explicitly test and cross-compile Termux Android native compatibility
+build-termux:
+	GOOS=android GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-termux-arm64 ./cmd/9router-go/
+	@ls -lh $(BINARY_NAME)-termux-arm64
+
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	./$(BINARY_NAME) mitm enable

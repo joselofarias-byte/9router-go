@@ -75,6 +75,43 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 				newState.ProviderModels[k][subK] = &cp
 			}
 		}
+	}
+
+	// Synchronize Accounts from DB metadata
+	if o.db != nil {
+		rows, err := o.db.Query("SELECT id, provider, isActive, createdAt, updatedAt FROM providerConnections")
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id, provider, createdAt, updatedAt string
+				var isActive int
+				if err := rows.Scan(&id, &provider, &isActive, &createdAt, &updatedAt); err == nil {
+					// Safe import: strictly IDs and metadata, NEVER credentials.
+					acc := &registry.Account{
+						ID:         id,
+						ProviderID: provider,
+						IsActive:   isActive == 1,
+					}
+					if t, e := time.Parse(time.RFC3339, createdAt); e == nil {
+						acc.CreatedAt = t
+					}
+					if t, e := time.Parse(time.RFC3339, updatedAt); e == nil {
+						acc.UpdatedAt = t
+					}
+					newState.Accounts[id] = acc
+				}
+			}
+		} else {
+			log.Warn("orchestrator", "failed to sync accounts from db", "err", err)
+			// fallback to current state if DB query fails
+			if currentState != nil {
+				for k, v := range currentState.Accounts {
+					cp := *v
+					newState.Accounts[k] = &cp
+				}
+			}
+		}
+	} else if currentState != nil {
 		for k, v := range currentState.Accounts {
 			cp := *v
 			newState.Accounts[k] = &cp

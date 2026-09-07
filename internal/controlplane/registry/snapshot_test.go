@@ -93,14 +93,25 @@ func TestSnapshotChecksumValidation(t *testing.T) {
 		t.Fatalf("expected error on tampered checksum activate, got nil")
 	}
 
-	// InitRegistry should silently fallback to an empty state because active snapshot validation fails
+	// Insert a valid LKG snapshot
+	validPayload := `{"Providers":{"test":{"id":"test"}}}`
+	validChecksum := GenerateChecksum(validPayload)
+	_, _ = db.Exec(
+		`INSERT INTO registry_snapshots (version, created_at, reason, checksum, status, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+		"lkg-version", "2026-01-01T00:00:01Z", "test-lkg", validChecksum, "last_known_good", validPayload,
+	)
+
+	// InitRegistry should gracefully fail active checksum parsing, fallback to LKG, and succeed.
 	err = InitRegistry(db)
 	if err != nil {
-		t.Fatalf("expected InitRegistry to handle checksum failure without surfacing error, got %v", err)
+		t.Fatalf("expected InitRegistry to recover from LKG gracefully without surfacing error, got %v", err)
 	}
 
 	state := GetActiveState()
 	if state == nil {
-		t.Fatalf("expected InitRegistry to load empty state fallback")
+		t.Fatalf("expected InitRegistry to load LKG state fallback, got nil state")
+	}
+	if state.Providers["test"] == nil {
+		t.Fatalf("expected LKG state to have test provider, but did not")
 	}
 }
