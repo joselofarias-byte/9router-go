@@ -7,6 +7,7 @@ import (
 	"9router/proxy/internal/controlplane/routing"
 	cpsync "9router/proxy/internal/controlplane/sync"
 	"9router/proxy/internal/controlplane/trust"
+	"9router/proxy/internal/log"
 )
 
 // Legacy compatibility for Data Plane -> Control Plane transition
@@ -20,7 +21,13 @@ func getActiveCandidates(ctx context.Context, db *sql.DB, model string) []routin
 		// Sync is safely called on every request because it internally
 		// uses a cheap generation-based check preventing full queries/locks
 		// when no account mutations have occurred.
-		_ = cpsync.SyncAccountsFromDB(db)
+		err := cpsync.SyncAccountsFromDB(db)
+		if err != nil {
+			// If sync fails, do not route using potentially stale Control Plane state.
+			// Return nil to force fallback to the legacy Data Plane DB lookup path.
+			log.Error("routing", "control plane sync failed, aborting cp candidates", "error", err)
+			return nil
+		}
 	}
 
 	// For now, always use Balanced policy logic by default

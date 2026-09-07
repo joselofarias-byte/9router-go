@@ -16,15 +16,27 @@ func TestEngine_SelectCandidates(t *testing.T) {
 	state.Providers["p1"] = &registry.Provider{ID: "p1", IsActive: true}
 	state.Providers["p2"] = &registry.Provider{ID: "p2", IsActive: true}
 
+	state.Providers["p_inactive"] = &registry.Provider{ID: "p_inactive", IsActive: false}
+	// Missing provider test case: state.Providers doesn't have "p_missing"
+
 	state.ProviderModels["p1"] = map[string]*registry.ProviderModel{
-		"gpt-4": {ProviderID: "p1", ModelID: "gpt-4", PricingMode: "paid", IsActive: true},
+		"gpt-4":      {ProviderID: "p1", ModelID: "gpt-4", PricingMode: "paid", IsActive: true},
+		"gpt-4-drop": {ProviderID: "p1", ModelID: "gpt-4", PricingMode: "paid", IsActive: false}, // Should be excluded
 	}
 	state.ProviderModels["p2"] = map[string]*registry.ProviderModel{
 		"gpt-4": {ProviderID: "p2", ModelID: "gpt-4", PricingMode: "free", IsActive: true},
 	}
+	state.ProviderModels["p_inactive"] = map[string]*registry.ProviderModel{
+		"gpt-4": {ProviderID: "p_inactive", ModelID: "gpt-4", PricingMode: "paid", IsActive: true}, // Should be excluded because provider is inactive
+	}
+	state.ProviderModels["p_missing"] = map[string]*registry.ProviderModel{
+		"gpt-4": {ProviderID: "p_missing", ModelID: "gpt-4", PricingMode: "paid", IsActive: true}, // Should be excluded because provider is missing
+	}
 
 	state.Accounts["a1"] = &registry.Account{ID: "a1", ProviderID: "p1", IsActive: true}
 	state.Accounts["a2"] = &registry.Account{ID: "a2", ProviderID: "p2", IsActive: true}
+	state.Accounts["a_inactive"] = &registry.Account{ID: "a_inactive", ProviderID: "p_inactive", IsActive: true}
+	state.Accounts["a_missing"] = &registry.Account{ID: "a_missing", ProviderID: "p_missing", IsActive: true}
 
 	tm := trust.NewManager()
 	// Trust p1 more than p2

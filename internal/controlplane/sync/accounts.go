@@ -12,9 +12,9 @@ import (
 import "sync"
 
 var (
-	genMu           sync.RWMutex
-	lastSyncGenTime string
-	lastSyncGenCnt  int
+	genMu         sync.RWMutex
+	lastSyncGen   int
+	hasSyncedOnce bool
 )
 
 // Injected Full Sync Query for Mock Testing Partial Failures
@@ -33,25 +33,23 @@ func SyncAccountsFromDB(db *sql.DB) error {
 	}
 
 	// 1. Generation-based fast-path check
-	// Check the latest updatedAt and the absolute count of rows.
-	var currentGenTime sql.NullString
-	var currentGenCnt int
-	err := db.QueryRow("SELECT MAX(updatedAt), COUNT(*) FROM providerConnections").Scan(&currentGenTime, &currentGenCnt)
+	// Use monotonic generation tracking from controlplane_meta
+	var currentGen int
+	err := db.QueryRow("SELECT val FROM controlplane_meta WHERE key = 'accounts_generation'").Scan(&currentGen)
 
-	genTimeStr := ""
 	if err == nil {
-		if currentGenTime.Valid {
-			genTimeStr = currentGenTime.String
-		}
-
 		genMu.RLock()
-		isEqual := genTimeStr == lastSyncGenTime && currentGenCnt == lastSyncGenCnt
+		isEqual := currentGen == lastSyncGen
+		syncedOnce := hasSyncedOnce
 		genMu.RUnlock()
 
-		if isEqual {
+		if isEqual && syncedOnce {
 			// No changes detected in the DB, safe to abort full sync
 			return nil
 		}
+	} else if err != sql.ErrNoRows {
+		// Log the error but proceed with full sync as fallback if the meta table query fails
+		log.Warn("sync", "failed to read accounts_generation meta", "error", err)
 	}
 
 	// 2. Full synchronization
@@ -92,8 +90,8 @@ func SyncAccountsFromDB(db *sql.DB) error {
 
 	// Publish the new generation only after full scan succeeds
 	genMu.Lock()
-	lastSyncGenTime = genTimeStr
-	lastSyncGenCnt = currentGenCnt
+	lastSyncGen = currentGen
+	hasSyncedOnce = true
 	genMu.Unlock()
 
 	return nil

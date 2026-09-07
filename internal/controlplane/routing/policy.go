@@ -45,9 +45,25 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 	// and expand requestedModel to all candidate models in the pool.
 	// For now, we do a direct lookup of all ProviderModels matching the requested ID.
 	for provID, providerModels := range state.ProviderModels {
+		// Filter out inactive or missing providers entirely
+		p, ok := state.Providers[provID]
+		if !ok || p == nil || !p.IsActive {
+			continue
+		}
+
 		for _, pm := range providerModels {
+			// Defensively skip nil entries
+			if pm == nil {
+				continue
+			}
+
 			// Basic filtering (match requested name/alias)
 			if pm.ModelID != requestedModel {
+				continue
+			}
+
+			// Filter out inactive models
+			if !pm.IsActive {
 				continue
 			}
 
@@ -59,6 +75,9 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 
 			// Find accounts for this provider
 			for _, acc := range state.Accounts {
+				if acc == nil {
+					continue
+				}
 				if acc.ProviderID != provID || !acc.IsActive {
 					continue
 				}

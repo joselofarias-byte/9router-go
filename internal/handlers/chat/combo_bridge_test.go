@@ -23,6 +23,23 @@ func TestGetActiveCandidates(t *testing.T) {
 	}
 }
 
+func TestGetActiveCandidates_SyncFailure(t *testing.T) {
+	// Simple stub test to ensure a DB failure triggers fallback by returning nil.
+	tempDB := "test_active_candidates_syncfail.db"
+	defer os.Remove(tempDB)
+	db, _ := sql.Open("sqlite", tempDB)
+	defer db.Close()
+	// Deliberately do NOT create providerConnections so SyncAccountsFromDB will error.
+
+	registry.InitRegistry(nil)
+	nodes := getActiveCandidates(context.Background(), db, "test-model")
+
+	// Should be nil, dropping out to the fallback logic
+	if nodes != nil {
+		t.Errorf("expected nil nodes on sync failure, got %d", len(nodes))
+	}
+}
+
 // Stub Adapter to inject a candidate
 type mockAdapter struct{}
 func (m *mockAdapter) SourceID() string { return "mock" }
@@ -48,6 +65,8 @@ func TestActiveCandidatesWithDBSync(t *testing.T) {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);
+		CREATE TABLE controlplane_meta (key TEXT PRIMARY KEY, val INTEGER NOT NULL);
+		INSERT INTO controlplane_meta (key, val) VALUES ('accounts_generation', 1);
 		CREATE TABLE registry_snapshots (
 			version TEXT PRIMARY KEY,
 			created_at TEXT NOT NULL,

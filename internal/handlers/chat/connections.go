@@ -53,10 +53,20 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 				// Candidate is good. Fetch real DB credentials using the routed AccountID.
 				cpConn, cpErr := h.Repo.GetProviderConnectionByID(cand.AccountID)
-				if cpErr == nil && cpConn != nil {
+				if cpErr == nil && cpConn != nil && cpConn.IsActive == 1 {
+					// Re-check dynamic blocks that the static CP policy might have missed
+					if locked, _ := h.Repo.IsConnectionModelLocked(cpConn.ID, model); locked {
+						continue
+					}
+					if cand.ProviderID == "antigravity" && IsAntigravityModelBlocked(cpConn.ID, model) {
+						continue
+					}
+
 					log.Info("routing", "control plane route selected", "model", model, "provider", cand.ProviderID, "account", cand.AccountID)
 					var data ConnectionData
-					_ = json.Unmarshal([]byte(cpConn.Data), &data)
+					if err := json.Unmarshal([]byte(cpConn.Data), &data); err != nil {
+						return nil, nil, fmt.Errorf("failed to parse connection data for account %s: %w", cand.AccountID, err)
+					}
 					return cpConn, &data, nil
 				}
 			}
