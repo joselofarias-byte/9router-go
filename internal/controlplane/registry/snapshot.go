@@ -53,30 +53,48 @@ func InitRegistry(db *sql.DB) error {
 			}
 
 			// Iterate through LKGs descending to find the first valid one
+			// We cannot insert while holding the rows cursor open due to SQLite locks
+			var validLKG *Snapshot
 			rows, err := db.Query("SELECT version, created_at, reason, checksum, status, payload FROM registry_snapshots WHERE status = 'last_known_good' ORDER BY created_at DESC")
 			if err == nil {
-				defer rows.Close()
-				recovered := false
 				for rows.Next() {
 					var lkg Snapshot
 					var createdAtStr string
 					if err := rows.Scan(&lkg.Version, &createdAtStr, &lkg.Reason, &lkg.Checksum, &lkg.Status, &lkg.Payload); err == nil {
 						if err := ValidateChecksum(lkg.Checksum, lkg.Payload); err == nil {
-							if state, err := FromJSON(lkg.Payload); err == nil {
-								stateMu.Lock()
-								activeState = state
-								lastKnownGood = state
-								stateMu.Unlock()
-								log.Info("registry", "Recovered from last_known_good snapshot", "version", lkg.Version)
-								recovered = true
-
+							if _, err := FromJSON(lkg.Payload); err == nil {
+								validLKG = &lkg
 								break
 							}
 						}
 					}
 				}
-				if recovered {
-					return nil
+				rows.Close()
+			}
+
+			if validLKG != nil {
+				if state, err := FromJSON(validLKG.Payload); err == nil {
+					// Persist the recovered snapshot as the new active snapshot
+					newVersion := uuid.New().String()
+					nowStr := time.Now().UTC().Format(time.RFC3339)
+					reason := fmt.Sprintf("recovery_from_%s", validLKG.Version)
+
+					_, execErr := db.Exec(
+						`INSERT INTO registry_snapshots (version, created_at, reason, checksum, status, payload)
+						VALUES (?, ?, ?, ?, ?, ?)`,
+						newVersion, nowStr, reason, validLKG.Checksum, "active", validLKG.Payload,
+					)
+
+					if execErr == nil {
+						stateMu.Lock()
+						activeState = state
+						lastKnownGood = state
+						stateMu.Unlock()
+						log.Info("registry", "Recovered from last_known_good snapshot and persisted as active", "lkg_version", validLKG.Version, "new_active_version", newVersion)
+						return nil
+					} else {
+						log.Warn("registry", "Failed to persist recovered active snapshot", "err", execErr)
+					}
 				}
 			}
 			log.Warn("registry", "no valid snapshot or last_known_good available, falling back to empty state")
@@ -223,12 +241,22 @@ func ActivateSnapshot(db *sql.DB, version string) error {
 	return nil
 }
 
-// UpdateAccounts safely replaces the accounts map in the active state.
+// UpdateAccounts safely replaces the accounts map in the active state
+// via a Copy-on-Write operation, preventing data races during concurrent read/iteration.
 func UpdateAccounts(accounts map[string]*Account) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	if activeState != nil {
-		activeState.Accounts = accounts
+		newState := &RegistryState{
+			Providers:      activeState.Providers,
+			Models:         activeState.Models,
+			ProviderModels: activeState.ProviderModels,
+			Accounts:       accounts,
+		}
+		activeState = newState
+		if lastKnownGood == nil {
+			lastKnownGood = newState
+		}
 	}
 }
 

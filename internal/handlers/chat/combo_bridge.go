@@ -3,8 +3,6 @@ package chat
 import (
 	"context"
 	"database/sql"
-	"sync"
-	"time"
 
 	"9router/proxy/internal/controlplane/routing"
 	cpsync "9router/proxy/internal/controlplane/sync"
@@ -16,21 +14,13 @@ import (
 var globalTrustManager = trust.NewManager()
 var globalRoutingEngine = &routing.Engine{TrustManager: globalTrustManager}
 
-var (
-	lastSyncTime time.Time
-	syncMu       sync.Mutex
-)
-
 // getActiveCandidates resolves the request routing pool.
 func getActiveCandidates(ctx context.Context, db *sql.DB, model string) []routing.RouteNode {
 	if db != nil {
-		syncMu.Lock()
-		// perform a cheap metadata sync if older than 5 seconds
-		if time.Since(lastSyncTime) > 5*time.Second {
-			cpsync.SyncAccountsFromDB(db)
-			lastSyncTime = time.Now()
-		}
-		syncMu.Unlock()
+		// Sync is safely called on every request because it internally
+		// uses a cheap generation-based check preventing full queries/locks
+		// when no account mutations have occurred.
+		_ = cpsync.SyncAccountsFromDB(db)
 	}
 
 	// For now, always use Balanced policy logic by default

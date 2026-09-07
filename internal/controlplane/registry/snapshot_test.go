@@ -170,4 +170,22 @@ func TestSnapshotLKG_CorruptChain(t *testing.T) {
 	if activeStatus != "corrupt" {
 		t.Errorf("expected active snapshot to be marked corrupt, got %s", activeStatus)
 	}
+
+	// Verify that a new active snapshot was inserted in the DB from the recovery
+	var recoveredActiveCount int
+	_ = db.QueryRow("SELECT COUNT(*) FROM registry_snapshots WHERE status = 'active'").Scan(&recoveredActiveCount)
+	if recoveredActiveCount != 1 {
+		t.Errorf("expected exactly 1 active snapshot after recovery, got %d", recoveredActiveCount)
+	}
+
+	// Re-InitRegistry to simulate restart and ensure the newly recovered active snapshot remains mounted correctly
+	err = InitRegistry(db)
+	if err != nil {
+		t.Fatalf("expected InitRegistry to succeed on restart after recovery, got %v", err)
+	}
+
+	restartedState := GetActiveState()
+	if restartedState == nil || restartedState.Providers["old"] == nil {
+		t.Fatalf("expected restarted registry to maintain the recovered 'old' state")
+	}
 }

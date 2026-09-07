@@ -55,4 +55,25 @@ func TestSyncAccountsFromDB(t *testing.T) {
 	if state.Accounts["acc-2"].ProviderID != "prov-2" || state.Accounts["acc-2"].IsActive {
 		t.Errorf("acc-2 incorrectly synced")
 	}
+
+	// Fast-path test: Calling again should hit generation check without re-parsing/syncing full table
+	err := SyncAccountsFromDB(db)
+	if err != nil {
+		t.Errorf("fast-path sync failed: %v", err)
+	}
+
+	// Mutation test: Simulate update -> forces sync
+	time.Sleep(1 * time.Second) // Ensure noticeable timestamp change
+	newTime := time.Now().Format(time.RFC3339)
+	_, _ = db.Exec(`UPDATE providerConnections SET isActive = 1, updatedAt = ? WHERE id = 'acc-2'`, newTime)
+
+	err = SyncAccountsFromDB(db)
+	if err != nil {
+		t.Errorf("sync failed after mutation: %v", err)
+	}
+
+	state = registry.GetActiveState()
+	if !state.Accounts["acc-2"].IsActive {
+		t.Errorf("acc-2 state failed to update synchronously after mutation")
+	}
 }
