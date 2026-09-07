@@ -17,22 +17,9 @@ func (h *ChatHandler) HandleAdminRegistry(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Ensure we don't leak plaintext auth credentials in the admin API
-	safeState := &registry.RegistryState{
-		Providers:      state.Providers,
-		Models:         state.Models,
-		ProviderModels: state.ProviderModels,
-		Accounts:       make(map[string]*registry.Account),
-	}
-
-	// Redact accounts
-	for id, acc := range state.Accounts {
-		safeAcc := *acc
-		safeAcc.AuthData = "[REDACTED]"
-		safeState.Accounts[id] = &safeAcc
-	}
-
-	handlerutil.WriteJSON(w, http.StatusOK, safeState)
+	// AuthData has been safely removed from the Registry schema,
+	// so the snapshot payload is safe to return directly.
+	handlerutil.WriteJSON(w, http.StatusOK, state)
 }
 
 // HandleAdminExplainRoute explains routing logic for a model and policy.

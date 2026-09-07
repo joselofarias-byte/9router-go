@@ -31,6 +31,39 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
 
+	// Phase 5 Data Plane Integration: Intercept candidate lookup gracefully
+	if connectionID == "" && model != "" {
+		candidates := getActiveCandidates(nil, model)
+		if len(candidates) > 0 {
+			// Find the best valid candidate that matches requested provider (if specified) and is not excluded
+			for _, cand := range candidates {
+				if provider != "" && cand.ProviderID != provider {
+					continue
+				}
+				excluded := false
+				for _, ex := range excludeIDs {
+					if ex == cand.AccountID {
+						excluded = true
+						break
+					}
+				}
+				if excluded {
+					continue
+				}
+
+				// Candidate is good. Fetch real DB credentials using the routed AccountID.
+				cpConn, cpErr := h.Repo.GetProviderConnectionByID(cand.AccountID)
+				if cpErr == nil && cpConn != nil {
+					log.Info("routing", "control plane route selected", "model", model, "provider", cand.ProviderID, "account", cand.AccountID)
+					var data ConnectionData
+					_ = json.Unmarshal([]byte(cpConn.Data), &data)
+					return cpConn, &data, nil
+				}
+			}
+		}
+	}
+
+	// Fallback to legacy behavior if Control Plane yields no candidates or is missing state
 	var conn *models.ProviderConnection
 	var err error
 

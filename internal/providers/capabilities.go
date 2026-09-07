@@ -346,8 +346,20 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 	}
 
 	// 5. Dynamic synced catalog overlay (only ever turns capabilities ON)
-	// (Replaced by Discovery Engine Candidates / Registry in Control Plane,
-	// returning default basic fallback for now; will hook up to RegistryState soon)
+	if dynamic := GetCatalogModalities(model); dynamic != nil {
+		if dynamic.Vision {
+			res.Vision = true
+		}
+		if dynamic.PDF {
+			res.PDF = true
+		}
+		if dynamic.AudioInput {
+			res.AudioInput = true
+		}
+		if dynamic.VideoInput {
+			res.VideoInput = true
+		}
+	}
 
 	capsCacheMu.Lock()
 	capsCache[key] = res

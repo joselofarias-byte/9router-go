@@ -9,13 +9,12 @@ import (
 	"9router/proxy/internal/controlplane/registry"
 )
 
-func TestHandleAdminRegistry_RedactsAuth(t *testing.T) {
+func TestHandleAdminRegistry_NoAuthData(t *testing.T) {
 	// Setup mock state
 	registry.InitRegistry(nil)
 	state := registry.GetActiveState()
 	state.Accounts["test-acc"] = &registry.Account{
 		ID:       "test-acc",
-		AuthData: "super_secret_key",
 		IsActive: true,
 	}
 
@@ -37,9 +36,6 @@ func TestHandleAdminRegistry_RedactsAuth(t *testing.T) {
 	acc := res.Accounts["test-acc"]
 	if acc == nil {
 		t.Fatal("Expected account in response")
-	}
-	if acc.AuthData != "[REDACTED]" {
-		t.Errorf("Expected AuthData to be redacted, got %s", acc.AuthData)
 	}
 }
 

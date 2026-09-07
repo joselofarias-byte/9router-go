@@ -26,16 +26,21 @@ func InitRegistry(db *sql.DB) error {
 			return err
 		}
 		if snap != nil {
-			state, err := FromJSON(snap.Payload)
-			if err != nil {
-				return err
+			if err := ValidateChecksum(snap.Checksum, snap.Payload); err != nil {
+				log.Warn("registry", "active snapshot checksum invalid, falling back to empty state", "err", err)
+			} else {
+				state, err := FromJSON(snap.Payload)
+				if err != nil {
+					log.Warn("registry", "failed to parse active snapshot, falling back to empty state", "err", err)
+				} else {
+					stateMu.Lock()
+					activeState = state
+					lastKnownGood = state
+					stateMu.Unlock()
+					log.Info("registry", "Loaded active snapshot", "version", snap.Version)
+					return nil
+				}
 			}
-			stateMu.Lock()
-			activeState = state
-			lastKnownGood = state
-			stateMu.Unlock()
-			log.Info("registry", "Loaded active snapshot", "version", snap.Version)
-			return nil
 		}
 	}
 
@@ -106,10 +111,16 @@ func ActivateSnapshot(db *sql.DB, version string) error {
 	}
 
 	var payload string
-	err = tx.QueryRow("SELECT payload FROM registry_snapshots WHERE version = ?", version).Scan(&payload)
+	var checksum string
+	err = tx.QueryRow("SELECT payload, checksum FROM registry_snapshots WHERE version = ?", version).Scan(&payload, &checksum)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to load snapshot: %w", err)
+	}
+
+	if err := ValidateChecksum(checksum, payload); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("snapshot validation failed before activation: %w", err)
 	}
 
 	newState, err := FromJSON(payload)

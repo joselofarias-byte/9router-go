@@ -45,11 +45,8 @@ func SetupRoutes(r interface {
 	r.Get("/models", chatH.HandleModels)
 	r.Get("/models/info", chatH.HandleModelsInfo)
 	r.Get("/models/{kind}", chatH.HandleModelsByKind)
-
-	// Control Plane Admin APIs
-	r.Get("/api/admin/registry", chatH.HandleAdminRegistry)
-	r.Get("/api/admin/explain-route", chatH.HandleAdminExplainRoute)
-
+	r.Get("/api/models/catalog-sync", chatH.HandleCatalogSyncStatus)
+	r.Post("/api/models/catalog-sync", chatH.HandleCatalogSyncTrigger)
 	r.Post("/chat/completions", chatH.HandleChatCompletions)
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)

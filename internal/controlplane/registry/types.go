@@ -39,7 +39,9 @@ type ProviderModel struct {
 type Account struct {
 	ID         string    `json:"id"`
 	ProviderID string    `json:"providerId"`
-	AuthData   string    `json:"authData"` // JSON blob containing credentials
+	// Note: AuthData is intentionally omitted from the Registry schema to prevent
+	// plaintext credential exposure in registry JSON snapshots. Data Plane
+	// handles credential injection securely from the underlying DB rows.
 	IsActive   bool      `json:"isActive"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`

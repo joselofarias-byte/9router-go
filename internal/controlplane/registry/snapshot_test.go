@@ -62,3 +62,45 @@ func TestSnapshotCycle(t *testing.T) {
 		t.Errorf("expected version %s, got %s", snap.Version, active.Version)
 	}
 }
+
+func TestSnapshotChecksumValidation(t *testing.T) {
+	tempDB := "test_snapshots_validation.db"
+	defer os.Remove(tempDB)
+
+	db, _ := sql.Open("sqlite", tempDB)
+	defer db.Close()
+	_, _ = db.Exec(`
+		CREATE TABLE registry_snapshots (
+			version TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			checksum TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL
+		);
+	`)
+
+	// Insert tampered snapshot
+	payload := `{"Providers":{}}`
+	_, _ = db.Exec(
+		`INSERT INTO registry_snapshots (version, created_at, reason, checksum, status, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bad-version", "2026-01-01T00:00:00Z", "test", "tampered-checksum-123", "active", payload,
+	)
+
+	// Validate Checksum fails
+	err := ActivateSnapshot(db, "bad-version")
+	if err == nil {
+		t.Fatalf("expected error on tampered checksum activate, got nil")
+	}
+
+	// InitRegistry should silently fallback to an empty state because active snapshot validation fails
+	err = InitRegistry(db)
+	if err != nil {
+		t.Fatalf("expected InitRegistry to handle checksum failure without surfacing error, got %v", err)
+	}
+
+	state := GetActiveState()
+	if state == nil {
+		t.Fatalf("expected InitRegistry to load empty state fallback")
+	}
+}

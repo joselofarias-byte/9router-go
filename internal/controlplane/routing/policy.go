@@ -96,12 +96,13 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 		}
 	}
 
-	// Sort candidates by score descending
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Score.Total == candidates[j].Score.Total {
-			// Random tie-break for equal scores to distribute load
-			return rand.Float32() > 0.5
-		}
+	// Pre-shuffle to distribute load among equally scored nodes
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
+
+	// Sort candidates by score descending (stable due to preceding shuffle)
+	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].Score.Total > candidates[j].Score.Total
 	})
 

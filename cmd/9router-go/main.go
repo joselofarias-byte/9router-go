@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,9 +17,12 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/config"
+	"9router/proxy/internal/controlplane/discovery"
+	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -148,6 +152,22 @@ func runServer(cCtx *cli.Context) error {
 	}
 	defer conn.Close()
 
+	// Initialize Control Plane Registry from DB Snapshot
+	registryErr := registry.InitRegistry(conn)
+	if registryErr != nil {
+		log.Printf("[config] registry init warning: %v", registryErr)
+	}
+
+	// Start Control Plane Orchestrator (background discovery)
+	adapters := []discovery.Adapter{
+		discovery.NewModelsDevAdapter(nil),
+		&discovery.RelayinAdapter{},
+		&discovery.ModelRadarAdapter{},
+		&discovery.DataAPIAdapter{},
+	}
+	orchestrator := discovery.NewOrchestrator(conn, adapters)
+	orchestrator.Start(context.Background())
+
 	repo := db.NewRepo(conn)
 
 	ts := handlers.NewTokenSaverConfig(cCtx.Bool("rtk"), cCtx.Bool("caveman"), cCtx.Bool("ponytail"))
@@ -178,6 +198,8 @@ func runServer(cCtx *cli.Context) error {
 	}
 	updater.StartBackgroundCheck(context.Background(), autoUpdate)
 	log.Printf("[config] auto-update enabled=%v", autoUpdate)
+	catalogPath := filepath.Join(filepath.Dir(cfg.DatabasePath), "model-catalog.json")
+	providers.StartBackgroundCatalogSync(context.Background(), nil, catalogPath)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)

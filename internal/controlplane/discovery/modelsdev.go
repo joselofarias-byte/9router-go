@@ -12,7 +12,7 @@ import (
 	"9router/proxy/internal/log"
 )
 
-const ModelsDevCatalogURL = "https://models.dev/api.json"
+var ModelsDevCatalogURL = "https://models.dev/api.json"
 
 type ModelsDevAdapter struct {
 	client *http.Client
