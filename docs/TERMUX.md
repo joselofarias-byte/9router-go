@@ -1,5 +1,19 @@
 # 9router Go: Termux nativo (ARM64)
 
+## Corrección fabric.3: DNS Android
+
+Las compilaciones fabric.2 desactivaban CGO: podían iniciar y atender en
+localhost pero fallar al resolver proveedores. fabric.3 compila con CGO y
+netcgo para usar getaddrinfo de Bionic. GitHub compila con el Android NDK;
+en Termux se necesita clang además de Go si se compila localmente.
+No se fuerza un DNS público ni se cambia la configuración de red del usuario.
+
+El paquete incluye 9router-netcheck-android-arm64. Ejecutarlo antes de
+reemplazar el gateway: comprueba DNS y TLS de los dos hosts de Grok sin
+enviar credenciales, solicitudes HTTP ni prompts. Debe terminar con código
+0. Esta comprobación debe realizarse en el teléfono; compilar no demuestra
+conectividad real ni validez de cuentas.
+
 Esta entrega es un ejecutable Android ARM64, no una APK. Se ejecuta dentro
 de Termux sin iniciar una distribución en PRoot. Una APK requeriría un
 proyecto Android separado con servicio, interfaz y ciclo de vida propios.

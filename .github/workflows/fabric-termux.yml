@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,6 +20,10 @@ jobs:
         run: go test -race ./internal/db ./internal/handlers/chat ./internal/handlers ./internal/middleware ./internal/updater ./internal/proxy -run '^(TestFabric|TestUpstreamError)' -count=1
       - name: Compile native Android ARM64
         run: bash scripts/build-termux.sh
+      - name: Verify Android system DNS linkage
+        run: |
+          readelf --dyn-syms --wide dist/termux/9router-go-android-arm64 | grep getaddrinfo
+          readelf --dyn-syms --wide dist/termux/9router-netcheck-android-arm64 | grep getaddrinfo
       - uses: actions/upload-artifact@v4
         with:
           name: 9router-go-termux-arm64
