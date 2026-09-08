@@ -167,9 +167,6 @@ func runServer(cCtx *cli.Context) error {
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
 		discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey),
-		&discovery.RelayinAdapter{},
-		&discovery.ModelRadarAdapter{},
-		&discovery.DataAPIAdapter{},
 	}
 	orchestrator := discovery.NewOrchestrator(conn, adapters)
 	orchestrator.Start(context.Background())
