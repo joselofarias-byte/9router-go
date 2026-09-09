@@ -160,14 +160,19 @@ func runServer(cCtx *cli.Context) error {
 
 	// Start Control Plane Orchestrator (background discovery)
 
-	// Read OrcaRouter configuration from environment for Control Plane discovery
-	orcaBaseURL := os.Getenv("ORCAROUTER_BASE_URL")
-	orcaAPIKey := os.Getenv("ORCAROUTER_API_KEY")
-
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
-		discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey),
+		discovery.NewUnoRouterAdapter(nil),
 	}
+
+	// Read OrcaRouter configuration from environment for Control Plane discovery.
+	// Only instantiate if configured to keep it purely opt-in without polling if unused.
+	orcaBaseURL := os.Getenv("ORCAROUTER_BASE_URL")
+	orcaAPIKey := os.Getenv("ORCAROUTER_API_KEY")
+	if orcaBaseURL != "" && orcaAPIKey != "" {
+		adapters = append(adapters, discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey))
+	}
+
 	orchestrator := discovery.NewOrchestrator(conn, adapters)
 	orchestrator.Start(context.Background())
 
