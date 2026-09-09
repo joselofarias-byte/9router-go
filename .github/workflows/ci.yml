@@ -31,3 +31,12 @@ jobs:
 
       - name: Build Termux Android arm64
         run: make build-termux
+
+      - name: Upload Termux Android arm64 artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 9router-go-termux-arm64-${{ github.sha }}
+          path: 9router-go-termux-arm64
+          if-no-files-found: error
+          retention-days: 14
