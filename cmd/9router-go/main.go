@@ -162,7 +162,13 @@ func runServer(cCtx *cli.Context) error {
 
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
-		discovery.NewUnoRouterAdapter(nil),
+	}
+
+	unoAPIKey := os.Getenv("UNOROUTER_API_KEY")
+	if unoAPIKey != "" {
+		adapters = append(adapters, discovery.NewUnoRouterAdapter(nil, unoAPIKey))
+	} else {
+		log.Printf("[config] unorouter adapter skipped (UNOROUTER_API_KEY not set)")
 	}
 
 	// Read OrcaRouter configuration from environment for Control Plane discovery.

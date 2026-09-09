@@ -11,11 +11,15 @@ func TestUnoRouterAdapter_Discover(t *testing.T) {
 	mockResponse := `{
 		"data": [
 			{"id": "gpt-4:free"},
-			{"id": "claude-3-opus"}
+			{"id": "claude-3-opus"},
+			{"id": "deepseek-chat-free"},
+			{"id": ""}
 		]
 	}`
 
+	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(mockResponse))
 	}))
@@ -25,14 +29,18 @@ func TestUnoRouterAdapter_Discover(t *testing.T) {
 	defer func() { UnoRouterCatalogURL = origURL }()
 	UnoRouterCatalogURL = server.URL
 
-	adapter := NewUnoRouterAdapter(server.Client())
+	adapter := NewUnoRouterAdapter(server.Client(), "test-key-123")
 	candidates, err := adapter.Discover(context.Background())
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if len(candidates) != 2 {
-		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	if authHeader != "Bearer test-key-123" {
+		t.Errorf("expected Auth header to be sent, got: %s", authHeader)
+	}
+
+	if len(candidates) != 3 {
+		t.Fatalf("expected 3 valid candidates (empty dropped), got %d", len(candidates))
 	}
 
 	c1 := candidates[0]
@@ -43,5 +51,10 @@ func TestUnoRouterAdapter_Discover(t *testing.T) {
 	c2 := candidates[1]
 	if c2.ModelID != "claude-3-opus" || c2.PricingMode != "unknown" {
 		t.Errorf("unexpected paid candidate: %+v", c2)
+	}
+
+	c3 := candidates[2]
+	if c3.ModelID != "deepseek-chat-free" || c3.PricingMode != "unknown" {
+		t.Errorf("expected non-:free exact suffix to remain unknown, got: %+v", c3)
 	}
 }

@@ -16,13 +16,14 @@ var UnoRouterCatalogURL = "https://api.unorouter.com/v1/models"
 
 type UnoRouterAdapter struct {
 	client *http.Client
+	apiKey string
 }
 
-func NewUnoRouterAdapter(client *http.Client) *UnoRouterAdapter {
+func NewUnoRouterAdapter(client *http.Client, apiKey string) *UnoRouterAdapter {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &UnoRouterAdapter{client: client}
+	return &UnoRouterAdapter{client: client, apiKey: apiKey}
 }
 
 func (a *UnoRouterAdapter) SourceID() string {
@@ -33,6 +34,10 @@ func (a *UnoRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UnoRouterCatalogURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create unorouter request: %w", err)
+	}
+
+	if a.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer " + a.apiKey)
 	}
 
 	resp, err := a.client.Do(req)
@@ -64,9 +69,14 @@ func (a *UnoRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 	now := time.Now().UTC()
 
 	for _, m := range payload.Data {
-		// Preserve exact ID for routing
+		if m.ID == "" {
+			continue
+		}
+
+		// Only exact :free suffix defines a guaranteed free tier routing for UnoRouter.
+		// Others are discarded from free routing.
 		pricingMode := "unknown"
-		if strings.HasSuffix(m.ID, ":free") || strings.Contains(m.ID, "free") {
+		if strings.HasSuffix(m.ID, ":free") {
 			pricingMode = "free"
 		}
 
