@@ -1,32 +1,43 @@
 # Using 9router-go with OpenCode
 
-9router-go is the recommended data plane and proxy gateway for connecting **OpenCode** to any of your configured providers safely. OpenCode acts strictly as the human/agent UI cockpit, while 9router-go handles routing, locks, quota, and failovers.
+9router-go is the canonical data plane and proxy gateway for OpenCode. OpenCode is the cockpit; 9router-go/Fabric handles provider routing, locks, quota, health, verification, and failover.
 
 ## Configuration
 
-In your OpenCode settings (usually `opencode.json` or equivalent configuration interface), add a custom OpenAI-compatible provider pointing to your local 9router-go instance.
-
-Here is a copy-paste valid example:
+Create or update `opencode.json` with a custom OpenAI-compatible provider that points to the local 9router-go `/v1` endpoint.
 
 ```json
 {
-  "$schema": "https://opencode.dev/schema.json",
-  "provider.9router": {
-    "npm": "@ai-sdk/openai-compatible",
-    "options": {
-      "baseURL": "http://127.0.0.1:20128/v1",
-      "apiKey": "your_9router_api_key_or_empty_if_unsecured"
-    },
-    "models": {
-      "gpt-4o": {},
-      "gpt-4o:free": {},
-      "claude-3-5-sonnet-20240620": {},
-      "deepseek-chat": {}
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "9router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "9router-go Fabric",
+      "options": {
+        "baseURL": "http://127.0.0.1:20128/v1",
+        "apiKey": "{env:NINE_ROUTER_API_KEY}"
+      },
+      "models": {
+        "gpt-4o": {
+          "name": "gpt-4o via 9router"
+        },
+        "gpt-4o:free": {
+          "name": "gpt-4o:free via 9router"
+        },
+        "claude-3-5-sonnet-20240620": {
+          "name": "claude-3-5-sonnet via 9router"
+        },
+        "deepseek-chat": {
+          "name": "deepseek-chat via 9router"
+        }
+      }
     }
   }
 }
 ```
 
-*Note: You do not need to build a custom IDE extension or parallel catalog for OpenCode; its built-in OpenAI compat mode works seamlessly with 9router's translation layer.*
+Set `NINE_ROUTER_API_KEY` only when the local 9router-go endpoint requires authentication. If the local endpoint is intentionally unsecured, omit `options.apiKey` instead of placing a literal secret in `opencode.json`.
 
-By explicitly listing `models` under the `provider.9router` block, OpenCode understands exactly what is available and avoids sending traffic to unrouted endpoints or colliding with internal default `models.dev` definitions.
+OpenCode must point to 9router-go/Fabric, not directly to UnoRouter or another upstream provider. UnoRouter remains an optional Fabric discovery/provider source configured separately through `UNOROUTER_API_KEY`; its credentials are not part of the OpenCode configuration above.
+
+The `models` map should contain the exact model IDs you want visible in OpenCode. Keep the IDs unchanged so 9router-go can apply its existing translation, routing, health, quota, and fallback behavior without a parallel catalog or IDE-specific routing layer.
