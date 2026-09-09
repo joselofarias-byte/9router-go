@@ -4,10 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  test:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,5 +23,11 @@ jobs:
       - name: Test
         run: go test ./... -v
 
+      - name: Race — Fabric and routing bridge
+        run: go test -race ./internal/controlplane/... ./internal/handlers/chat/...
+
       - name: Build
         run: go build -ldflags="-s -w" -o /tmp/9router-go ./cmd/9router-go/
+
+      - name: Build Termux Android arm64
+        run: make build-termux
