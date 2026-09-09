@@ -234,6 +234,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			}
 
 			// Tool calls → functionCall parts
+			firstFunctionCallSeen := false
 			for _, tc := range msg.ToolCalls {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -241,8 +242,12 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 				}
 				ts := extractThoughtSig(tc.ID)
 				if ts == "" {
+					ts = GetGeminiThoughtSignature(tc.ID, "")
+				}
+				if ts == "" && !firstFunctionCallSeen {
 					ts = DefaultThinkingSignature
 				}
+				firstFunctionCallSeen = true
 				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args}, ThoughtSignature: ts}
 				parts = append(parts, gp)
 			}
@@ -587,6 +592,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						sig = state.LastThoughtSignature
 					}
 					if sig != "" {
+						StoreGeminiThoughtSignature(id, sig, state.MessageId)
 						id += "__ts__" + sig
 					}
 					delta["tool_calls"] = []map[string]interface{}{

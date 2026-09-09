@@ -217,10 +217,14 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 
 			// Add assistant tool calls
 			for _, tc := range msg.ToolCalls {
+				name := strings.TrimSpace(tc.Function.Name)
+				if name == "" {
+					continue // Skip nameless calls — strict Responses upstreams reject them (#444)
+				}
 				inputItems = append(inputItems, map[string]interface{}{
 					"type":      "function_call",
 					"call_id":   clampCallID(tc.ID),
-					"name":      tc.Function.Name,
+					"name":      name,
 					"arguments": tc.Function.Arguments,
 				})
 			}

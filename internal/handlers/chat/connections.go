@@ -31,6 +31,49 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
 
+	// Phase 5 Data Plane Integration: Intercept candidate lookup gracefully
+	if connectionID == "" && model != "" {
+		candidates := getActiveCandidates(nil, h.Repo.RawDB(), model)
+		if len(candidates) > 0 {
+			// Find the best valid candidate that matches requested provider (if specified) and is not excluded
+			for _, cand := range candidates {
+				if provider != "" && cand.ProviderID != provider {
+					continue
+				}
+				excluded := false
+				for _, ex := range excludeIDs {
+					if ex == cand.AccountID {
+						excluded = true
+						break
+					}
+				}
+				if excluded {
+					continue
+				}
+
+				// Candidate is good. Fetch real DB credentials using the routed AccountID.
+				cpConn, cpErr := h.Repo.GetProviderConnectionByID(cand.AccountID)
+				if cpErr == nil && cpConn != nil && cpConn.IsActive == 1 {
+					// Re-check dynamic blocks that the static CP policy might have missed
+					if locked, _ := h.Repo.IsConnectionModelLocked(cpConn.ID, model); locked {
+						continue
+					}
+					if cand.ProviderID == "antigravity" && IsAntigravityModelBlocked(cpConn.ID, model) {
+						continue
+					}
+
+					log.Info("routing", "control plane route selected", "model", model, "provider", cand.ProviderID, "account", cand.AccountID)
+					var data ConnectionData
+					if err := json.Unmarshal([]byte(cpConn.Data), &data); err != nil {
+						return nil, nil, fmt.Errorf("failed to parse connection data for account %s: %w", cand.AccountID, err)
+					}
+					return cpConn, &data, nil
+				}
+			}
+		}
+	}
+
+	// Fallback to legacy behavior if Control Plane yields no candidates or is missing state
 	var conn *models.ProviderConnection
 	var err error
 
@@ -127,10 +170,16 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	var baseCfg *providers.ProviderConfig
 
 	if connData != nil && connData.BaseURL != "" {
-		baseCfg = &providers.ProviderConfig{
-			BaseURL:    connData.BaseURL,
-			AuthHeader: constants.HeaderAuthorization,
-			AuthScheme: constants.AuthSchemeBearer,
+		if cfg, ok := providers.KnownProviders[provider]; ok {
+			cloned := cfg
+			cloned.BaseURL = connData.BaseURL
+			baseCfg = &cloned
+		} else {
+			baseCfg = &providers.ProviderConfig{
+				BaseURL:    connData.BaseURL,
+				AuthHeader: constants.HeaderAuthorization,
+				AuthScheme: constants.AuthSchemeBearer,
+			}
 		}
 	} else if cfg, ok := providers.KnownProviders[provider]; ok {
 		// Clone config so per-request headers don't mutate global registry

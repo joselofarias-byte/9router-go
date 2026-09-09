@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"sync"
 	"time"
+
 
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/shutdown"
@@ -32,6 +34,14 @@ type StallReader struct {
 // closes the reader when process shutdown begins, so in-flight SSE streams end
 // promptly instead of holding server.Shutdown until its deadline.
 func NewStallReader(rc io.ReadCloser, timeout time.Duration, label string) io.ReadCloser {
+	return NewStallReaderWithContext(context.Background(), rc, timeout, label)
+}
+
+// NewStallReaderWithContext wraps rc with stall detection and context cancellation.
+// In addition to stall detection and process shutdown, if ctx is canceled (e.g. client
+// disconnects / aborts), the reader is immediately closed to unblock pending reads
+// and prevent socket leaks on Windows (FIN_WAIT_1 / CLOSE_WAIT).
+func NewStallReaderWithContext(ctx context.Context, rc io.ReadCloser, timeout time.Duration, label string) io.ReadCloser {
 	if timeout <= 0 {
 		timeout = DefaultStallTimeout
 	}
@@ -45,11 +55,23 @@ func NewStallReader(rc io.ReadCloser, timeout time.Duration, label string) io.Re
 		s.Close()
 	})
 	go func() {
-		select {
-		case <-shutdown.Done():
-			log.Info("stream", "shutdown, closing stream", "label", label)
-			s.Close()
-		case <-s.done:
+		if ctx != nil && ctx.Done() != nil {
+			select {
+			case <-shutdown.Done():
+				log.Info("stream", "shutdown, closing stream", "label", label)
+				s.Close()
+			case <-ctx.Done():
+				log.Info("stream", "client context canceled, closing stream", "label", label)
+				s.Close()
+			case <-s.done:
+			}
+		} else {
+			select {
+			case <-shutdown.Done():
+				log.Info("stream", "shutdown, closing stream", "label", label)
+				s.Close()
+			case <-s.done:
+			}
 		}
 	}()
 	return s

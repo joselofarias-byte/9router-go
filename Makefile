@@ -1,5 +1,6 @@
 BINARY_NAME := 9router-go
-VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "1.0.0")
+# Central version — single source: VERSION file, fallback to version.json, then git
+VERSION ?= $(shell cat VERSION 2>/dev/null || (cat version.json 2>/dev/null | grep -o '"latestVersion": *"[^"]*"' | cut -d'"' -f4) || git describe --tags --always 2>/dev/null || echo "1.0.0")
 PORT ?= 20128
 DATA_DIR ?= $(HOME)/.9router
 RTK ?=
@@ -59,6 +60,11 @@ cross:
 	GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-darwin-arm64 ./cmd/9router-go/
 	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-windows-amd64.exe ./cmd/9router-go/
 	@ls -lh $(BINARY_NAME)-*
+
+## build-termux — explicitly test and cross-compile Termux Android native compatibility
+build-termux:
+	GOOS=android GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-termux-arm64 ./cmd/9router-go/
+	@ls -lh $(BINARY_NAME)-termux-arm64
 
 ## mitm-enable — start MITM proxy
 mitm-enable: build

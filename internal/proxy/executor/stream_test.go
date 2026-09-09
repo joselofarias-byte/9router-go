@@ -2,6 +2,8 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -217,5 +219,80 @@ func TestProcessCodexEvent_OutputItemAdded_FunctionCall(t *testing.T) {
 	}
 	if compChunk.Choices[0].FinishReason != "tool_calls" {
 		t.Errorf("expected finish_reason 'tool_calls', got: %s", compChunk.Choices[0].FinishReason)
+	}
+}
+
+func TestProcessCodexEvent_ReasoningSummaryDelta(t *testing.T) {
+	state := &CodexStreamState{}
+	out := ProcessCodexEvent(`{"type":"response.reasoning_summary_text.delta","delta":"Thinking through the logic..."}`, state, "chatcmpl-test", 1)
+	if len(out) == 0 {
+		t.Fatal("expected chunk for reasoning_summary_text.delta")
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(out[0], "data: "))
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		t.Fatalf("unmarshal reasoning chunk: %v", err)
+	}
+	if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.ReasoningContent != "Thinking through the logic..." {
+		t.Errorf("expected reasoning_content, got %+v", chunk)
+	}
+}
+
+type splitReader struct {
+	data      []byte
+	chunkSize int
+	pos       int
+}
+
+func (r *splitReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	toRead := min(min(len(p), r.chunkSize), len(r.data)-r.pos)
+	copy(p, r.data[r.pos:r.pos+toRead])
+	r.pos += toRead
+	return toRead, nil
+}
+
+func TestHandleCodexStream_SplitPackets(t *testing.T) {
+	rawSSE := "event: response.output_item.added\n" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_1\",\"type\":\"message\",\"role\":\"assistant\"}}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello, \"}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"world!\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"type\":\"response.completed\"}\n\n" +
+		"data: [DONE]\n\n"
+
+	// Feed raw SSE in tiny 10-byte chunks to stress packet boundary splitting
+	reader := &splitReader{
+		data:      []byte(rawSSE),
+		chunkSize: 10,
+	}
+
+	rec := httptest.NewRecorder()
+	req := &Request{
+		IsStream:      true,
+		TranslateResp: false,
+	}
+
+	err := handleCodexStream(rec, req, reader)
+	if err != nil {
+		t.Fatalf("handleCodexStream failed: %v", err)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Hello, ") || !strings.Contains(body, "world!") {
+		t.Errorf("expected both deltas, got body: %s", body)
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Errorf("expected [DONE], got body: %s", body)
 	}
 }

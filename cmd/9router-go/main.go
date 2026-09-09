@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -17,6 +17,8 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/config"
+	"9router/proxy/internal/controlplane/discovery"
+	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
@@ -149,6 +151,36 @@ func runServer(cCtx *cli.Context) error {
 		return fmt.Errorf("database connect: %w", err)
 	}
 	defer conn.Close()
+
+	// Initialize Control Plane Registry from DB Snapshot
+	registryErr := registry.InitRegistry(conn)
+	if registryErr != nil {
+		log.Printf("[config] registry init warning: %v", registryErr)
+	}
+
+	// Start Control Plane Orchestrator (background discovery)
+
+	adapters := []discovery.Adapter{
+		discovery.NewModelsDevAdapter(nil),
+	}
+
+	unoAPIKey := os.Getenv("UNOROUTER_API_KEY")
+	if unoAPIKey != "" {
+		adapters = append(adapters, discovery.NewUnoRouterAdapter(nil, unoAPIKey))
+	} else {
+		log.Printf("[config] unorouter adapter skipped (UNOROUTER_API_KEY not set)")
+	}
+
+	// Read OrcaRouter configuration from environment for Control Plane discovery.
+	// Only instantiate if configured to keep it purely opt-in without polling if unused.
+	orcaBaseURL := os.Getenv("ORCAROUTER_BASE_URL")
+	orcaAPIKey := os.Getenv("ORCAROUTER_API_KEY")
+	if orcaBaseURL != "" && orcaAPIKey != "" {
+		adapters = append(adapters, discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey))
+	}
+
+	orchestrator := discovery.NewOrchestrator(conn, adapters)
+	orchestrator.Start(context.Background())
 
 	repo := db.NewRepo(conn)
 

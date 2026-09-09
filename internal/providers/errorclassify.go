@@ -14,6 +14,16 @@ type ErrorRule struct {
 	Backoff    bool   // true = use exponential backoff (rate limit)
 }
 
+type ErrorCategory string
+
+const (
+	ErrTransient    ErrorCategory = "transient"
+	ErrRateLimit    ErrorCategory = "rate_limit"
+	ErrQuota        ErrorCategory = "quota_exhausted"
+	ErrAuth         ErrorCategory = "auth_failed"
+	ErrPermanent    ErrorCategory = "permanent"
+)
+
 // BackoffConfig controls exponential backoff scaling.
 var BackoffConfig = struct {
 	BaseMs   int
@@ -68,6 +78,7 @@ type ErrorClassification struct {
 	ShouldFallback  bool
 	CooldownMs      int
 	NewBackoffLevel int // only meaningful when the matched rule has Backoff=true
+	Category        ErrorCategory
 }
 
 // ClassifyError classifies an upstream error by matching text and status against ErrorRules.
@@ -82,36 +93,12 @@ func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClas
 	for _, rule := range ErrorRules {
 		// Text-based match (substring, case-insensitive)
 		if rule.Text != "" && lowerError != "" && strings.Contains(lowerError, rule.Text) {
-			if rule.Backoff {
-				newLevel := min(backoffLevel+1, BackoffConfig.MaxLevel)
-				return ErrorClassification{
-					ShouldFallback:  true,
-					CooldownMs:      GetQuotaCooldown(newLevel),
-					NewBackoffLevel: newLevel,
-				}
-			}
-			return ErrorClassification{
-				ShouldFallback:  true,
-				CooldownMs:      rule.CooldownMs,
-				NewBackoffLevel: backoffLevel,
-			}
+			return buildClassification(rule, backoffLevel)
 		}
 
 		// Status-based match
 		if rule.Status != 0 && rule.Status == statusCode {
-			if rule.Backoff {
-				newLevel := min(backoffLevel+1, BackoffConfig.MaxLevel)
-				return ErrorClassification{
-					ShouldFallback:  true,
-					CooldownMs:      GetQuotaCooldown(newLevel),
-					NewBackoffLevel: newLevel,
-				}
-			}
-			return ErrorClassification{
-				ShouldFallback:  true,
-				CooldownMs:      rule.CooldownMs,
-				NewBackoffLevel: backoffLevel,
-			}
+			return buildClassification(rule, backoffLevel)
 		}
 	}
 
@@ -120,5 +107,34 @@ func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClas
 		ShouldFallback:  true,
 		CooldownMs:      TransientCooldownMs,
 		NewBackoffLevel: backoffLevel,
+		Category:        ErrTransient,
 	}
+}
+
+func buildClassification(rule ErrorRule, backoffLevel int) ErrorClassification {
+	c := ErrorClassification{
+		ShouldFallback: true,
+	}
+
+	if rule.Backoff {
+		c.NewBackoffLevel = min(backoffLevel+1, BackoffConfig.MaxLevel)
+		c.CooldownMs = GetQuotaCooldown(c.NewBackoffLevel)
+	} else {
+		c.NewBackoffLevel = backoffLevel
+		c.CooldownMs = rule.CooldownMs
+	}
+
+	// Categorize the error
+	c.Category = ErrTransient // default unless overridden
+	if rule.Status == 402 || rule.Text == "quota exceeded" || rule.Text == "capacity" {
+		c.Category = ErrQuota
+	} else if rule.Status == 429 || rule.Text == "rate limit" || rule.Text == "too many requests" || rule.Text == "overloaded" {
+		c.Category = ErrRateLimit
+	} else if rule.Status == 401 || rule.Status == 403 || rule.Text == "no credentials" || rule.Text == "request not allowed" {
+		c.Category = ErrAuth
+	} else if rule.Status == 404 || rule.Text == "improperly formed request" {
+		c.Category = ErrPermanent
+	}
+
+	return c
 }

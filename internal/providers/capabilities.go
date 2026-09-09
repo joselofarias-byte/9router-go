@@ -12,11 +12,62 @@ var (
 	capsCache   = make(map[unique.Handle[string]]Capabilities)
 )
 
+var (
+	customCapsMu sync.RWMutex
+	customCaps   = map[string]Capabilities{}
+)
+
 // InvalidateCapabilitiesCache resets the cached model capabilities.
 func InvalidateCapabilitiesCache() {
 	capsCacheMu.Lock()
 	capsCache = make(map[unique.Handle[string]]Capabilities)
 	capsCacheMu.Unlock()
+}
+
+// SetCustomModelCaps registers caps for a custom model (provider/model).
+func SetCustomModelCaps(provider, model string, caps Capabilities) {
+	key := provider + "||" + model
+	customCapsMu.Lock()
+	customCaps[key] = caps
+	// also store base model variant
+	base := model
+	if _, after, ok := strings.CutLast(model, "/"); ok {
+		base = after
+	}
+	if base != model {
+		customCaps[provider+"||"+base] = caps
+	}
+	customCapsMu.Unlock()
+	// Invalidate cache so new caps are picked up
+	InvalidateCapabilitiesCache()
+}
+
+// GetCustomModelCaps returns custom caps if present.
+func GetCustomModelCaps(provider, model string) (Capabilities, bool) {
+	key := provider + "||" + model
+	customCapsMu.RLock()
+	caps, ok := customCaps[key]
+	customCapsMu.RUnlock()
+	if ok {
+		return caps, true
+	}
+	// try base model
+	if _, after, ok := strings.CutLast(model, "/"); ok {
+		base := after
+		customCapsMu.RLock()
+		caps, ok = customCaps[provider+"||"+base]
+		customCapsMu.RUnlock()
+		return caps, ok
+	}
+	return Capabilities{}, false
+}
+
+// ClearCustomModelCaps clears all custom caps (for tests).
+func ClearCustomModelCaps() {
+	customCapsMu.Lock()
+	customCaps = map[string]Capabilities{}
+	customCapsMu.Unlock()
+	InvalidateCapabilitiesCache()
 }
 
 // Capabilities represents what a model can do beyond plain text.
@@ -63,6 +114,10 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-sonnet-5-thinking":       {Vision: true, Reasoning: true, Search: true, Tools: true},
 	"claude-sonnet-5-agentic":        {Vision: true, Reasoning: true, Search: true, Tools: true},
 	"claude-sonnet-5-thinking-agentic": {Vision: true, Reasoning: true, Search: true, Tools: true},
+	"gpt-6-astra":                    {Vision: true, Reasoning: true, Search: true, Tools: true},
+	"gpt-5.6-sol-image":              {ImageOutput: true, Tools: true},
+	"gpt-5.6-terra-image":            {ImageOutput: true, Tools: true},
+	"gpt-5.6-luna-image":             {ImageOutput: true, Tools: true},
 	"gpt-image-1":                    {ImageOutput: true},
 	"glm-5.3-flash":                  {Vision: true, Reasoning: true, Tools: true},
 	"glm-5.3":                        {Reasoning: true, Tools: true},
@@ -70,7 +125,8 @@ var modelCapabilities = map[string]Capabilities{
 	"deepseek-v4-vision":             {Vision: true, Reasoning: true, Tools: true},
 	"grok-4.6":                       {Vision: true, Reasoning: true, Search: true, Tools: true},
 	"grok-4.5":                       {Vision: true, Reasoning: true, Search: true, Tools: true},
-	"muse-spark-1.2-contributor-free": {Reasoning: true, Tools: true},
+	"muse-spark-1.2-contributor-free": {Vision: true, Reasoning: true, Tools: true},
+	"muse-spark-1.3-contributor-free": {Vision: true, Reasoning: true, Tools: true},
 	"vision-model":                   {Vision: true, Reasoning: true, Tools: true},
 	"coder-model":                    {Reasoning: true, Tools: true},
 	"kimi-k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true},
@@ -90,29 +146,53 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"deepseek-ai/deepseek-v4-flash": {Reasoning: true, Tools: true},
 	},
 	"codex": {
+		"gpt-6-astra":          {Vision: true, Reasoning: true, Search: true, Tools: true},
 		"gpt-5.6-sol":          {Vision: true, Reasoning: true, Search: true, Tools: true},
 		"gpt-5.6-sol-review":   {Vision: true, Reasoning: true, Search: true, Tools: true},
 		"gpt-5.6-terra":        {Vision: true, Reasoning: true, Search: true, Tools: true},
 		"gpt-5.6-terra-review": {Vision: true, Reasoning: true, Search: true, Tools: true},
 		"gpt-5.6-luna":         {Vision: true, Reasoning: true, Search: true, Tools: true},
 		"gpt-5.6-luna-review":  {Vision: true, Reasoning: true, Search: true, Tools: true},
+		"gpt-5.6-sol-image":    {ImageOutput: true, Tools: true},
+		"gpt-5.6-terra-image":  {ImageOutput: true, Tools: true},
+		"gpt-5.6-luna-image":   {ImageOutput: true, Tools: true},
 	},
 	"codebuddy-cn": {
-		"glm-5.2":            {Reasoning: true, Tools: true},
-		"glm-5.1":            {Reasoning: true, Tools: true},
-		"glm-5.0":            {Reasoning: true, Tools: true},
+		"glm-5.2":            {Vision: true, Reasoning: true, Tools: true},
+		"glm-5.1":            {Vision: true, Reasoning: true, Tools: true},
 		"glm-5.0-turbo":      {Reasoning: true, Tools: true},
 		"glm-5v-turbo":       {Vision: true, Reasoning: true, Tools: true},
-		"glm-4.7":            {Reasoning: true, Tools: true},
 		"minimax-m3":         {Vision: true, Reasoning: true, Tools: true},
 		"minimax-m2.7":       {Vision: true, Reasoning: true, Tools: true},
 		"kimi-k2.7":          {Vision: true, Reasoning: true, Tools: true},
 		"kimi-k2.6":          {Vision: true, Reasoning: true, Tools: true},
 		"kimi-k2.5":          {Vision: true, Reasoning: true, Tools: true},
 		"hy3-preview":        {Vision: true, Reasoning: true, Tools: true},
+		"hy3":                {Vision: true, Reasoning: true, Tools: true},
+		"hy3-x":              {Vision: true, Reasoning: true, Tools: true},
+		"hy4-preview":        {Vision: true, Reasoning: true, Tools: true},
+		"hy4-preview-x":      {Vision: true, Reasoning: true, Tools: true},
+		"glm-5.3":            {Vision: true, Reasoning: true, Tools: true},
+		"glm-5.3-flash":      {Vision: true, Reasoning: true, Tools: true},
+		"kimi-k3-1":          {Vision: true, Reasoning: true, Tools: true},
 		"deepseek-v4-pro":    {Vision: true, Reasoning: true, Tools: true},
 		"deepseek-v4-flash":  {Vision: true, Reasoning: true, Tools: true},
 		"deepseek-v3-2-volc": {Reasoning: true, Tools: true},
+	},
+	"qoder": {
+		"ultimate":       {Vision: true, Reasoning: true, Tools: true},
+		"performance":    {Vision: true, Reasoning: true, Tools: true},
+		"dmodel":         {Reasoning: true, Tools: true},
+		"dfmodel":        {Reasoning: true, Tools: true},
+		"gmodel":         {Reasoning: true, Tools: true},
+		"gfmodel":        {Vision: true, Reasoning: true, Tools: true},
+		"kmodel_latest":  {Vision: true, Reasoning: true, Tools: true},
+		"kmodel":         {Vision: true, Reasoning: true, Tools: true},
+		"mmodel":         {Reasoning: true, Tools: true},
+		"qmodel_latest":  {Vision: true, Reasoning: true, Tools: true},
+		"qmodel":         {Vision: true, Reasoning: true, Tools: true},
+		"qfmodel":        {Vision: true, Reasoning: true, Tools: true},
+		"qmodel_38max":   {Vision: true, Reasoning: true, Tools: true},
 	},
 	"poolside": {
 		"laguna-s-2.1":  {Reasoning: true, Tools: true},
@@ -159,6 +239,7 @@ var patternCapabilities = []patternCapability{
 	{"*claude*", Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true}},
 
 	{"*gemini*image*", Capabilities{Vision: true, ImageOutput: true, Tools: true}},
+	{"*gemini-3.8*", Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true}},
 	{"*gemini-3*pro*", Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true}},
 	{"*gemini-3*", Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true}},
 	{"*gemini-2.5*", Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true}},
@@ -166,6 +247,8 @@ var patternCapabilities = []patternCapability{
 	{"*gemini*", Capabilities{Vision: true, Search: true, Tools: true}},
 	{"*gemma*", Capabilities{Vision: true, Tools: true}},
 	{"*nanobanana*", Capabilities{Vision: true, ImageOutput: true, Tools: true}},
+
+	{"*gpt-6*", Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true}},
 
 	{"*gpt-5*image*", Capabilities{ImageOutput: true, Tools: true}},
 	{"*gpt-5*codex*", Capabilities{Reasoning: true, Search: true, Tools: true}},
@@ -252,6 +335,7 @@ var patternCapabilities = []patternCapability{
 	{"*step-*", Capabilities{Reasoning: true, Tools: true}},
 	{"*nemotron*", Capabilities{Reasoning: true, Tools: true}},
 	{"*ling-*", Capabilities{Reasoning: true, Tools: true}},
+	{"*muse-spark*", Capabilities{Vision: true, Reasoning: true, Tools: true}},
 }
 
 // matchPattern checks if a string matches a glob pattern (only supports * as wildcard)
@@ -272,6 +356,8 @@ func GetModelTokenLimits(model string) (contextWindow int, maxOutput int) {
 		return 1048576, 65536
 	case strings.Contains(m, "grok-4.5") || strings.Contains(m, "grok-4.6"):
 		return 524288, 32768
+	case strings.Contains(m, "gpt-6"):
+		return 272000, 128000
 	case strings.Contains(m, "claude-3") || strings.Contains(m, "claude-sonnet") || strings.Contains(m, "claude-opus") || strings.Contains(m, "claude-haiku"):
 		return 200000, 8192
 	case strings.Contains(m, "gpt-4o") || strings.Contains(m, "gpt-4-turbo") || strings.Contains(m, "gpt-4.1") || strings.Contains(m, "gpt-5"):
@@ -358,6 +444,65 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		}
 		if dynamic.VideoInput {
 			res.VideoInput = true
+		}
+	}
+
+	// 6. Custom model caps (from kv customModels) — additive, like dynamic
+	if custom, ok := GetCustomModelCaps(provider, model); ok {
+		if custom.Vision {
+			res.Vision = true
+		}
+		if custom.Reasoning {
+			res.Reasoning = true
+		}
+		if custom.Search {
+			res.Search = true
+		}
+		if custom.PDF {
+			res.PDF = true
+		}
+		if custom.AudioInput {
+			res.AudioInput = true
+		}
+		if custom.VideoInput {
+			res.VideoInput = true
+		}
+		if custom.ImageOutput {
+			res.ImageOutput = true
+		}
+		if custom.AudioOutput {
+			res.AudioOutput = true
+		}
+		if custom.Tools {
+			res.Tools = true
+		}
+	} else if custom, ok := GetCustomModelCaps(provider, baseModel); ok {
+		if custom.Vision {
+			res.Vision = true
+		}
+		if custom.Reasoning {
+			res.Reasoning = true
+		}
+		if custom.Search {
+			res.Search = true
+		}
+		if custom.PDF {
+			res.PDF = true
+		}
+		if custom.AudioInput {
+			res.AudioInput = true
+		}
+		if custom.VideoInput {
+			res.VideoInput = true
+		}
+		if custom.ImageOutput {
+			res.ImageOutput = true
+		}
+		if custom.AudioOutput {
+			res.AudioOutput = true
+		}
+		if custom.Tools {
+			res.Tools = true
 		}
 	}
 

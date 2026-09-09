@@ -39,7 +39,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 	defer resp.Body.Close()
 
 	if req.IsStream {
-		stallReader := proxy.NewStallReader(resp.Body, 0, "codebuddy-cn")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
 		defer stallReader.Close() // stops the shutdown watcher + stall timer
 		return execSSEStream(w, stallReader, req)
 	}
@@ -199,8 +199,16 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 	} else {
 		msg["content"] = content
 	}
-	if len(toolCalls) > 0 {
-		msg["tool_calls"] = toolCalls
+	var validToolCalls []map[string]any
+	for _, tc := range toolCalls {
+		if fn, ok := tc["function"].(map[string]any); ok {
+			if n, ok := fn["name"].(string); ok && strings.TrimSpace(n) != "" {
+				validToolCalls = append(validToolCalls, tc)
+			}
+		}
+	}
+	if len(validToolCalls) > 0 {
+		msg["tool_calls"] = validToolCalls
 	}
 	if len(reasoningParts) > 0 {
 		msg["reasoning_content"] = strings.Join(reasoningParts, "")

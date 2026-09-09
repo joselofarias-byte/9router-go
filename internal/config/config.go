@@ -99,6 +99,16 @@ func LoadConfig() *Config {
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "db", "data.sqlite")
+	} else if fi, err := os.Stat(dbPath); err == nil && fi.IsDir() {
+		if _, err := os.Stat(filepath.Join(dbPath, "db", "data.sqlite")); err == nil {
+			dbPath = filepath.Join(dbPath, "db", "data.sqlite")
+		} else if _, err := os.Stat(filepath.Join(dbPath, "data.sqlite")); err == nil {
+			dbPath = filepath.Join(dbPath, "data.sqlite")
+		} else if _, err := os.Stat(filepath.Join(dbPath, "9router.db")); err == nil {
+			dbPath = filepath.Join(dbPath, "9router.db")
+		} else {
+			dbPath = filepath.Join(dbPath, "db", "data.sqlite")
+		}
 	}
 
 	// INITIAL_PASSWORD has no hardcoded default — an empty value forces the

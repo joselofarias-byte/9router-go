@@ -27,6 +27,8 @@ type CodexStreamState struct {
 	ToolCallIdx       map[string]int
 	ToolCallNames     map[string]string
 	ToolCallArgs      map[string]string
+	ItemIDToIdx       map[string]int
+	ArgsEmitted       map[int]bool
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -38,7 +40,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	eventType, _ := event["type"].(string)
 
 	switch eventType {
-	case "response.output_text.delta":
+	case "response.output_text.delta", "response.text.delta":
 		delta, _ := event["delta"].(string)
 		if delta == "" {
 			return nil
@@ -59,6 +61,26 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.thought.delta":
+		delta, _ := event["delta"].(string)
+		if delta == "" {
+			return nil
+		}
+		state.OutputLength += len(delta)
+		chunk := map[string]any{
+			"id":      responseID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"reasoning_content": delta},
+			}},
+		}
+		b, err := json.Marshal(chunk)
+		if err != nil {
+			return nil
+		}
+		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 	case "response.output_item.added":
 		item, _ := event["item"].(map[string]any)
 		if item == nil {
@@ -74,17 +96,30 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			if callID == "" {
 				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
 			}
+			itemID, _ := event["item_id"].(string)
+			if itemID == "" {
+				itemID, _ = item["id"].(string)
+			}
 			if state.ToolCallIdx == nil {
 				state.ToolCallIdx = make(map[string]int)
+			}
+			if state.ItemIDToIdx == nil {
+				state.ItemIDToIdx = make(map[string]int)
 			}
 			if state.ToolCallNames == nil {
 				state.ToolCallNames = make(map[string]string)
 			}
 			idx, ok := state.ToolCallIdx[callID]
+			if !ok && itemID != "" {
+				idx, ok = state.ItemIDToIdx[itemID]
+			}
 			if !ok {
 				idx = state.ToolCallCount
 				state.ToolCallIdx[callID] = idx
 				state.ToolCallCount++
+			}
+			if itemID != "" {
+				state.ItemIDToIdx[itemID] = idx
 			}
 			state.ToolCallNames[callID] = name
 			state.CurrentToolCallID = callID
@@ -120,29 +155,33 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		if delta == "" {
 			return nil
 		}
+		itemID, _ := event["item_id"].(string)
 		callID, _ := event["call_id"].(string)
-		if callID == "" {
-			callID = state.CurrentToolCallID
-		}
-		if callID == "" {
-			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
-		}
-		if state.ToolCallIdx == nil {
-			state.ToolCallIdx = make(map[string]int)
-		}
 		name, _ := event["name"].(string)
-		if name == "" && state.ToolCallNames != nil {
-			name = state.ToolCallNames[callID]
+		var idx int
+		var ok bool
+		if itemID != "" && state.ItemIDToIdx != nil {
+			idx, ok = state.ItemIDToIdx[itemID]
 		}
-		if name != "" && state.ToolCallNames != nil {
-			state.ToolCallNames[callID] = name
+		if !ok && callID != "" && state.ToolCallIdx != nil {
+			idx, ok = state.ToolCallIdx[callID]
 		}
-
-		idx, ok := state.ToolCallIdx[callID]
 		if !ok {
-			idx = state.ToolCallCount
-			state.ToolCallIdx[callID] = idx
-			state.ToolCallCount++
+			if callID == "" {
+				callID = state.CurrentToolCallID
+			}
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+			}
+			if state.ToolCallIdx == nil {
+				state.ToolCallIdx = make(map[string]int)
+			}
+			idx, ok = state.ToolCallIdx[callID]
+			if !ok {
+				idx = state.ToolCallCount
+				state.ToolCallIdx[callID] = idx
+				state.ToolCallCount++
+			}
 		}
 
 		if state.ToolCallArgs == nil {
@@ -191,21 +230,35 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	case "response.function_call_arguments.done":
 		name, _ := event["name"].(string)
 		args, _ := event["arguments"].(string)
+		itemID, _ := event["item_id"].(string)
 		callID, _ := event["call_id"].(string)
-		if callID == "" {
-			callID = state.CurrentToolCallID
+		var idx int
+		var ok bool
+		if itemID != "" && state.ItemIDToIdx != nil {
+			idx, ok = state.ItemIDToIdx[itemID]
 		}
-		if callID == "" {
-			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+		if !ok && callID != "" && state.ToolCallIdx != nil {
+			idx, ok = state.ToolCallIdx[callID]
 		}
-		if state.ToolCallIdx == nil {
-			state.ToolCallIdx = make(map[string]int)
-		}
-		idx, ok := state.ToolCallIdx[callID]
 		if !ok {
-			idx = state.ToolCallCount
-			state.ToolCallIdx[callID] = idx
-			state.ToolCallCount++
+			if callID == "" {
+				callID = state.CurrentToolCallID
+			}
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+			}
+			if state.ToolCallIdx == nil {
+				state.ToolCallIdx = make(map[string]int)
+			}
+			idx, ok = state.ToolCallIdx[callID]
+			if !ok {
+				idx = state.ToolCallCount
+				state.ToolCallIdx[callID] = idx
+				state.ToolCallCount++
+			}
+		}
+		if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
+			return nil
 		}
 		// If name wasn't captured before, use it now
 		if name == "" && state.ToolCallNames != nil {
@@ -279,10 +332,58 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			itemType, _ := item["type"].(string)
 			if itemType == "function_call" || itemType == "custom_tool_call" {
 				state.CurrentToolCallID = ""
+				itemID, _ := event["item_id"].(string)
+				if itemID == "" {
+					itemID, _ = item["id"].(string)
+				}
+				callID, _ := item["call_id"].(string)
+				if callID == "" {
+					callID = itemID
+				}
+				var idx int
+				var ok bool
+				if itemID != "" && state.ItemIDToIdx != nil {
+					idx, ok = state.ItemIDToIdx[itemID]
+				}
+				if !ok && callID != "" && state.ToolCallIdx != nil {
+					idx, ok = state.ToolCallIdx[callID]
+				}
+				fullArgs, _ := item["arguments"].(string)
+				if fullArgs != "" {
+					if state.ToolCallArgs == nil {
+						state.ToolCallArgs = make(map[string]string)
+					}
+					state.ToolCallArgs[callID] = fullArgs
+					if state.ArgsEmitted == nil {
+						state.ArgsEmitted = make(map[int]bool)
+					}
+					if !state.ArgsEmitted[idx] {
+						state.ArgsEmitted[idx] = true
+						chunk := map[string]any{
+							"id":      responseID,
+							"object":  "chat.completion.chunk",
+							"created": created,
+							"choices": []map[string]any{{
+								"index": 0,
+								"delta": map[string]any{
+									"tool_calls": []map[string]any{{
+										"index": idx,
+										"function": map[string]any{
+											"arguments": fullArgs,
+										},
+									}},
+								},
+							}},
+						}
+						b, err := json.Marshal(chunk)
+						if err == nil {
+							return []string{fmt.Sprintf("data: %s\n\n", string(b))}
+						}
+					}
+				}
 			}
 		}
 		return nil
-
 	case "response.completed":
 		state.Completed = true
 		finishReason := "stop"
@@ -362,131 +463,100 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 	state := &CodexStreamState{}
 
 	if req.IsStream {
+		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
+		defer hw.Close()
+
 		if !req.TranslateResp {
 			// Streaming to OpenAI-compatible client
-			flusher := proxy.WriteSSEHeaders(w)
-			buf := make([]byte, 64*1024)
-			var leftover string
+			flusher := proxy.WriteSSEHeaders(hw)
+			doneSeen := false
 
-			for {
-				n, err := upstream.Read(buf)
-				if n > 0 {
-					text := leftover + string(buf[:n])
-					leftover = ""
+			err := proxy.ScanStream(upstream, func(payload []byte) {
+				if doneSeen {
+					return
+				}
+				data := string(payload)
+				if data == "[DONE]" {
+					doneSeen = true
+					_ = writeSSEFinish(hw, flusher, req, state, responseID, created)
+					return
+				}
 
-					for _, line := range strings.Split(text, "\n") {
-						line = strings.TrimSpace(line)
-						if line == "" {
-							continue
-						}
-
-						if strings.HasPrefix(line, "event: ") {
-							state.CurrentEvent = line[7:]
-							continue
-						}
-
-						if strings.HasPrefix(line, "data: ") {
-							data := line[6:]
-							if data == "[DONE]" {
-								return writeSSEFinish(w, flusher, req, state, responseID, created)
-							}
-							out := ProcessCodexEvent(data, state, responseID, created)
-							for _, chunk := range out {
-								if req.TTFT != nil && *req.TTFT == 0 {
-									*req.TTFT = time.Since(req.StartTime).Milliseconds()
-								}
-								if req.ResponseBuf != nil {
-									req.ResponseBuf.Write([]byte(chunk))
-								}
-								if _, werr := w.Write([]byte(chunk)); werr != nil {
-									return werr
-								}
-							}
-							if flusher != nil {
-								flusher.Flush()
-							}
-						}
+				out := ProcessCodexEvent(data, state, responseID, created)
+				for _, chunk := range out {
+					if req.TTFT != nil && *req.TTFT == 0 {
+						*req.TTFT = time.Since(req.StartTime).Milliseconds()
+					}
+					if req.ResponseBuf != nil {
+						req.ResponseBuf.Write([]byte(chunk))
+					}
+					if _, werr := hw.Write([]byte(chunk)); werr != nil {
+						return
 					}
 				}
-				if err != nil {
-					break
+				if flusher != nil {
+					flusher.Flush()
 				}
+			})
+
+			if !doneSeen {
+				return writeSSEFinish(hw, flusher, req, state, responseID, created)
 			}
-			return writeSSEFinish(w, flusher, req, state, responseID, created)
+			return err
 		}
 
 		// Streaming with Claude translation (/v1/messages)
-		flusher := proxy.WriteSSEHeaders(w)
+		flusher := proxy.WriteSSEHeaders(hw)
 		sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
 		defer translator.ClearStreamState(sessionKey)
 
-		buf := make([]byte, 64*1024)
-		var leftover string
+		doneSeen := false
+		err := proxy.ScanStream(upstream, func(payload []byte) {
+			if doneSeen {
+				return
+			}
+			data := string(payload)
+			if data == "[DONE]" {
+				doneSeen = true
+				return
+			}
 
-		for {
-			n, err := upstream.Read(buf)
-			if n > 0 {
-				text := leftover + string(buf[:n])
-				leftover = ""
-
-				for _, line := range strings.Split(text, "\n") {
-					line = strings.TrimSpace(line)
-					if line == "" {
-						continue
-					}
-
-					if strings.HasPrefix(line, "event: ") {
-						state.CurrentEvent = line[7:]
-						continue
-					}
-
-					if strings.HasPrefix(line, "data: ") {
-						data := line[6:]
-						if data == "[DONE]" {
-							break
-						}
-						out := ProcessCodexEvent(data, state, responseID, created)
-						for _, chunk := range out {
-							chunkBytes := []byte(chunk)
-							translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunkBytes)
-							if terr != nil {
-								log.Error("executor", "translate codex stream error", "error", terr)
-								continue
-							}
-							if translated == nil {
-								continue
-							}
-							if req.TTFT != nil && *req.TTFT == 0 {
-								*req.TTFT = time.Since(req.StartTime).Milliseconds()
-							}
-							if req.ResponseBuf != nil {
-								req.ResponseBuf.Write(translated)
-							}
-							if _, werr := w.Write(translated); werr != nil {
-								return werr
-							}
-							if flusher != nil {
-								flusher.Flush()
-							}
-						}
-					}
+			out := ProcessCodexEvent(data, state, responseID, created)
+			for _, chunk := range out {
+				chunkBytes := []byte(chunk)
+				translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunkBytes)
+				if terr != nil {
+					log.Error("executor", "translate codex stream error", "error", terr)
+					continue
+				}
+				if translated == nil {
+					continue
+				}
+				if req.TTFT != nil && *req.TTFT == 0 {
+					*req.TTFT = time.Since(req.StartTime).Milliseconds()
+				}
+				if req.ResponseBuf != nil {
+					req.ResponseBuf.Write(translated)
+				}
+				if _, werr := hw.Write(translated); werr != nil {
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
 				}
 			}
-			if err != nil {
-				break
-			}
-		}
+		})
 
 		// Finish stream
 		if !state.Completed {
 			finishChunk := []byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, responseID, created)))
 			if translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, finishChunk); terr == nil && translated != nil {
-				w.Write(translated)
+				hw.Write(translated)
 			}
 		}
 		doneChunk := []byte("data: [DONE]\n\n")
 		if translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, doneChunk); terr == nil && translated != nil {
-			w.Write(translated)
+			hw.Write(translated)
 		}
 		if flusher != nil {
 			flusher.Flush()
@@ -499,47 +569,21 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				CompletionTokens: state.OutputLength / 4,
 			})
 		}
-		return nil
+		return err
 	}
 
 	// Non-streaming (req.IsStream == false)
 	var sseBuf bytes.Buffer
-	buf := make([]byte, 64*1024)
-	var leftover string
-
-	for {
-		n, err := upstream.Read(buf)
-		if n > 0 {
-			text := leftover + string(buf[:n])
-			leftover = ""
-
-			for _, line := range strings.Split(text, "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-
-				if strings.HasPrefix(line, "event: ") {
-					state.CurrentEvent = line[7:]
-					continue
-				}
-
-				if strings.HasPrefix(line, "data: ") {
-					data := line[6:]
-					if data == "[DONE]" {
-						break
-					}
-					out := ProcessCodexEvent(data, state, responseID, created)
-					for _, chunk := range out {
-						sseBuf.WriteString(chunk)
-					}
-				}
-			}
+	_ = proxy.ScanStream(upstream, func(payload []byte) {
+		data := string(payload)
+		if data == "[DONE]" {
+			return
 		}
-		if err != nil {
-			break
+		out := ProcessCodexEvent(data, state, responseID, created)
+		for _, chunk := range out {
+			sseBuf.WriteString(chunk)
 		}
-	}
+	})
 
 	converted, ok := sseToOpenAIJSON(sseBuf.Bytes())
 	if !ok {

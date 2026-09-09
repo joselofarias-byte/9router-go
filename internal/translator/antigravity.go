@@ -299,6 +299,13 @@ var AntigravityModelSynonyms = map[string]string{
 	"gemini-3.1-pro":             "gemini-pro-agent",
 	"gemini-3-pro-high":          "gemini-pro-agent",
 	"gemini-3-pro-low":           "gemini-3.1-pro-low",
+	// 3.8 flash tiered models -> backend model: gemini-3.8-flash-tiered
+	"gemini-3.8-flash":           "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-high":      "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-medium":    "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-low":       "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-agent":     "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-thinking":  "gemini-3.8-flash-tiered",
 	// 3.7 flash tiered models -> backend model: gemini-3.7-flash-tiered
 	"gemini-3.7-flash":           "gemini-3.7-flash-tiered",
 	"gemini-3.7-flash-high":      "gemini-3.7-flash-tiered",
@@ -499,9 +506,15 @@ func fixAntigravityContents(req *GeminiRequest) bool {
 		}
 
 		if needsBackfill {
+			firstFunctionCallSeen := false
 			for idx, p := range filtered {
-				if p.FunctionCall != nil && p.ThoughtSignature == "" {
-					filtered[idx].ThoughtSignature = DefaultThinkingSignature
+				if p.FunctionCall != nil {
+					sig := p.ThoughtSignature
+					if sig == "" && !firstFunctionCallSeen {
+						sig = DefaultThinkingSignature
+					}
+					firstFunctionCallSeen = true
+					filtered[idx].ThoughtSignature = sig
 				}
 			}
 		}
