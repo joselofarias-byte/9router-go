@@ -7,6 +7,7 @@ import (
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/scoring"
 	"9router/proxy/internal/controlplane/trust"
+	"9router/proxy/internal/providers"
 )
 
 type Policy string
@@ -73,6 +74,8 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 				continue // strict drop
 			}
 
+			riskProfile := providers.GetProviderRiskProfile(provID)
+
 			// Find accounts for this provider
 			for _, acc := range state.Accounts {
 				if acc == nil {
@@ -89,8 +92,9 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 				}
 
 				factors := scoring.Factors{
-					TrustLevel:   trustLvl,
-					IsFreeTier:   isFree,
+					TrustLevel:         trustLvl,
+					IsFreeTier:         isFree,
+					AccountRiskPenalty: riskProfile.ScorePenalty,
 					// TTFT, Latency, etc., would be pulled from a metrics store
 				}
 
@@ -99,7 +103,8 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					continue
 				}
 
-				// If FreeFirst, strongly boost free models so they float to the top
+				// If FreeFirst, strongly boost free models so they float to the top.
+				// Account-risk penalties still order peers within the free tier.
 				if policy == PolicyFreeFirst && isFree {
 					score.Total += 1000.0
 				}
