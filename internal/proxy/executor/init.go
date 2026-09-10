@@ -40,6 +40,7 @@ func RegisterAll() {
 	Register("byteplus", func() Executor { return ForwardOpenAI })
 	Register("codebuddy-cn", func() Executor { return ForwardCodebuddyCN })
 	Register("codebuddy-intl", func() Executor { return ForwardCodebuddyCN })
+	Register("workbuddy-session", func() Executor { return ForwardWorkBuddySession })
 	Register("gitlab", func() Executor { return ForwardOpenAI })
 	Register("glm-cn", func() Executor { return ForwardOpenAI })
 	Register("glm", func() Executor { return ForwardOpenAI })
