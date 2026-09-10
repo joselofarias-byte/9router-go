@@ -159,9 +159,9 @@ func runServer(cCtx *cli.Context) error {
 	}
 
 	// Start Control Plane Orchestrator (background discovery)
-
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
+		discovery.NewClineFreeAdapter(nil),
 	}
 
 	unoAPIKey := os.Getenv("UNOROUTER_API_KEY")
