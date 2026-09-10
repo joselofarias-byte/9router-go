@@ -17,9 +17,9 @@ func init() {
 
 	// Keep the existing workbuddy/wb aliases pointing at codebuddy-intl for
 	// backwards compatibility with API-key users. Free/session users opt in
-	// explicitly with one of these aliases.
+	// explicitly with one of these aliases. The canonical provider name does
+	// not need an alias entry; avoiding a self-alias preserves registry rules.
 	ProviderAliasMap["wbs"] = WorkBuddySessionProvider
 	ProviderAliasMap["wbf"] = WorkBuddySessionProvider
 	ProviderAliasMap["workbuddy-free"] = WorkBuddySessionProvider
-	ProviderAliasMap["workbuddy-session"] = WorkBuddySessionProvider
 }
