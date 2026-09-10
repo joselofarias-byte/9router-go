@@ -60,7 +60,7 @@ func GetProviderRiskProfile(provider string) ProviderRiskProfile {
 		}
 
 	case "codex", "claude", "github", "kiro", "grok-cli", "grok-web", "gemini-cli",
-		"qoder", "codebuddy-cn", "codebuddy-intl", "opencode-go", "clinepass":
+		"qoder", "codebuddy-cn", "opencode-go", "clinepass":
 		return ProviderRiskProfile{
 			AccessMode:   AccessProductSurface,
 			AccountRisk:  AccountRiskMedium,
@@ -72,6 +72,18 @@ func GetProviderRiskProfile(provider string) ProviderRiskProfile {
 		// Cline exposes an official OpenAI-compatible API-key endpoint. OAuth may
 		// also be used by clients, but the provider itself does not need to be
 		// penalized like a personal-product surface.
+		return ProviderRiskProfile{
+			AccessMode:  AccessAPIKey,
+			AccountRisk: AccountRiskLow,
+			ProbePolicy: ProbeStandard,
+		}
+
+	case "codebuddy-intl":
+		// WorkBuddy/CodeBuddy International officially documents personal API-key
+		// authentication for individual developers (CODEBUDDY_API_KEY). Treat the
+		// canonical international route as an ordinary quota-limited API-key
+		// surface rather than browser/session automation. Quota exhaustion is
+		// handled by normal health/quota telemetry, not by an account-risk penalty.
 		return ProviderRiskProfile{
 			AccessMode:  AccessAPIKey,
 			AccountRisk: AccountRiskLow,
