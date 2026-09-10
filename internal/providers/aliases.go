@@ -73,6 +73,8 @@ var ProviderAliasMap = map[string]string{
 	"vali":           "volcengine-ark",
 	"vercel":         "vercel-ai-gateway",
 	"vn":             "venice",
+	"wb":             "codebuddy-intl",
+	"workbuddy":      "codebuddy-intl",
 	"xmtp":           "xiaomi-tokenplan",
 	"af":             "api-airforce",
 	"bzl":            "bazaarlink",
