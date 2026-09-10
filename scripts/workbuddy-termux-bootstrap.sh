@@ -3,10 +3,12 @@ set -euo pipefail
 
 ROUTER_BASE_URL="${ROUTER_BASE_URL:-http://127.0.0.1:20128}"
 WORKBUDDY_KEYS_URL="https://www.codebuddy.ai/profile/keys"
+WORKBUDDY_PROFILE_URL="https://www.codebuddy.ai/profile"
 WORKBUDDY_PROBE_MODEL="${WORKBUDDY_PROBE_MODEL:-gpt-5.6-luna}"
 ROUTER_TOKEN="${NINEROUTER_API_KEY:-}"
 CODEBUDDY_KEY=""
 TMP_RESPONSE=""
+AUDIT_FILE="$HOME/.config/9router-go/workbuddy-last-probe.json"
 
 cleanup() {
   CODEBUDDY_KEY=""
@@ -23,6 +25,14 @@ say() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+new_tmp_response() {
+  if [ -n "${TMP_RESPONSE:-}" ] && [ -f "$TMP_RESPONSE" ]; then
+    rm -f "$TMP_RESPONSE"
+  fi
+  TMP_RESPONSE="$(mktemp)"
+  chmod 600 "$TMP_RESPONSE"
 }
 
 install_termux_dependencies() {
@@ -132,8 +142,7 @@ import_connection() {
     exit 1
   fi
 
-  TMP_RESPONSE="$(mktemp)"
-  chmod 600 "$TMP_RESPONSE"
+  new_tmp_response
 
   say "==> Importando la clave como proveedor codebuddy-intl..."
   local status
@@ -170,9 +179,67 @@ import_connection() {
   say "==> Conexión creada: $connection_id"
 }
 
+save_probe_audit() {
+  local status="$1"
+  mkdir -p "$(dirname "$AUDIT_FILE")"
+  local audit_tmp
+  audit_tmp="${AUDIT_FILE}.tmp.$$"
+
+  if jq -e . "$TMP_RESPONSE" >/dev/null 2>&1; then
+    jq \
+      --arg timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+      --arg provider "codebuddy-intl" \
+      --arg requestedModel "$WORKBUDDY_PROBE_MODEL" \
+      --arg httpStatus "$status" \
+      '{timestamp:$timestamp,provider:$provider,requestedModel:$requestedModel,httpStatus:($httpStatus|tonumber? // $httpStatus),responseModel:(.model // null),usage:(.usage // null),error:(.error // null)}' \
+      "$TMP_RESPONSE" > "$audit_tmp"
+  else
+    jq -n \
+      --arg timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+      --arg provider "codebuddy-intl" \
+      --arg requestedModel "$WORKBUDDY_PROBE_MODEL" \
+      --arg httpStatus "$status" \
+      '{timestamp:$timestamp,provider:$provider,requestedModel:$requestedModel,httpStatus:($httpStatus|tonumber? // $httpStatus),responseModel:null,usage:null,error:"non-json response"}' \
+      > "$audit_tmp"
+  fi
+
+  chmod 600 "$audit_tmp"
+  mv -f "$audit_tmp" "$AUDIT_FILE"
+}
+
+report_probe_usage() {
+  local prompt_tokens completion_tokens total_tokens credit response_model
+  prompt_tokens="$(jq -r '.usage.prompt_tokens // .usage.input_tokens // empty' "$TMP_RESPONSE" 2>/dev/null || true)"
+  completion_tokens="$(jq -r '.usage.completion_tokens // .usage.output_tokens // empty' "$TMP_RESPONSE" 2>/dev/null || true)"
+  total_tokens="$(jq -r '.usage.total_tokens // empty' "$TMP_RESPONSE" 2>/dev/null || true)"
+  credit="$(jq -r '.usage.credit // .usage.credits // empty' "$TMP_RESPONSE" 2>/dev/null || true)"
+  response_model="$(jq -r '.model // empty' "$TMP_RESPONSE" 2>/dev/null || true)"
+
+  say
+  say "=== TELEMETRÍA WORKBUDDY ==="
+  if [ -n "$response_model" ]; then
+    say "Modelo devuelto: $response_model"
+  fi
+  if [ -n "$prompt_tokens" ]; then
+    say "Tokens entrada: $prompt_tokens"
+  fi
+  if [ -n "$completion_tokens" ]; then
+    say "Tokens salida: $completion_tokens"
+  fi
+  if [ -n "$total_tokens" ]; then
+    say "Tokens totales: $total_tokens"
+  fi
+  if [ -n "$credit" ]; then
+    say "Créditos consumidos en el probe: $credit"
+  else
+    say "Crédito exacto no vino en la respuesta OpenAI de este probe."
+    say "Saldo y detalle oficial: $WORKBUDDY_PROFILE_URL -> Usage"
+  fi
+  say "Auditoría local sin credenciales: $AUDIT_FILE"
+}
+
 probe_router() {
-  TMP_RESPONSE="$(mktemp)"
-  chmod 600 "$TMP_RESPONSE"
+  new_tmp_response
 
   say "==> Probando $WORKBUDDY_PROBE_MODEL a través de 9router-go..."
   local status
@@ -188,12 +255,15 @@ probe_router() {
         "$ROUTER_BASE_URL/chat/completions"
   } || true)"
 
+  save_probe_audit "${status:-0}"
+
   if [ "$status" != "200" ]; then
     say "ADVERTENCIA: la conexión fue importada, pero el probe devolvió HTTP ${status:-sin-respuesta}." >&2
     if [ -s "$TMP_RESPONSE" ]; then
       jq -c . "$TMP_RESPONSE" 2>/dev/null || head -c 1200 "$TMP_RESPONSE" >&2
       printf '\n' >&2
     fi
+    say "Auditoría: $AUDIT_FILE" >&2
     return 0
   fi
 
@@ -204,6 +274,8 @@ probe_router() {
   else
     say "==> HTTP 200 recibido. Respuesta del probe: ${reply:-<sin texto>}"
   fi
+
+  report_probe_usage
 }
 
 say "=== WorkBuddy International -> 9router-go / Termux ==="
