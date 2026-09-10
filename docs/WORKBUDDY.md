@@ -18,6 +18,8 @@ The upstream chat provider is:
 - auth: Bearer plus `X-API-Key` compatibility header
 - aliases: `workbuddy`, `wb`, `cbai`
 
+Because personal API-key authentication is an officially documented path for individual developers, Fabric classifies `codebuddy-intl` as a normal low-risk API-key route. It is not treated like browser/session automation. Normal quota and health controls still apply.
+
 ## Termux bootstrap
 
 From a checkout of this repository:
@@ -32,9 +34,11 @@ The script:
 2. installs the official CodeBuddy CLI package if it is not already present;
 3. opens the official international API-key page when `termux-open-url` is available;
 4. reads the API key without echoing it;
-5. starts `9router-go` under demand when it is installed but not already running;
+5. starts `9router-go` on demand when it is installed but not already running;
 6. imports the credential through the existing `/api/oauth/codebuddy-intl/import` endpoint;
-7. probes `codebuddy-intl/gpt-5.6-luna` through the normal 9router chat path.
+7. probes `codebuddy-intl/gpt-5.6-luna` through the normal 9router chat path;
+8. reports returned token/credit usage when exposed by the upstream response;
+9. writes a credential-free probe snapshot to `~/.config/9router-go/workbuddy-last-probe.json` for later Fabric analysis.
 
 The default local router URL is `http://127.0.0.1:20128`. The bootstrap first tries `NINEROUTER_API_KEY`; if it is unset, it uses `~/.config/9router-go/admin-token` when present.
 
@@ -43,6 +47,14 @@ To probe another model without editing the script:
 ```bash
 WORKBUDDY_PROBE_MODEL=glm-5.3 bash scripts/workbuddy-termux-bootstrap.sh
 ```
+
+## Credit telemetry
+
+CodeBuddy publishes credit consumption as part of usage telemetry in current clients. The 9router CodeBuddy SSE aggregator preserves the complete upstream `usage` object, including a `credit` field when supplied. The bootstrap therefore prints exact per-probe credit consumption when the chat endpoint exposes it, alongside token counts.
+
+When the chat response does not expose a credit value, the authoritative account balance and consumption history remains CodeBuddy Profile -> Usage. The bootstrap records only non-secret probe metadata locally; it never writes the entered personal API key into the audit file.
+
+Current promotional WorkBuddy Free terms are quota-limited and can change. Treat plan limits and daily rewards as dynamic account metadata, not hard-coded router capacity.
 
 ## Official CLI
 
