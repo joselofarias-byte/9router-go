@@ -113,6 +113,12 @@ func SetupRoutes(r interface {
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
+
+	// Control Plane / Fabric admin visibility (registry snapshot, routing
+	// explain, and a fabric-free-focused status view with skip reasons).
+	r.Get("/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/admin/explain-route", chatH.HandleAdminExplainRoute)
+	r.Get("/admin/fabric/status", chatH.HandleFabricStatus)
 }
 
 // SetupServerRouter mounts public endpoints (/health, /api/hello) and
