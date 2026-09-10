@@ -10,10 +10,13 @@ func TestWorkBuddySessionProviderRegistration(t *testing.T) {
 	if cfg.BaseURL != "local://codebuddy-session" || cfg.DefaultAPIKey != "session" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
-	for _, alias := range []string{"wbs", "wbf", "workbuddy-free", "workbuddy-session"} {
+	for _, alias := range []string{"wbs", "wbf", "workbuddy-free"} {
 		if got := ResolveAlias(alias); got != WorkBuddySessionProvider {
 			t.Fatalf("alias %q resolved to %q", alias, got)
 		}
+	}
+	if got := ResolveAlias(WorkBuddySessionProvider); got != WorkBuddySessionProvider {
+		t.Fatalf("canonical provider resolved to %q", got)
 	}
 
 	risk := GetProviderRiskProfile(WorkBuddySessionProvider)
