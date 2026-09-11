@@ -253,3 +253,201 @@ func TestLiveE2E_DeepSeek_RealStream(t *testing.T) {
 		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
 	}
 }
+
+func TestLiveE2E_Antigravity_MultiToolCall(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("antigravity", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active antigravity connections")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	// Step 1: Send request expecting parallel tool calls
+	reqBody := `{
+		"model": "ag/gemini-2.5-flash",
+		"messages": [
+			{"role": "user", "content": "What is the weather in Tokyo and Paris? Call the get_weather tool for BOTH cities separately in parallel."}
+		],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "get_weather",
+					"description": "Get current temperature for a city",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"city": {"type": "string"}
+						},
+						"required": ["city"]
+					}
+				}
+			}
+		],
+		"tool_choice": "auto",
+		"max_tokens": 1000,
+		"stream": false
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("Antigravity MultiToolCall Response Code: %d", rec.Code)
+	t.Logf("Antigravity MultiToolCall Response Body: %s", rec.Body.String())
+
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
+		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from Antigravity, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+
+	toolCalls := resp.Choices[0].Message.ToolCalls
+	t.Logf("Antigravity received %d tool calls: %+v", len(toolCalls), toolCalls)
+	if len(toolCalls) < 2 {
+		t.Fatalf("expected multiple parallel tool calls (at least 2), got %d", len(toolCalls))
+	}
+
+	// Step 2: Feed back both tool results in multi-turn to ensure second turn succeeds
+	multiTurnBody := map[string]any{
+		"model": "ag/gemini-2.5-flash",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "What is the weather in Tokyo and Paris? Call the get_weather tool for BOTH cities separately in parallel."},
+			resp.Choices[0].Message,
+			map[string]any{"role": "tool", "tool_call_id": toolCalls[0].ID, "content": `{"temperature": "22C"}`},
+			map[string]any{"role": "tool", "tool_call_id": toolCalls[1].ID, "content": `{"temperature": "18C"}`},
+		},
+		"stream": false,
+	}
+	turnJSON, _ := json.Marshal(multiTurnBody)
+	req2 := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(turnJSON))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec2, req2)
+
+	t.Logf("Antigravity MultiTurn Response Code: %d", rec2.Code)
+	t.Logf("Antigravity MultiTurn Response Body: %s", rec2.Body.String())
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 on multi-turn tool response, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestLiveE2E_DeepSeek_MultiToolCall(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("deepseek", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active deepseek connection")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	reqBody := `{
+		"model": "deepseek/deepseek-chat",
+		"messages": [
+			{"role": "user", "content": "What is the weather in Tokyo and Paris? Call the get_weather tool for BOTH cities in parallel."}
+		],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "get_weather",
+					"description": "Get current temperature for a city",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"city": {"type": "string"}
+						},
+						"required": ["city"]
+					}
+				}
+			}
+		],
+		"tool_choice": "auto",
+		"max_tokens": 1000,
+		"stream": false
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("DeepSeek MultiToolCall Response Code: %d", rec.Code)
+	t.Logf("DeepSeek MultiToolCall Response Body: %s", rec.Body.String())
+
+	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests {
+		t.Skipf("DeepSeek balance/quota issue: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from DeepSeek, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+
+	toolCalls := resp.Choices[0].Message.ToolCalls
+	t.Logf("DeepSeek received %d tool calls: %+v", len(toolCalls), toolCalls)
+	if len(toolCalls) < 2 {
+		t.Fatalf("expected multiple tool calls, got %d", len(toolCalls))
+	}
+}
