@@ -1,0 +1,234 @@
+package chat
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	json "encoding/json/v2"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"9router/proxy/internal/db"
+	"9router/proxy/internal/proxy/executor"
+	_ "modernc.org/sqlite"
+)
+
+func getRealUserDB(t *testing.T) (*db.Repo, func()) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get user home dir")
+	}
+	dbPath := filepath.Join(home, ".9router", "db", "data.sqlite")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Skipf("real db not found at %s", dbPath)
+	}
+
+	database, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		t.Fatalf("failed to open real db: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	return repo, func() { database.Close() }
+}
+
+func TestLiveE2E_Antigravity_RealWeeklyQuota(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	// Find an active antigravity connection with an access token
+	conns, err := repo.GetProviderConnections("antigravity", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active antigravity connections found")
+	}
+
+	conn := conns[0]
+	var dataMap map[string]any
+	if err := json.Unmarshal([]byte(conn.Data), &dataMap); err != nil {
+		t.Skipf("cannot parse connection data: %v", err)
+	}
+
+	token, _ := dataMap["accessToken"].(string)
+	projectID, _ := dataMap["projectId"].(string)
+	if token == "" {
+		t.Skip("no accessToken in antigravity connection")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	weekly, err := FetchAntigravityWeeklyQuota(ctx, client, token, projectID)
+	if err != nil {
+		t.Logf("FetchAntigravityWeeklyQuota real upstream returned error: %v (token may need refresh)", err)
+		return
+	}
+
+	t.Logf("Real upstream weekly quota result: %+v", weekly)
+}
+
+func TestLiveE2E_DeepSeek_RealUpstream(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("deepseek", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active deepseek connection")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	reqBody := `{
+		"model": "deepseek/deepseek-chat",
+		"messages": [
+			{"role": "user", "content": "respond with PONG only"}
+		],
+		"max_tokens": 10,
+		"stream": false
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("DeepSeek response code: %d", rec.Code)
+	t.Logf("DeepSeek response body: %s", rec.Body.String())
+
+	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests {
+		t.Skipf("DeepSeek balance/quota issue: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from DeepSeek, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(strings.ToUpper(rec.Body.String()), "PONG") {
+		t.Errorf("expected PONG in DeepSeek response, got: %s", rec.Body.String())
+	}
+}
+
+func TestLiveE2E_Antigravity_RealChat(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("antigravity", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active antigravity connections")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	reqBody := `{
+		"model": "ag/gemini-2.5-flash",
+		"messages": [
+			{"role": "user", "content": "Say hello in one word"}
+		],
+		"max_tokens": 20,
+		"stream": false
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("Antigravity response code: %d", rec.Code)
+	t.Logf("Antigravity response body: %s", rec.Body.String())
+
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
+		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from Antigravity, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLiveE2E_Antigravity_RealStream(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("antigravity", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active antigravity connections")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	reqBody := `{
+		"model": "ag/gemini-2.5-flash",
+		"messages": [
+			{"role": "user", "content": "Count from 1 to 3 separated by commas"}
+		],
+		"max_tokens": 50,
+		"stream": true
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("Antigravity stream response code: %d", rec.Code)
+	t.Logf("Antigravity stream response body:\n%s", rec.Body.String())
+
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
+		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from Antigravity stream, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
+	}
+}
+
+func TestLiveE2E_DeepSeek_RealStream(t *testing.T) {
+	repo, cleanup := getRealUserDB(t)
+	defer cleanup()
+
+	conns, err := repo.GetProviderConnections("deepseek", true)
+	if err != nil || len(conns) == 0 {
+		t.Skip("no active deepseek connection")
+	}
+
+	executor.RegisterAll()
+	handler := NewChatHandler(repo)
+
+	reqBody := `{
+		"model": "deepseek/deepseek-chat",
+		"messages": [
+			{"role": "user", "content": "Count from 1 to 3 separated by commas"}
+		],
+		"max_tokens": 50,
+		"stream": true
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	t.Logf("DeepSeek stream response code: %d", rec.Code)
+	t.Logf("DeepSeek stream response body:\n%s", rec.Body.String())
+
+	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests {
+		t.Skipf("DeepSeek balance/quota issue: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from DeepSeek stream, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
+	}
+}

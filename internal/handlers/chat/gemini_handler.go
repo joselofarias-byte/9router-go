@@ -417,6 +417,12 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 			flusher.Flush()
 		}
 	})
+	if !translateResponse {
+		hw.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	log.Info("gemini", "stream ended", "chunks", totalChunks, "bytesWritten", totalBytesWritten, "duration_ms", time.Since(start).Milliseconds(), "err", err)
 	// Pull actual accumulated usage (incl. cached tokens) out of the session so
 	// the log sees real numbers instead of the fallback estimate.
