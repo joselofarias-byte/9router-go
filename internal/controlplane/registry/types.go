@@ -31,6 +31,12 @@ type ProviderModel struct {
 	CostMetadata  string    `json:"costMetadata"` // JSON blob for cost tracking
 	Capabilities  string    `json:"capabilities"` // JSON blob of boolean capabilities
 	IsActive      bool      `json:"isActive"`
+	// Source is the discovery adapter SourceID that produced this entry
+	// (e.g. "cline-free", "unorouter"). Used by the orchestrator to
+	// reconcile staleness: an entry only gets deactivated when the adapter
+	// that owns it successfully re-syncs and no longer reports it, never
+	// when an unrelated adapter runs or a fetch merely fails.
+	Source        string    `json:"source,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
 }

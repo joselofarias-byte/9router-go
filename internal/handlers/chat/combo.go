@@ -454,6 +454,22 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
+					if cw.IsCommitted() {
+						// Response bytes (headers and/or a partial SSE stream)
+						// have already reached the client. Trying another
+						// connection or model here would concatenate a second
+						// model's output onto the same HTTP response and
+						// corrupt the protocol, so this is a hard stop: record
+						// the failure and terminate without further fallback.
+						var ue *upstreamError
+						status, errBody := 0, []byte(nil)
+						if errors.As(fwdErr, &ue) {
+							status, errBody = ue.StatusCode, ue.Body
+						}
+						recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, status, errBody)
+						log.Error("combo", "upstream failed after response commitment, terminating stream", "provider", modelInfo.Provider, "model", modelInfo.Model, "error", fwdErr)
+						return
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
@@ -480,12 +496,14 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 							}
 						}
 						lastErr = ue
+						recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, ue.StatusCode, ue.Body)
 						if isKnownNoAuth {
 							break
 						}
 						continue
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
+					recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, http.StatusBadGateway, nil)
 					if isKnownNoAuth {
 						break
 					}
@@ -493,6 +511,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				entrySuccess = true
+				recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, true, 0, nil)
 				break
 			}
 
@@ -643,6 +662,22 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				fwdErr := h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, true, "/v1/messages")
 
 				if fwdErr != nil {
+					if cw.IsCommitted() {
+						// Response bytes (headers and/or a partial SSE stream)
+						// have already reached the client. Trying another
+						// connection or model here would concatenate a second
+						// model's output onto the same HTTP response and
+						// corrupt the protocol, so this is a hard stop: record
+						// the failure and terminate without further fallback.
+						var ue *upstreamError
+						status, errBody := 0, []byte(nil)
+						if errors.As(fwdErr, &ue) {
+							status, errBody = ue.StatusCode, ue.Body
+						}
+						recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, status, errBody)
+						log.Error("combo", "upstream failed after response commitment, terminating stream", "provider", modelInfo.Provider, "model", modelInfo.Model, "error", fwdErr)
+						return
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
@@ -669,12 +704,14 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							}
 						}
 						lastErr = ue
+						recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, ue.StatusCode, ue.Body)
 						if isKnownNoAuth {
 							break
 						}
 						continue
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
+					recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, http.StatusBadGateway, nil)
 					if isKnownNoAuth {
 						break
 					}
@@ -682,6 +719,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				}
 
 				entrySuccess = true
+				recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, true, 0, nil)
 				break
 			}
 

@@ -1,6 +1,36 @@
 # Changelog
 
 
+## [Unreleased] — 2026-09-10
+
+### ✨ Features — Fabric Free Pool (Control Plane Logical Routing)
+
+**Logical pool routing (`fabric-free`):**
+- `internal/controlplane/pools/` — New package defining Fabric logical pool abstraction. `FabricFree = "fabric-free"` expands at request time to all eligible free-tier routes across heterogeneous providers/models rather than a single static upstream.
+- `internal/controlplane/routing/policy.go` — `SelectCandidates` now resolves pool names via predicate-based expansion (pool.Member) instead of exact ModelID match, enabling cross-provider heterogeneous routing.
+- `internal/handlers/chat/resolution.go` — Pool intercept at top of `resolveModel()` routes `fabric-free` (and future pools) through `resolveFabricPool` instead of the standard single-model path.
+- `internal/handlers/chat/fabric_bridge.go` — Pool resolution and telemetry glue: resolves candidates, deduplicates by provider/model, returns `ModelInfo{ComboModels, Strategy:fallback}` reusing existing combo-fallback hot path.
+- `internal/handlers/chat/combo.go` — Added streaming safety check (`cw.IsCommitted()`) before mid-stream failover attempts; added `recordRouteOutcome` telemetry calls at success/failure paths in both chat and messages combo loops.
+- `internal/handlers/chat/combo_bridge.go` — Added `resetFabricRoutingStateForTests()` for test isolation of process-lifetime globals.
+
+**Trust & scoring improvements:**
+- `internal/controlplane/trust/state.go` — Extended `Record` with `TotalSuccess`/`TotalFailures` lifetime counters and timestamps. Added `NeutralSuccessRate=0.7` prior, `SuccessRate()` accessor, and full `Snapshot()` + `splitKey()` for observability endpoints.
+- Routing engine now uses real observed success rates (with neutral prior for unproven nodes) instead of a static placeholder, so scoring reflects actual upstream behavior.
+
+**Staleness reconciliation:**
+- `internal/controlplane/registry/types.go` — Added `Source` field to `ProviderModel` tracking which discovery adapter produced the entry.
+- `internal/controlplane/discovery/orchestrator.go` — On successful discovery run, deactivates stale entries from same source that no longer appear in the catalog.
+
+**Admin observability:**
+- `internal/handlers/chat/fabric_status.go` — `GET /admin/fabric/status` endpoint: returns pool membership, scored candidates, trust levels, lock status, and skip reasons for ineligible routes.
+- `internal/handlers/router.go` — Registered `/admin/registry`, `/admin/explain-route`, and `/admin/fabric/status` routes.
+
+**Tests:**
+- `internal/controlplane/pools/pools_test.go` — Pool membership, IsPool, nil safety.
+- `internal/controlplane/routing/policy_test.go` — Three new tests: heterogeneous pool expansion, uncredentialed provider exclusion, account-risk ordering.
+- `internal/handlers/chat/fabric_pool_e2e_test.go` — 16 E2E tests with mocked upstreams: transparent failover, streaming safety, quarantine, Retry-After propagation, trust feedback loop, account-risk ordering.
+
+
 ## [v1.8.9] — 2026-09-06
 
 ### ✨ Features & Parity — Next.js v0.5.69 Sync (19 Commits)

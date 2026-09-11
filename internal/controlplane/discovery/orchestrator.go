@@ -119,15 +119,21 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 	}
 
 	totalDiscovered := 0
+	reconciled := false
 	for _, adapter := range o.adapters {
 		candidates, err := adapter.Discover(ctx)
 		if err != nil {
 			log.Warn("orchestrator", "adapter sync failed", "adapter", adapter.SourceID(), "err", err)
+			// Do not touch entries previously discovered by this adapter — a
+			// transient fetch failure must not evict last-known-good routes.
 			continue
 		}
 
 		totalDiscovered += len(candidates)
+		discoveredThisRun := make(map[string]bool, len(candidates))
 		for _, c := range candidates {
+			discoveredThisRun[c.ProviderID+"|"+c.ModelID] = true
+
 			// Upsert Provider
 			if _, exists := newState.Providers[c.ProviderID]; !exists {
 				newState.Providers[c.ProviderID] = &registry.Provider{
@@ -157,21 +163,45 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 			pm, exists := newState.ProviderModels[c.ProviderID][c.ModelID]
 			if !exists {
 				pm = &registry.ProviderModel{
-					ProviderID:    c.ProviderID,
-					ModelID:       c.ModelID,
-					UpstreamModel: c.UpstreamModel,
-					PricingMode:   c.PricingMode,
-					Capabilities:  c.Capabilities,
-					IsActive:      true,
-					CreatedAt:     time.Now().UTC(),
+					ProviderID: c.ProviderID,
+					ModelID:    c.ModelID,
+					CreatedAt:  time.Now().UTC(),
 				}
 				newState.ProviderModels[c.ProviderID][c.ModelID] = pm
 			}
+			pm.UpstreamModel = c.UpstreamModel
+			pm.PricingMode = c.PricingMode
+			pm.Capabilities = c.Capabilities
+			pm.Source = adapter.SourceID()
+			// Rediscovering a previously-stale entry reactivates it.
+			pm.IsActive = true
 			pm.UpdatedAt = time.Now().UTC()
+		}
+
+		// Reconcile staleness: an entry this adapter owns (Source matches)
+		// that was not reported in this successful run has disappeared from
+		// the provider's live catalog and must stop being routed to. It is
+		// deactivated, not deleted, preserving history and letting it
+		// reactivate automatically if it reappears in a future sync.
+		for providerID, models := range newState.ProviderModels {
+			for modelID, pm := range models {
+				if pm == nil || pm.Source != adapter.SourceID() {
+					continue
+				}
+				if discoveredThisRun[providerID+"|"+modelID] {
+					continue
+				}
+				if pm.IsActive {
+					pm.IsActive = false
+					pm.UpdatedAt = time.Now().UTC()
+					reconciled = true
+					log.Info("orchestrator", "deactivated stale route", "adapter", adapter.SourceID(), "provider", providerID, "model", modelID)
+				}
+			}
 		}
 	}
 
-	if totalDiscovered > 0 {
+	if totalDiscovered > 0 || reconciled {
 		snap, err := registry.CreateSnapshot(o.db, newState, "discovery_sync")
 		if err != nil {
 			log.Warn("orchestrator", "failed to create snapshot", "err", err)

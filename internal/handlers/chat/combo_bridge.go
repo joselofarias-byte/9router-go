@@ -15,6 +15,17 @@ import (
 var globalTrustManager = trust.NewManager()
 var globalRoutingEngine = &routing.Engine{TrustManager: globalTrustManager}
 
+// resetFabricRoutingStateForTests replaces the shared trust manager and
+// routing engine with fresh instances. Tests in this package share these
+// process-lifetime globals (trust state must persist for the life of a real
+// server), so deterministic fabric-free tests must reset them between runs
+// to avoid one test's recorded failures/successes leaking into another's
+// candidate ordering. Production code never calls this.
+func resetFabricRoutingStateForTests() {
+	globalTrustManager = trust.NewManager()
+	globalRoutingEngine = &routing.Engine{TrustManager: globalTrustManager}
+}
+
 // getActiveCandidates resolves the request routing pool.
 func getActiveCandidates(ctx context.Context, db *sql.DB, model string) []routing.RouteNode {
 	if db != nil {

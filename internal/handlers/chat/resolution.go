@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/controlplane/pools"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
@@ -158,6 +159,18 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	}
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
+
+	// 0. Fabric logical pool (e.g. "fabric-free"): expand dynamically via the
+	// Control Plane registry + scoring engine into an ordered heterogeneous
+	// candidate list, then hand off to the same combo-fallback execution path
+	// ordinary DB combos use. Checked before alias/combo lookup since pool
+	// names are reserved and never stored as DB combos or aliases.
+	if pools.IsPool(modelStr) {
+		if info := h.resolveFabricPool(modelStr); info != nil {
+			return info, nil
+		}
+		return nil, fmt.Errorf("fabric pool %q has no eligible free routes right now (no healthy, credentialed, non-quarantined free candidates)", modelStr)
+	}
 
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {

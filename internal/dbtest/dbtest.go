@@ -82,6 +82,17 @@ func SchemaStatements() []string {
 			status TEXT,
 			data TEXT
 		)`,
+		// Mirrors migrations_registry.go's "0001_create_registry_snapshots" so
+		// handler-level tests can exercise Control Plane snapshot/rollback
+		// endpoints without a full migration run.
+		`CREATE TABLE IF NOT EXISTS registry_snapshots (
+			version TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			checksum TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL
+		)`,
 	}
 }
 

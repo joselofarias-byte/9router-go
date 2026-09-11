@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"9router/proxy/internal/log"
+	"github.com/google/uuid"
 )
 
 var (
-	activeState    *RegistryState
-	lastKnownGood  *RegistryState
-	stateMu        sync.RWMutex
+	activeState   *RegistryState
+	lastKnownGood *RegistryState
+	stateMu       sync.RWMutex
 )
 
 // InitRegistry initialize registry from active snapshot if exists.
@@ -258,6 +258,54 @@ func UpdateAccounts(accounts map[string]*Account) {
 			lastKnownGood = newState
 		}
 	}
+}
+
+// SnapshotMeta is a Snapshot without its (potentially large) Payload, for
+// listing/history views where the full serialized state isn't needed.
+type SnapshotMeta struct {
+	Version   string    `json:"version"`
+	CreatedAt time.Time `json:"createdAt"`
+	Reason    string    `json:"reason"`
+	Checksum  string    `json:"checksum"`
+	Status    string    `json:"status"`
+}
+
+// ListSnapshots returns up to limit most recent snapshots (metadata only, no
+// payload) for an operator-facing history/rollback view. limit <= 0 defaults
+// to 50.
+func ListSnapshots(db *sql.DB, limit int) ([]SnapshotMeta, error) {
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := db.Query(
+		"SELECT version, created_at, reason, checksum, status FROM registry_snapshots ORDER BY created_at DESC LIMIT ?",
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SnapshotMeta
+	for rows.Next() {
+		var m SnapshotMeta
+		var createdAtStr string
+		if err := rows.Scan(&m.Version, &createdAtStr, &m.Reason, &m.Checksum, &m.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot row: %w", err)
+		}
+		if t, err := time.Parse(time.RFC3339, createdAtStr); err == nil {
+			m.CreatedAt = t
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating snapshots: %w", err)
+	}
+	return out, nil
 }
 
 // GetActiveSnapshot returns the currently active snapshot from the database.

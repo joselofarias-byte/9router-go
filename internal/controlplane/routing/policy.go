@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"9router/proxy/internal/controlplane/pools"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/scoring"
 	"9router/proxy/internal/controlplane/trust"
@@ -34,17 +35,24 @@ type Engine struct {
 
 // SelectCandidates evaluates a requested model/pool against the active registry snapshot,
 // applying the specified routing policy, and returns a sorted list of fallback candidate nodes.
+//
+// When requestedModel names a registered Fabric logical pool (see the pools
+// package), candidates are expanded across every ProviderModel satisfying the
+// pool's membership predicate, regardless of ModelID — this is what lets a
+// pool like "fabric-free" span heterogeneous models/providers instead of a
+// single fixed upstream model. Otherwise it falls back to the historical
+// behavior of an exact ModelID match, so ordinary explicit-model routing is
+// unaffected.
 func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteNode {
 	state := registry.GetActiveState()
 	if state == nil {
 		return nil
 	}
 
+	pool, isPool := pools.Get(requestedModel)
+
 	var candidates []RouteNode
 
-	// In a complete implementation, this would look up the routing pool definition
-	// and expand requestedModel to all candidate models in the pool.
-	// For now, we do a direct lookup of all ProviderModels matching the requested ID.
 	for provID, providerModels := range state.ProviderModels {
 		// Filter out inactive or missing providers entirely
 		p, ok := state.Providers[provID]
@@ -58,8 +66,14 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 				continue
 			}
 
-			// Basic filtering (match requested name/alias)
-			if pm.ModelID != requestedModel {
+			// Basic filtering: either the requested model is a logical pool
+			// (membership decided by the pool predicate) or an exact ModelID
+			// match (legacy direct routing).
+			if isPool {
+				if !pool.Member(pm) {
+					continue
+				}
+			} else if pm.ModelID != requestedModel {
 				continue
 			}
 
@@ -70,7 +84,11 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 
 			// Enforce Policy constraints
 			isFree := (pm.PricingMode == "free" || pm.PricingMode == "free_tier")
-			if policy == PolicyFreeOnly && !isFree {
+			if (policy == PolicyFreeOnly && !isFree) || (isPool && !isFree) {
+				// Pools currently only expand free-tier membership, so this is
+				// redundant with the predicate above for fabric-free, but kept
+				// explicit so a future non-free pool can't accidentally leak a
+				// paid route through a mismatched policy argument.
 				continue // strict drop
 			}
 
@@ -91,11 +109,27 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					continue
 				}
 
+				// Real observed success rate wins over a placeholder: an
+				// unproven node gets an optimistic neutral prior so it still
+				// gets a fair shot, but once it has a track record, scoring
+				// reflects actual behavior instead of a static zero.
+				successRate := trust.NeutralSuccessRate
+				if sr, hasData := e.TrustManager.SuccessRate(provID, pm.ModelID, acc.ID); hasData {
+					successRate = sr
+				}
+
 				factors := scoring.Factors{
 					TrustLevel:         trustLvl,
 					IsFreeTier:         isFree,
 					AccountRiskPenalty: riskProfile.ScorePenalty,
-					// TTFT, Latency, etc., would be pulled from a metrics store
+					SuccessRate:        successRate,
+				}
+				// TTFT/Latency reflect the last verification probe for this
+				// node when one has run; left neutral (scoring.Calculate
+				// treats TTFTMs == 0 as "unknown") until a probe reports in.
+				if avgMs, hasLatency := e.TrustManager.LatencyStats(provID, pm.ModelID, acc.ID); hasLatency {
+					factors.TTFTMs = avgMs
+					factors.LatencyMs = avgMs
 				}
 
 				score := scoring.Calculate(factors)
