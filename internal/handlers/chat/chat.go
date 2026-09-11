@@ -137,7 +137,9 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body)
-		body = translator.DefaultClaudeToolType(body)
+		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {
+			body = translator.DefaultClaudeToolType(body)
+		}
 		body = translator.AnchorClaudeCache(body)
 		if err := json.Unmarshal(body, &workingBody); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")

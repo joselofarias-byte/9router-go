@@ -104,3 +104,89 @@ func TestAnchorClaudeCache_Normal_NoDefer(t *testing.T) {
 		t.Error("first tool should not have cache")
 	}
 }
+
+func TestAnchorClaudeCache_CapsAt4Markers(t *testing.T) {
+	// System has 1 block, Tools has 1 block, Messages has 4 blocks with cache_control
+	// Total markers = 6. Capping must hold head anchors (system, tool) and keep only 2 tail message markers (total 4).
+	body := []byte(`{
+		"system": [{"type": "text", "text": "system instruction"}],
+		"tools": [{"name": "toolA", "input_schema": {"type": "object"}}],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "u1", "cache_control": {"type": "ephemeral"}}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "a1", "cache_control": {"type": "ephemeral"}}]},
+			{"role": "user", "content": [{"type": "text", "text": "u2", "cache_control": {"type": "ephemeral"}}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "a2", "cache_control": {"type": "ephemeral"}}]}
+		]
+	}`)
+
+	out := AnchorClaudeCache(body)
+	var req map[string]any
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if total := countCacheControlBlocks(req); total != 4 {
+		t.Fatalf("expected exactly 4 cache_control blocks, got %d", total)
+	}
+
+	// Head anchors preserved with 1h
+	sys := req["system"].([]any)
+	sysBlock := sys[0].(map[string]any)
+	if cc, ok := sysBlock["cache_control"].(map[string]any); !ok || cc["ttl"] != "1h" {
+		t.Errorf("system head anchor missing or not 1h: %v", sysBlock["cache_control"])
+	}
+
+	tools := req["tools"].([]any)
+	toolBlock := tools[0].(map[string]any)
+	if cc, ok := toolBlock["cache_control"].(map[string]any); !ok || cc["ttl"] != "1h" {
+		t.Errorf("tool head anchor missing or not 1h: %v", toolBlock["cache_control"])
+	}
+
+	// In messages, u1 and a1 (first 2) should have had cache_control deleted, u2 and a2 (tail 2) kept
+	msgs := req["messages"].([]any)
+	m0 := msgs[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if _, has := m0["cache_control"]; has {
+		t.Error("u1 cache_control should have been stripped")
+	}
+	m1 := msgs[1].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if _, has := m1["cache_control"]; has {
+		t.Error("a1 cache_control should have been stripped")
+	}
+	m2 := msgs[2].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if _, has := m2["cache_control"]; !has {
+		t.Error("u2 cache_control should be preserved")
+	}
+	m3 := msgs[3].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if _, has := m3["cache_control"]; !has {
+		t.Error("a2 cache_control should be preserved")
+	}
+}
+
+func TestAnchorClaudeCache_SingleObjectContent(t *testing.T) {
+	// Client sends content as a single object {type: "text", text: "..."} instead of [{...}]
+	body := []byte(`{
+		"messages": [
+			{"role": "user", "content": {"type": "text", "text": "hello single object", "cache_control": {"type": "ephemeral"}}}
+		]
+	}`)
+
+	out := AnchorClaudeCache(body)
+	var req map[string]any
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	msgs := req["messages"].([]any)
+	content, ok := msgs[0].(map[string]any)["content"].([]any)
+	if !ok {
+		t.Fatalf("content should be normalized to []any, got %T", msgs[0].(map[string]any)["content"])
+	}
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(content))
+	}
+	block := content[0].(map[string]any)
+	if block["text"] != "hello single object" {
+		t.Errorf("unexpected text: %v", block["text"])
+	}
+	// Client cache_control on single object was stripped before re-anchoring
+}

@@ -6,11 +6,11 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/translator"
 )
@@ -19,6 +19,15 @@ import (
 type AntigravityModelQuota struct {
 	RemainingPercentage float64   `json:"remainingPercentage"`
 	ResetAt             time.Time `json:"resetAt"`
+}
+
+// AntigravityWeeklyQuota holds parsed weekly quota values for a model family.
+type AntigravityWeeklyQuota struct {
+	Used                int       `json:"used"`
+	Total               int       `json:"total"`
+	RemainingPercentage float64   `json:"remainingPercentage"`
+	ResetAt             time.Time `json:"resetAt"`
+	DisplayName         string    `json:"displayName"`
 }
 
 // antigravityQuotaBaseURL hosts the v1internal:fetchAvailableModels discovery RPC.
@@ -44,6 +53,12 @@ var (
 	agStrikeWindow        = 60 * time.Second
 	agStrikeThreshold     = 3
 	agStrikeBlockDuration = 15 * time.Minute
+)
+var (
+	agWeeklyMu    sync.RWMutex
+	agWeeklyCache = make(map[string]map[string]AntigravityWeeklyQuota) // cacheKey -> weekly quotas
+	agWeeklyTTL   = 3 * time.Minute
+	agWeeklyAt    = make(map[string]time.Time)
 )
 
 // applyActiveStrikeBlocks re-asserts active 15m strike blocks into quotas so a fresh
@@ -76,6 +91,11 @@ func ClearAntigravityQuotaCache() {
 	defer agQuotaMu.Unlock()
 	agQuotaCache = make(map[string]map[string]AntigravityModelQuota)
 	agLastRefreshAt = make(map[string]time.Time)
+
+	agWeeklyMu.Lock()
+	agWeeklyCache = make(map[string]map[string]AntigravityWeeklyQuota)
+	agWeeklyAt = make(map[string]time.Time)
+	agWeeklyMu.Unlock()
 }
 
 // IsAntigravityModelBlocked reports whether connectionID has an exhausted quota for model until resetAt.
@@ -101,6 +121,23 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	for _, m := range checkModels {
 		if q, exists := modelsMap[m]; exists {
 			if q.RemainingPercentage <= 0 && !q.ResetAt.IsZero() && q.ResetAt.After(now) {
+				agQuotaMu.RUnlock()
+				return true
+			}
+		}
+	}
+
+	// Check family weekly quota
+	if strings.HasPrefix(model, "gemini-") {
+		if wq, exists := modelsMap["gemini_weekly"]; exists {
+			if wq.RemainingPercentage <= 0 && !wq.ResetAt.IsZero() && wq.ResetAt.After(now) {
+				agQuotaMu.RUnlock()
+				return true
+			}
+		}
+	} else if strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "gpt-") {
+		if wq, exists := modelsMap["claude_gpt_weekly"]; exists {
+			if wq.RemainingPercentage <= 0 && !wq.ResetAt.IsZero() && wq.ResetAt.After(now) {
 				agQuotaMu.RUnlock()
 				return true
 			}
@@ -232,6 +269,19 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 		}
 	}
 
+	// If no model quotas found (e.g. Free-tier accounts have weekly quotas only),
+	// best-effort fetch weekly quota summary (parity with Next.js open-sse/services/usage/google.js #3892)
+	if len(quotas) == 0 {
+		if weekly, err := FetchAntigravityWeeklyQuota(ctx, client, accessToken, projectID); err == nil && len(weekly) > 0 {
+			for k, wq := range weekly {
+				quotas[k] = AntigravityModelQuota{
+					RemainingPercentage: wq.RemainingPercentage,
+					ResetAt:             wq.ResetAt,
+				}
+			}
+		}
+	}
+
 	// Re-assert active strike blocks so optimistic quota cannot resurrect blocked pair
 	quotas = applyActiveStrikeBlocks(connectionID, quotas)
 
@@ -327,3 +377,159 @@ func ClearAntigravityStrikes(connectionID, model string) {
 		delete(agStrikeBlocks, connectionID+"|"+canonical)
 	}
 }
+
+// ParseWeeklyQuotaSummary parses retrieveUserQuotaSummary response JSON into family quotas.
+func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
+	var payload struct {
+		Groups []struct {
+			DisplayName string `json:"displayName"`
+			Buckets     []struct {
+				BucketID          string  `json:"bucketId"`
+				DisplayName       string  `json:"displayName"`
+				Disabled          bool    `json:"disabled"`
+				RemainingFraction float64 `json:"remainingFraction"`
+				ResetTime         string  `json:"resetTime"`
+			} `json:"buckets"`
+		} `json:"groups"`
+		QuotaSummary *struct {
+			Groups []struct {
+				DisplayName string `json:"displayName"`
+				Buckets     []struct {
+					BucketID          string  `json:"bucketId"`
+					DisplayName       string  `json:"displayName"`
+					Disabled          bool    `json:"disabled"`
+					RemainingFraction float64 `json:"remainingFraction"`
+					ResetTime         string  `json:"resetTime"`
+				} `json:"buckets"`
+			} `json:"groups"`
+		} `json:"quotaSummary"`
+	}
+
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+
+	groups := payload.Groups
+	if len(groups) == 0 && payload.QuotaSummary != nil {
+		groups = payload.QuotaSummary.Groups
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+
+	result := make(map[string]AntigravityWeeklyQuota)
+	for _, g := range groups {
+		gName := g.DisplayName
+		isGemini := strings.Contains(strings.ToLower(gName), "gemini")
+		isClaudeGPT := strings.Contains(strings.ToLower(gName), "claude") || strings.Contains(strings.ToLower(gName), "gpt")
+		if !isGemini && !isClaudeGPT {
+			continue
+		}
+
+		for _, b := range g.Buckets {
+			bText := strings.ToLower(b.BucketID + " " + b.DisplayName)
+			if !strings.Contains(bText, "weekly") || b.Disabled {
+				continue
+			}
+			frac := b.RemainingFraction
+			if frac < 0 {
+				frac = 0
+			}
+			if frac > 1 {
+				frac = 1
+			}
+			total := 1000
+			remaining := int(math.Round(float64(total) * frac))
+			used := total - remaining
+			if used < 0 {
+				used = 0
+			}
+
+			var resetAt time.Time
+			if b.ResetTime != "" {
+				if t, err := time.Parse(time.RFC3339, b.ResetTime); err == nil {
+					resetAt = t.UTC()
+				}
+			}
+
+			key := "gemini_weekly"
+			dName := "Gemini (Weekly)"
+			if isClaudeGPT {
+				key = "claude_gpt_weekly"
+				dName = "Claude & GPT (Weekly)"
+			}
+
+			if _, exists := result[key]; !exists {
+				result[key] = AntigravityWeeklyQuota{
+					Used:                used,
+					Total:               total,
+					RemainingPercentage: frac * 100,
+					ResetAt:             resetAt,
+					DisplayName:         dName,
+				}
+			}
+			break
+		}
+	}
+	return result
+}
+
+// FetchAntigravityWeeklyQuota fetches the weekly quota summary from Google's retrieveUserQuotaSummary endpoint.
+func FetchAntigravityWeeklyQuota(ctx context.Context, client *http.Client, accessToken, projectID string) (map[string]AntigravityWeeklyQuota, error) {
+	cacheKey := accessToken + "::" + projectID
+	now := time.Now().UTC()
+
+	agWeeklyMu.RLock()
+	cached, ok := agWeeklyCache[cacheKey]
+	cachedAt := agWeeklyAt[cacheKey]
+	agWeeklyMu.RUnlock()
+	if ok && now.Sub(cachedAt) < agWeeklyTTL {
+		return cached, nil
+	}
+
+	url := antigravityQuotaBaseURL + "/v1internal:retrieveUserQuotaSummary"
+	reqBody := map[string]any{}
+	if projectID != "" {
+		reqBody["project"] = projectID
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", "0.1.0")
+
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("retrieveUserQuotaSummary returned %d", resp.StatusCode)
+	}
+
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	res := ParseWeeklyQuotaSummary(respBytes)
+	if len(res) > 0 {
+		agWeeklyMu.Lock()
+		agWeeklyCache[cacheKey] = res
+		agWeeklyAt[cacheKey] = now
+		agWeeklyMu.Unlock()
+	}
+	return res, nil
+}
+

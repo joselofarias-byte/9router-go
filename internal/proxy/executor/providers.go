@@ -291,7 +291,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		cleanModel = cleanModel[:parenIdx]
 	}
 
-	if strings.Contains(cleanModel, "muse-spark") {
+	if isOpencodeResponsesModel(cleanModel) {
 		// Route through Responses API format: https://opencode.ai/zen/v1/responses
 		transformedBody, _, err := buildResponsesBody(req.Body)
 		if err != nil {
@@ -378,9 +378,15 @@ var opencodeGoMessagesModels = map[string]bool{
 	"minimax-m3":   true,
 	"minimax-m2.7": true,
 	"minimax-m2.5": true,
+	"qwen3.8-max":  true,
+	"qwen3.8-flash": true,
 	"qwen3.7-max":  true,
 	"qwen3.7-plus": true,
 	"qwen3.6-plus": true,
+}
+
+func isOpencodeResponsesModel(model string) bool {
+	return strings.Contains(model, "muse-spark") || model == "grok-4.6" || model == "gpt-5.6-luna"
 }
 
 func deriveOpencodeSession(rawSession, clientTool, connID string) string {
@@ -423,8 +429,8 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		cleanModel = cleanModel[:parenIdx]
 	}
 
-	if strings.Contains(cleanModel, "muse-spark") {
-		// Route through Responses API format: https://opencode.ai/zen/go/v1/responses (#3819, #3820)
+	if isOpencodeResponsesModel(cleanModel) {
+		// Route through Responses API format: https://opencode.ai/zen/go/v1/responses (#3819, #3820, v0.5.75)
 		transformedBody, _, err := buildResponsesBody(req.Body)
 		if err != nil {
 			return fmt.Errorf("transform body for opencode-go muse-spark: %w", err)

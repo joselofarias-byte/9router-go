@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -82,6 +83,39 @@ func (r *Repo) UnlockConnectionModel(connID, model string) error {
 		return fmt.Errorf("unlock connection model %s/%s: %w", connID, model, err)
 	}
 	return nil
+}
+
+// ResetConnectionHealthState clears model locks, error codes, rate limits, and resets backoff
+// on a connection when activated or re-validated (parity with #3830 / #7fee56ba).
+func (r *Repo) ResetConnectionHealthState(connID string) error {
+	var rawData string
+	err := r.db.QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&rawData)
+	if err != nil {
+		return err
+	}
+	var dataMap map[string]any
+	if err := json.Unmarshal([]byte(rawData), &dataMap); err != nil {
+		return err
+	}
+
+	dataMap["errorCode"] = nil
+	dataMap["rateLimitedUntil"] = nil
+	dataMap["backoffLevel"] = 0
+
+	for k := range dataMap {
+		if strings.HasPrefix(k, modelLockPrefix) {
+			dataMap[k] = nil
+		}
+	}
+
+	newBytes, err := json.Marshal(dataMap)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = r.db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?", string(newBytes), now, connID)
+	return err
 }
 
 // GetConnectionBackoffLevel reads the backoffLevel from a connection's data.

@@ -399,6 +399,10 @@ func (h *MediaHandler) HandleVideoExtensions(w http.ResponseWriter, r *http.Requ
 // HandleVideoGet handles GET /v1/videos/{id}.
 func (h *MediaHandler) HandleVideoGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid video job id")
+		return
+	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
 		"status": "completed",

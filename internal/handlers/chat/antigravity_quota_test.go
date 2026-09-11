@@ -127,3 +127,79 @@ func TestAntigravityQuota_CoalescingAndThrottle(t *testing.T) {
 		t.Errorf("expected callCount to stay 1 due to 30s throttle, got %d", callCount)
 	}
 }
+
+func TestAntigravityWeeklyQuota_ParseAndFetch(t *testing.T) {
+	rawSummary := []byte(`{
+		"groups": [
+			{
+				"displayName": "Gemini Models",
+				"buckets": [
+					{
+						"bucketId": "gemini-weekly-bucket",
+						"displayName": "Gemini Weekly Limit",
+						"disabled": false,
+						"remainingFraction": 0.75,
+						"resetTime": "2026-09-17T00:00:00Z"
+					}
+				]
+			},
+			{
+				"displayName": "Claude & GPT Models",
+				"buckets": [
+					{
+						"bucketId": "claude-gpt-weekly-bucket",
+						"displayName": "Claude GPT Weekly",
+						"disabled": false,
+						"remainingFraction": 0.20,
+						"resetTime": "2026-09-17T00:00:00Z"
+					}
+				]
+			}
+		]
+	}`)
+
+	parsed := ParseWeeklyQuotaSummary(rawSummary)
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 weekly quotas, got %d", len(parsed))
+	}
+
+	gw, ok := parsed["gemini_weekly"]
+	if !ok {
+		t.Fatal("expected gemini_weekly")
+	}
+	if gw.Total != 1000 || gw.Used != 250 || gw.RemainingPercentage != 75.0 {
+		t.Errorf("unexpected gemini_weekly values: %+v", gw)
+	}
+
+	cw, ok := parsed["claude_gpt_weekly"]
+	if !ok {
+		t.Fatal("expected claude_gpt_weekly")
+	}
+	if cw.Total != 1000 || cw.Used != 800 || cw.RemainingPercentage != 20.0 {
+		t.Errorf("unexpected claude_gpt_weekly values: %+v", cw)
+	}
+
+	// Test FetchAntigravityWeeklyQuota with mock server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-weekly-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(rawSummary)
+	}))
+	defer mockServer.Close()
+
+	oldBase := antigravityQuotaBaseURL
+	antigravityQuotaBaseURL = mockServer.URL
+	defer func() { antigravityQuotaBaseURL = oldBase }()
+
+	ClearAntigravityQuotaCache()
+	res, err := FetchAntigravityWeeklyQuota(context.Background(), mockServer.Client(), "test-weekly-token", "proj-1")
+	if err != nil {
+		t.Fatalf("FetchAntigravityWeeklyQuota failed: %v", err)
+	}
+	if len(res) != 2 {
+		t.Errorf("expected 2 quotas from fetch, got %d", len(res))
+	}
+}

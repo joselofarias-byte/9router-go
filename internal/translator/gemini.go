@@ -296,6 +296,10 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		}
 	}
 
+	// Normalize Gemini contents: merge adjacent same-role messages, strip empty parts,
+	// and ensure first turn is "user" (parity with decolua/9router v0.5.75 #e7b5f09).
+	req.Contents = NormalizeGeminiContents(req.Contents)
+
 	// Tools
 	if len(oreq.Tools) > 0 {
 		var openaiTools []OpenAITool
@@ -824,4 +828,44 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 		return parts
 	}
 	return nil
+}
+
+// NormalizeGeminiContents merges adjacent same-role messages, strips empty parts,
+// and ensures an initial user turn (parity with open-sse/translator/formats/gemini.js).
+func NormalizeGeminiContents(contents []GeminiContent) []GeminiContent {
+	var out []GeminiContent
+	for _, c := range contents {
+		if c.Role == "" || len(c.Parts) == 0 {
+			continue
+		}
+		var validParts []GeminiPart
+		for _, p := range c.Parts {
+			if isGeminiPartEmpty(p) {
+				continue
+			}
+			validParts = append(validParts, p)
+		}
+		if len(validParts) == 0 {
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].Role == c.Role {
+			out[len(out)-1].Parts = append(out[len(out)-1].Parts, validParts...)
+		} else {
+			out = append(out, GeminiContent{
+				Role:  c.Role,
+				Parts: validParts,
+			})
+		}
+	}
+	return out
+}
+
+func isGeminiPartEmpty(p GeminiPart) bool {
+	return p.Text == "" &&
+		p.Thought == nil &&
+		p.ThoughtSignature == "" &&
+		p.FunctionCall == nil &&
+		p.FunctionResponse == nil &&
+		p.InlineData == nil &&
+		p.FileData == nil
 }

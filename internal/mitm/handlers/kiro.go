@@ -24,8 +24,13 @@ func HandleKiro(w http.ResponseWriter, r *http.Request, body []byte) {
 		return
 	}
 
-	// Fix(kiro): remove redundant top-level systemPrompt field (decolua/9router #12)
+	// Fix(kiro): remove redundant top-level systemPrompt field and agentMode (decolua/9router #3776 / #1892ed7)
 	delete(reqBody, "systemPrompt")
+	delete(reqBody, "agentMode")
+	if cs, ok := reqBody["conversationState"].(map[string]any); ok {
+		delete(cs, "agentContinuationId")
+		delete(cs, "agentTaskType")
+	}
 
 	// Fix(kiro): preserve inline images in OpenAI MITM (userInputMessage.images -> image_url parts)
 	if uim, ok := reqBody["userInputMessage"].(map[string]any); ok {

@@ -109,6 +109,8 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		return fmt.Errorf("read upstream response: %w", err)
 	}
 
+	body = translator.UnwrapClineEnvelope(body)
+
 	if buf != nil {
 		buf.Write(body)
 	}

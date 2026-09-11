@@ -156,6 +156,11 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"gpt-5.6-sol-image":    {ImageOutput: true, Tools: true},
 		"gpt-5.6-terra-image":  {ImageOutput: true, Tools: true},
 		"gpt-5.6-luna-image":   {ImageOutput: true, Tools: true},
+		"gpt-image-2.5":        {ImageOutput: true, Tools: true},
+		"gpt-image-2.5-flare":  {ImageOutput: true, Tools: true},
+		"gpt-image-2.5-sunburst": {ImageOutput: true, Tools: true},
+		"gpt-image-2":          {ImageOutput: true, Tools: true},
+		"gpt-image-1.5":        {ImageOutput: true, Tools: true},
 	},
 	"codebuddy-cn": {
 		"glm-5.2":            {Vision: true, Reasoning: true, Tools: true},
@@ -176,7 +181,8 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"glm-5.3-flash":      {Vision: true, Reasoning: true, Tools: true},
 		"kimi-k3-1":          {Vision: true, Reasoning: true, Tools: true},
 		"deepseek-v4-pro":    {Vision: true, Reasoning: true, Tools: true},
-		"deepseek-v4-flash":  {Vision: true, Reasoning: true, Tools: true},
+		"deepseek-v4.1-flash": {Vision: true, Reasoning: true, Tools: true},
+		"deepseek-v4-flash":   {Vision: true, Reasoning: true, Tools: true},
 		"deepseek-v3-2-volc": {Reasoning: true, Tools: true},
 	},
 	"qoder": {
@@ -251,6 +257,7 @@ var patternCapabilities = []patternCapability{
 	{"*gpt-6*", Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true}},
 
 	{"*gpt-5*image*", Capabilities{ImageOutput: true, Tools: true}},
+	{"*gpt-image*", Capabilities{ImageOutput: true, Tools: true}},
 	{"*gpt-5*codex*", Capabilities{Reasoning: true, Search: true, Tools: true}},
 	{"*gpt-5*", Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true}},
 	{"*gpt-4o*", Capabilities{Vision: true, Search: true, Tools: true}},
@@ -279,6 +286,7 @@ var patternCapabilities = []patternCapability{
 	{"*qwen3.5*", Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true}},
 	{"*qwen3.6*", Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true}},
 	{"*qwen3.7*", Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true}},
+	{"*qwen3.8*", Capabilities{Vision: true, VideoInput: true, Reasoning: true, Tools: true}},
 	{"*qwen*plus*", Capabilities{Vision: true, Reasoning: true, Tools: true}},
 	{"*qwen*235b*", Capabilities{Reasoning: true, Tools: true}},
 	{"*qwq*", Capabilities{Reasoning: true, Tools: true}},
@@ -298,6 +306,7 @@ var patternCapabilities = []patternCapability{
 	{"*zai*", Capabilities{Reasoning: true, Tools: true}},
 
 	{"*deepseek-v4*", Capabilities{Reasoning: true, Tools: true}},
+	{"*deepseek*flash*", Capabilities{Vision: true, Reasoning: true, Tools: true}},
 	{"*reasoner*", Capabilities{Reasoning: true, Tools: true}},
 	{"*deepseek-r*", Capabilities{Reasoning: true, Tools: true}},
 	{"*deepseek-chat*", Capabilities{Tools: true}},
@@ -332,6 +341,8 @@ var patternCapabilities = []patternCapability{
 
 	{"*hunyuan*", Capabilities{Reasoning: true, Tools: true}},
 	{"hy3*", Capabilities{Reasoning: true, Tools: true}},
+	{"*hy4*", Capabilities{Reasoning: true, Tools: true}},
+	{"*longcat*", Capabilities{Tools: true}},
 	{"*step-*", Capabilities{Reasoning: true, Tools: true}},
 	{"*nemotron*", Capabilities{Reasoning: true, Tools: true}},
 	{"*ling-*", Capabilities{Reasoning: true, Tools: true}},
@@ -352,6 +363,8 @@ func GetModelTokenLimits(model string) (contextWindow int, maxOutput int) {
 	m := strings.ToLower(model)
 
 	switch {
+	case strings.Contains(m, "deepseek-v4.1-flash"):
+		return 1000000, 128000
 	case strings.Contains(m, "gemini-1.5") || strings.Contains(m, "gemini-2.0") || strings.Contains(m, "gemini-2.5") || strings.Contains(m, "gemini-3") || strings.Contains(m, "glm-5.3-flash"):
 		return 1048576, 65536
 	case strings.Contains(m, "grok-4.5") || strings.Contains(m, "grok-4.6"):

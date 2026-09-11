@@ -665,3 +665,16 @@ func EnsureStreamClosed(sessionKey string) []byte {
 	}
 	return buf.Bytes()
 }
+
+// UnwrapClineEnvelope unwraps {"success":true,"data":{...}} envelope from Cline/Clinepass
+// non-streaming responses (parity with open-sse/shared/clineEnvelope.js #122f23ee).
+func UnwrapClineEnvelope(body []byte) []byte {
+	var env struct {
+		Success bool           `json:"success"`
+		Data    jsontext.Value `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err == nil && env.Success && len(env.Data) > 0 && env.Data[0] == '{' {
+		return []byte(env.Data)
+	}
+	return body
+}

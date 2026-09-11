@@ -524,10 +524,12 @@ func fixAntigravityContents(req *GeminiRequest) bool {
 		}
 		fixed[i] = GeminiContent{Role: role, Parts: filtered}
 	}
-	if changed {
-		req.Contents = fixed
+	normalized := NormalizeGeminiContents(fixed)
+	if changed || len(normalized) != len(req.Contents) {
+		req.Contents = normalized
+		return true
 	}
-	return changed
+	return false
 }
 
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.

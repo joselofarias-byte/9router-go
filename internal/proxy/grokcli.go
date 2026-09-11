@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -86,15 +87,38 @@ func ForwardKimchi(ctx context.Context, client *http.Client, cfg *providers.Prov
 func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	invocationID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), time.Now().UnixNano())
 	headers := map[string]string{
-		"X-Amz-Target":          "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		"Amz-Sdk-Request":       "attempt=1; max=3",
-		"Amz-Sdk-Invocation-Id": invocationID,
-		"Accept":                "application/vnd.amazon.eventstream",
-		"User-Agent":            "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-		"X-Amz-User-Agent":      "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+		"X-Amz-Target":                     "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		"Amz-Sdk-Request":                  "attempt=1; max=3",
+		"Amz-Sdk-Invocation-Id":            invocationID,
+		"Accept":                           "application/vnd.amazon.eventstream",
+		"User-Agent":                       "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+		"X-Amz-User-Agent":                 "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+		"x-amzn-kiro-agent-mode":           "spec",
+		"x-amzn-codewhisperer-machine-id": "kiro-desktop",
+	}
+	if apiKey != "" {
+		headers["x-amz-sso-bearer"] = apiKey
 	}
 	setAuth(headers, cfg, apiKey)
-	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
+	clean := cleanKiroBody(body)
+	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, clean)
+}
+
+func cleanKiroBody(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	delete(m, "systemPrompt")
+	delete(m, "agentMode")
+	if cs, ok := m["conversationState"].(map[string]any); ok {
+		delete(cs, "agentContinuationId")
+		delete(cs, "agentTaskType")
+	}
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return body
 }
 
 // ForwardAzure forwards to Azure OpenAI with api-key header.

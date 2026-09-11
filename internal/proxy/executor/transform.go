@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -125,6 +126,17 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					if itemMap, ok := item.(map[string]any); ok {
 						if cid, ok := itemMap["call_id"].(string); ok && len(cid) > 64 {
 							itemMap["call_id"] = cid[:64]
+						}
+					}
+				}
+			}
+
+			// Strip Unicode property escapes from existing tools parameters (Codex /responses validator parity #3922)
+			if tools, ok := m["tools"].([]any); ok {
+				for _, t := range tools {
+					if tMap, ok := t.(map[string]any); ok {
+						if params, ok := tMap["parameters"].(map[string]any); ok {
+							tMap["parameters"] = StripCodexUnsupportedPatterns(params)
 						}
 					}
 				}
@@ -312,7 +324,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 								fn.Parameters["properties"] = map[string]any{}
 							}
 						}
-						tool["parameters"] = fn.Parameters
+						tool["parameters"] = StripCodexUnsupportedPatterns(fn.Parameters)
 					}
 				}
 				apiTools = append(apiTools, tool)
@@ -325,6 +337,56 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 
 	reqBody, err := json.Marshal(respReq)
 	return reqBody, cleanModel, err
+}
+
+var unicodePropertyEscapeRegex = regexp.MustCompile(`(^|[^\\])(\\\\)*\\[pP]\{`)
+
+// HasUnicodePropertyEscape reports whether a regex pattern string uses Unicode property escapes like \p{...}.
+func HasUnicodePropertyEscape(pattern string) bool {
+	return unicodePropertyEscapeRegex.MatchString(pattern)
+}
+
+// StripCodexUnsupportedPatterns strips \p{...} / \P{...} patterns from JSON Schema parameters (parity with #3922).
+func StripCodexUnsupportedPatterns(schema map[string]any) map[string]any {
+	cleaned := stripCodexNode(schema)
+	if m, ok := cleaned.(map[string]any); ok {
+		return m
+	}
+	return schema
+}
+
+func stripCodexNode(node any) any {
+	switch v := node.(type) {
+	case map[string]any:
+		next := make(map[string]any, len(v))
+		for k, val := range v {
+			if k == "pattern" {
+				if str, ok := val.(string); ok && HasUnicodePropertyEscape(str) {
+					continue
+				}
+			}
+			if k == "properties" {
+				if props, ok := val.(map[string]any); ok {
+					cleanedProps := make(map[string]any, len(props))
+					for propName, propSchema := range props {
+						cleanedProps[propName] = stripCodexNode(propSchema)
+					}
+					next[k] = cleanedProps
+					continue
+				}
+			}
+			next[k] = stripCodexNode(val)
+		}
+		return next
+	case []any:
+		next := make([]any, len(v))
+		for i, item := range v {
+			next[i] = stripCodexNode(item)
+		}
+		return next
+	default:
+		return v
+	}
 }
 
 // Kimchi body cleaning helpers

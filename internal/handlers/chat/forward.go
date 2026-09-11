@@ -325,6 +325,8 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 		return fmt.Errorf("read upstream response body: %w", err)
 	}
 
+	body = translator.UnwrapClineEnvelope(body)
+
 	if metrics != nil {
 		metrics.ResponseBuf.Write(body)
 	}

@@ -383,7 +383,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
 			"originator": "codex_cli_rs",
-			"User-Agent": "codex_cli_rs/0.136.0",
+			"User-Agent": "codex_cli_rs/0.154.0",
 		},
 	},
 	"grok-cli": {
@@ -392,7 +392,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"kiro": {
-			BaseURL:    "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+		BaseURL:    "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
 			AuthHeader: "Authorization",
 			AuthScheme: "bearer",
 		},
