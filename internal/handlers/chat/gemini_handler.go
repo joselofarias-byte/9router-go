@@ -411,7 +411,6 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 			}
 		} else {
 			hw.Write(openaiChunk)
-			hw.Write([]byte("\n\n"))
 		}
 		if flusher != nil {
 			flusher.Flush()

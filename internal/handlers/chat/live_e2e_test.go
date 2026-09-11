@@ -28,13 +28,34 @@ func getRealUserDB(t *testing.T) (*db.Repo, func()) {
 		t.Skipf("real db not found at %s", dbPath)
 	}
 
-	database, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	roDB, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
 		t.Fatalf("failed to open real db: %v", err)
 	}
+	defer roDB.Close()
 
-	repo := db.NewRepo(database)
-	return repo, func() { database.Close() }
+	memDB, cleanup := setupChatTestDB(t)
+
+	// Seed writable DB from real user DB connections
+	rows, err := roDB.Query("SELECT id, provider, authType, name, priority, isActive, data, createdAt, updatedAt FROM providerConnections")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, provider, authType, data, createdAt, updatedAt string
+			var name sql.NullString
+			var priority sql.NullInt64
+			var isActive int
+			if err := rows.Scan(&id, &provider, &authType, &name, &priority, &isActive, &data, &createdAt, &updatedAt); err == nil {
+				_, _ = memDB.Exec(
+					"INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					id, provider, authType, name, priority, isActive, data, createdAt, updatedAt,
+				)
+			}
+		}
+	}
+
+	repo := db.NewRepo(memDB)
+	return repo, cleanup
 }
 
 func TestLiveE2E_Antigravity_RealWeeklyQuota(t *testing.T) {
