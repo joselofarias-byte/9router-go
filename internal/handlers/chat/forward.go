@@ -84,7 +84,7 @@ func (h *ChatHandler) forwardRequest(
 			return h.handleJSONResponse(ctx, w, resp.Body, translateResponse, metrics)
 		}
 		// Wrap with SSE stall detection
-		stallReader := internalproxy.NewStallReader(resp.Body, 0, "upstream")
+		stallReader := internalproxy.NewStallReaderWithContext(ctx, resp.Body, 0, "upstream")
 		bodyCloser = stallReader
 		return h.handleStreamResponse(ctx, w, stallReader, translateResponse, start, metrics)
 	}
@@ -93,10 +93,12 @@ func (h *ChatHandler) forwardRequest(
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
 func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
-	flusher := internalproxy.WriteSSEHeaders(w)
+	hw := internalproxy.NewHeartbeatWriter(ctx, w, 0)
+	defer hw.Close()
+	flusher := internalproxy.WriteSSEHeaders(hw)
 
 	if !translate {
-		return internalproxy.SSECopy(w, upstream, flusher, func(chunk []byte) {
+		return internalproxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			if metrics.TTFT == 0 {
 				metrics.TTFT = time.Since(startTime).Milliseconds()
 			}
@@ -111,7 +113,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	}
 	defer func() {
 		if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
-			w.Write(endChunk)
+			hw.Write(endChunk)
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -135,7 +137,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 			metrics.TTFT = time.Since(startTime).Milliseconds()
 		}
 		metrics.ResponseBuf.Write(translated)
-		w.Write(translated)
+		hw.Write(translated)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -144,7 +146,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	// a natural finish emits, so the client sees a clean [DONE] instead of a
 	// truncated stream (the stall reader already closed the upstream body).
 	if shutdown.Fired() && !finished {
-		w.Write([]byte("data: [DONE]\n\n"))
+		hw.Write([]byte("data: [DONE]\n\n"))
 		if flusher != nil {
 			flusher.Flush()
 		}

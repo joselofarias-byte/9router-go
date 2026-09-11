@@ -345,8 +345,28 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	}
 
 	// Claude thinking config → OpenAI reasoning_effort
-	if creq.Thinking != nil && creq.Thinking.Type == "enabled" {
-		oreq.ReasoningEffort = budgetToEffort(creq.Thinking.Budget)
+	if creq.Thinking != nil {
+		if creq.Thinking.Type == "enabled" {
+			oreq.ReasoningEffort = budgetToEffort(creq.Thinking.Budget)
+		} else if creq.Thinking.Type == "adaptive" {
+			effort := "high"
+			if creq.OutputConfig != nil && creq.OutputConfig.Effort != "" {
+				eff := strings.ToLower(creq.OutputConfig.Effort)
+				if eff == "xhigh" || eff == "auto" {
+					effort = "high"
+				} else {
+					effort = eff
+				}
+			}
+			oreq.ReasoningEffort = effort
+		}
+	} else if creq.OutputConfig != nil && creq.OutputConfig.Effort != "" {
+		eff := strings.ToLower(creq.OutputConfig.Effort)
+		if eff == "xhigh" || eff == "auto" {
+			oreq.ReasoningEffort = "high"
+		} else {
+			oreq.ReasoningEffort = eff
+		}
 	}
 
 	out, err := json.Marshal(oreq)

@@ -4,9 +4,9 @@
 > `9router-go` is the engine swap to Go for performance (proxy/streaming/SSE).
 > This document tracks the feature gap for porting decisions.
 
-> **Sync:** `9router-go v1.8.8` is synced with `decolua/9router v0.5.65` (31 commits `v0.5.59...v0.5.65`) — 100% engine parity.
+> **Sync:** `9router-go v1.8.9` is synced with `decolua/9router v0.5.69` (19 commits `v0.5.65...v0.5.69`) — 100% engine parity.
 
-**Date:** 2026-09-03
+**Date:** 2026-09-06
 
 ---
 
