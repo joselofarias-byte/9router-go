@@ -116,6 +116,86 @@ func TestTryForwardWithConnection_Success(t *testing.T) {
 	}
 }
 
+// TestTryForwardWithConnection_RecordsRealLatency verifies a successful
+// non-streaming real request feeds its latency into the shared trust manager
+// (the fabric-free scoring feedback loop from real user traffic, not just
+// probes).
+func TestTryForwardWithConnection_RecordsRealLatency(t *testing.T) {
+	resetFabricRoutingStateForTests()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"done"}}],"usage":{"prompt_tokens":2,"completion_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedConnDB(t, database, "deepseek", "conn-latency", "sk-latency", srv.URL)
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := h.tryForwardWithConnection(context.Background(), rec, "deepseek", "deepseek-chat", "conn-latency", &ConnectionData{APIKey: "sk-latency", BaseURL: srv.URL}, body, false, false, "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, hasData := globalTrustManager.LatencyStats("deepseek", "deepseek-chat", "conn-latency"); !hasData {
+		t.Error("expected a real-traffic latency sample recorded in the trust manager")
+	}
+}
+
+// TestTryForwardWithConnection_LatencyPrefersTTFTOverTotalDuration verifies a
+// streaming success records time-to-first-token, not the full stream
+// lifetime, as its latency sample — a slow-to-finish-but-fast-to-start
+// stream must not be scored as a slow route.
+func TestTryForwardWithConnection_LatencyPrefersTTFTOverTotalDuration(t *testing.T) {
+	resetFabricRoutingStateForTests()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		// Fast first chunk...
+		w.Write([]byte("data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n"))
+		flusher.Flush()
+		// ...then a deliberately slow tail before the stream finishes. If
+		// total duration were recorded instead of TTFT, this would drag the
+		// latency sample well past 300ms.
+		time.Sleep(300 * time.Millisecond)
+		w.Write([]byte("data: {\"id\":\"c1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		flusher.Flush()
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedConnDB(t, database, "deepseek", "conn-ttft", "sk-ttft", srv.URL)
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	body := []byte(`{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := h.tryForwardWithConnection(context.Background(), rec, "deepseek", "deepseek-chat", "conn-ttft", &ConnectionData{APIKey: "sk-ttft", BaseURL: srv.URL}, body, true, false, "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	avgMs, hasData := globalTrustManager.LatencyStats("deepseek", "deepseek-chat", "conn-ttft")
+	if !hasData {
+		t.Fatal("expected a latency sample recorded for the streamed success")
+	}
+	if avgMs >= 300 {
+		t.Errorf("expected recorded latency to reflect TTFT (well under 300ms), got %dms — total stream duration was recorded instead", avgMs)
+	}
+}
+
 func TestTryForwardWithConnection_NoAPIKey(t *testing.T) {
 	h, cleanup := setupHandlerForForward(t)
 	defer cleanup()

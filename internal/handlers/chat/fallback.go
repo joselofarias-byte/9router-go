@@ -246,6 +246,32 @@ func (h *ChatHandler) tryForwardWithConnection(
 	})
 
 	if fwdErr == nil {
+		// Feed real production latency into the shared trust manager so
+		// routing/scoring reflects actual observed performance, not only
+		// probe traffic (see FabricProber.Probe, which reuses this exact
+		// function and therefore gets this same recording for free — its own
+		// separate RecordLatency call was removed to avoid double-counting).
+		// ctx.Err() is checked defensively: fwdErr == nil should already
+		// imply the request ran to completion, but a cancelled request must
+		// never contribute a latency sample — its duration reflects when the
+		// client gave up, not how fast the upstream actually was.
+		//
+		// TTFT (time to first token) is preferred over total request
+		// duration: for a streaming response, "how long the whole answer
+		// took to finish" is not a meaningful measure of a route's
+		// responsiveness and would bias scoring against providers that
+		// stream long, useful answers. TTFT is 0 only when nothing was ever
+		// forwarded (impossible here, since fwdErr == nil means a response
+		// was received) or for executors that don't populate it, so falling
+		// back to the total latency keeps every success path covered.
+		if ctx.Err() == nil {
+			observedLatencyMs := metrics.TTFT
+			if observedLatencyMs <= 0 {
+				observedLatencyMs = latencyMs
+			}
+			globalTrustManager.RecordLatency(provider, model, connectionID, int(observedLatencyMs))
+		}
+
 		// Clear any existing model lock on success (matching Next.js clearAccountError)
 		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, model); unlockErr != nil {
 			log.Warn("fallback", "unlock failed", "provider", provider, "model", model, "error", unlockErr)

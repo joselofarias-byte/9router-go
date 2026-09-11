@@ -38,6 +38,24 @@ func TestTrustManager(t *testing.T) {
 	}
 }
 
+// TestTrustManager_ModelNotFoundImmediateQuarantine verifies a model-not-found
+// failure quarantines a node immediately like auth/permanent failures do,
+// rather than waiting for the consecutive-failure threshold — the exact
+// provider/model/account combination will not start working on retry.
+func TestTrustManager_ModelNotFoundImmediateQuarantine(t *testing.T) {
+	tm := NewManager()
+
+	tm.RecordObservation("prov", "bad-model", "acc", true, "")
+	if lvl := tm.GetTrustLevel("prov", "bad-model", "acc"); lvl != TrustVerified {
+		t.Fatalf("expected Verified before failure, got %s", lvl)
+	}
+
+	tm.RecordObservation("prov", "bad-model", "acc", false, providers.ErrModelNotFound)
+	if lvl := tm.GetTrustLevel("prov", "bad-model", "acc"); lvl != TrustQuarantined {
+		t.Errorf("expected immediate Quarantined on model_not_found, got %s", lvl)
+	}
+}
+
 func TestTrustManager_LatencyStats(t *testing.T) {
 	tm := NewManager()
 

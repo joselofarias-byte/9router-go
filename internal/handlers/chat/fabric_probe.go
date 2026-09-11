@@ -133,9 +133,11 @@ func (h *ChatHandler) HandleFabricProbe(w http.ResponseWriter, r *http.Request) 
 	}
 
 	globalTrustManager.RecordObservation(provider, model, account, result.Success, result.ErrorCategory)
-	if result.LatencyMs > 0 {
-		globalTrustManager.RecordLatency(provider, model, account, result.LatencyMs)
-	}
+	// Latency is NOT recorded here: Probe() dispatches through the same
+	// tryForwardWithConnection real requests use, which already records a
+	// latency sample on success. Recording it again here would double-count
+	// every probe against the same trust-manager average that real traffic
+	// also feeds.
 
 	handlerutil.WriteJSON(w, http.StatusOK, result)
 }

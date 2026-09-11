@@ -2,8 +2,11 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/providers"
@@ -34,15 +37,40 @@ func streamHeaders(headers map[string]string, isStream bool) {
 
 // ForwardGrokCLI forwards to grok-cli using OpenAI Responses API format.
 // Body transformation (Chat→Responses API) is done by the caller.
+//
+// The configured base URL (providers.KnownProviders["grok-cli"].BaseURL) is a
+// bare host, e.g. "https://cli-chat-proxy.grok.com" — posting there directly
+// hits the root path, which the CLI's own backend does not serve. Root and
+// "/v1" are normalized to "/v1/responses"; an already-specific custom path is
+// left untouched so a user-overridden connection base URL still works.
+// X-XAI-Token-Auth and x-grok-model-override mirror headers the real grok-cli
+// client sends and that the backend uses to route/authorize the request.
 func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	headers := map[string]string{
 		"User-Agent":               "grok-shell/0.2.99 (linux; x86_64)",
 		"x-grok-client-identifier": "grok-shell",
 		"x-grok-client-version":    "0.2.99",
+		"X-XAI-Token-Auth":         "xai-grok-cli",
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) == nil && payload.Model != "" {
+		headers["x-grok-model-override"] = payload.Model
 	}
 	setAuth(headers, cfg, apiKey)
 	streamHeaders(headers, isStream)
-	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
+	endpoint, err := url.Parse(cfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Grok endpoint")
+	}
+	switch strings.TrimRight(endpoint.Path, "/") {
+	case "":
+		endpoint.Path = "/v1/responses"
+	case "/v1":
+		endpoint.Path = "/v1/responses"
+	}
+	return DoRequest(ctx, client, "POST", endpoint.String(), headers, body)
 }
 
 // ForwardCodex forwards to codex / perplexity-agent using OpenAI Responses API format.

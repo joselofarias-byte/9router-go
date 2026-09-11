@@ -94,8 +94,12 @@ func (m *Manager) RecordObservation(provider, model, account string, success boo
 		r.TotalFailures++
 		r.LastFailureAt = time.Now()
 
-		// Immediately quarantine on authentication or permanent failures
-		if errCat == providers.ErrAuth || errCat == providers.ErrPermanent {
+		// Immediately quarantine on authentication, permanent, or
+		// model-not-found failures — a node that fails one of these on the
+		// exact provider/model/account it was invoked with will not recover
+		// on the next request, so waiting out the failure-count threshold
+		// below would just waste real user requests on a known-bad route.
+		if errCat == providers.ErrAuth || errCat == providers.ErrPermanent || errCat == providers.ErrModelNotFound {
 			m.quarantine(r, 60*time.Minute)
 			log.Warn("trust", "immediate quarantine", "node", k, "reason", string(errCat))
 		} else if r.ConsecutiveFailures > 5 {

@@ -163,6 +163,7 @@ func runServer(cCtx *cli.Context) error {
 		discovery.NewModelsDevAdapter(nil),
 		discovery.NewClineFreeAdapter(nil),
 		discovery.NewKiroStaticAdapter(),
+		discovery.NewKiraAdapter(nil, os.Getenv("KIRA_BASE_URL")),
 	}
 
 	unoAPIKey := os.Getenv("UNOROUTER_API_KEY")
