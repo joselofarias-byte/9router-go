@@ -69,6 +69,27 @@ func TestProcessCodexEvent_DoneCarriesToolCallID(t *testing.T) {
 	}
 }
 
+func TestProcessCodexEvent_OutputItemDone_NoDuplicateArguments(t *testing.T) {
+	// Scenario 1: delta already streamed arguments -> output_item.done must NOT re-emit arguments
+	state := &CodexStreamState{}
+	deltaOut := ProcessCodexEvent(`{"type":"response.function_call_arguments.delta","call_id":"call_1","delta":"{\"q\":\"*.yaml\"}","name":"search_file"}`, state, "chatcmpl-x", 1)
+	if len(deltaOut) == 0 {
+		t.Fatal("expected delta chunk")
+	}
+
+	doneOut := ProcessCodexEvent(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","arguments":"{\"q\":\"*.yaml\"}"}}`, state, "chatcmpl-x", 1)
+	if len(doneOut) != 0 {
+		t.Fatalf("expected output_item.done to be suppressed after delta, but got %d chunk(s): %v", len(doneOut), doneOut)
+	}
+
+	// Scenario 2: no delta was sent (upstream only sent output_item.done) -> MUST emit arguments
+	state2 := &CodexStreamState{}
+	doneOut2 := ProcessCodexEvent(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_2","arguments":"{\"q\":\"*.yaml\"}"}}`, state2, "chatcmpl-x", 1)
+	if len(doneOut2) == 0 {
+		t.Fatal("expected output_item.done to emit arguments when no delta was streamed")
+	}
+}
+
 // tool-input-delta must carry the id so the client can associate the
 // incremental arguments with the tool call started by tool-input-start.
 func TestProcessCommandcodeEvent_ToolInputDeltaHasID(t *testing.T) {

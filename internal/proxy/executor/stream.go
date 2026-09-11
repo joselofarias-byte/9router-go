@@ -188,6 +188,10 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			state.ToolCallArgs = make(map[string]string)
 		}
 		state.ToolCallArgs[callID] += delta
+		if state.ArgsEmitted == nil {
+			state.ArgsEmitted = make(map[int]bool)
+		}
+		state.ArgsEmitted[idx] = true
 		fnMap := map[string]any{
 			"arguments": delta,
 		}
@@ -255,9 +259,6 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				state.ToolCallIdx[callID] = idx
 				state.ToolCallCount++
 			}
-		}
-		if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
-			return nil
 		}
 		// If name wasn't captured before, use it now
 		if name == "" && state.ToolCallNames != nil {
