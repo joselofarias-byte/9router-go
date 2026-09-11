@@ -188,7 +188,6 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			state.ToolCallArgs = make(map[string]string)
 		}
 		state.ToolCallArgs[callID] += delta
-
 		fnMap := map[string]any{
 			"arguments": delta,
 		}
@@ -350,6 +349,12 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				}
 				fullArgs, _ := item["arguments"].(string)
 				if fullArgs != "" {
+					if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
+						return nil
+					}
+					if existing, ok := state.ToolCallArgs[callID]; ok && existing != "" {
+						return nil
+					}
 					if state.ToolCallArgs == nil {
 						state.ToolCallArgs = make(map[string]string)
 					}
@@ -357,28 +362,26 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 					if state.ArgsEmitted == nil {
 						state.ArgsEmitted = make(map[int]bool)
 					}
-					if !state.ArgsEmitted[idx] {
-						state.ArgsEmitted[idx] = true
-						chunk := map[string]any{
-							"id":      responseID,
-							"object":  "chat.completion.chunk",
-							"created": created,
-							"choices": []map[string]any{{
-								"index": 0,
-								"delta": map[string]any{
-									"tool_calls": []map[string]any{{
-										"index": idx,
-										"function": map[string]any{
-											"arguments": fullArgs,
-										},
-									}},
-								},
-							}},
-						}
-						b, err := json.Marshal(chunk)
-						if err == nil {
-							return []string{fmt.Sprintf("data: %s\n\n", string(b))}
-						}
+					state.ArgsEmitted[idx] = true
+					chunk := map[string]any{
+						"id":      responseID,
+						"object":  "chat.completion.chunk",
+						"created": created,
+						"choices": []map[string]any{{
+							"index": 0,
+							"delta": map[string]any{
+								"tool_calls": []map[string]any{{
+									"index": idx,
+									"function": map[string]any{
+										"arguments": fullArgs,
+									},
+								}},
+							},
+						}},
+					}
+					b, err := json.Marshal(chunk)
+					if err == nil {
+						return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 					}
 				}
 			}
