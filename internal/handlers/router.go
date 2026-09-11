@@ -117,8 +117,11 @@ func SetupRoutes(r interface {
 	// Control Plane / Fabric admin visibility (registry snapshot, routing
 	// explain, and a fabric-free-focused status view with skip reasons).
 	r.Get("/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/admin/registry/snapshots", chatH.HandleAdminSnapshots)
+	r.Post("/admin/registry/rollback", chatH.HandleAdminRollback)
 	r.Get("/admin/explain-route", chatH.HandleAdminExplainRoute)
 	r.Get("/admin/fabric/status", chatH.HandleFabricStatus)
+	r.Post("/admin/fabric/probe", chatH.HandleFabricProbe)
 }
 
 // SetupServerRouter mounts public endpoints (/health, /api/hello) and

@@ -162,6 +162,7 @@ func runServer(cCtx *cli.Context) error {
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
 		discovery.NewClineFreeAdapter(nil),
+		discovery.NewKiroStaticAdapter(),
 	}
 
 	unoAPIKey := os.Getenv("UNOROUTER_API_KEY")

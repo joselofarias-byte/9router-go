@@ -123,9 +123,13 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					IsFreeTier:         isFree,
 					AccountRiskPenalty: riskProfile.ScorePenalty,
 					SuccessRate:        successRate,
-					// TTFT/Latency are populated by probes when available;
-					// left neutral here (see scoring.Calculate) until the
-					// probe -> scoring wiring lands.
+				}
+				// TTFT/Latency reflect the last verification probe for this
+				// node when one has run; left neutral (scoring.Calculate
+				// treats TTFTMs == 0 as "unknown") until a probe reports in.
+				if avgMs, hasLatency := e.TrustManager.LatencyStats(provID, pm.ModelID, acc.ID); hasLatency {
+					factors.TTFTMs = avgMs
+					factors.LatencyMs = avgMs
 				}
 
 				score := scoring.Calculate(factors)

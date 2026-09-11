@@ -34,10 +34,10 @@ func TestSnapshotCycle(t *testing.T) {
 	}
 
 	state := &RegistryState{
-		Providers: make(map[string]*Provider),
-		Models:    make(map[string]*Model),
+		Providers:      make(map[string]*Provider),
+		Models:         make(map[string]*Model),
 		ProviderModels: make(map[string]map[string]*ProviderModel),
-		Accounts:  make(map[string]*Account),
+		Accounts:       make(map[string]*Account),
 	}
 
 	snap, err := CreateSnapshot(db, state, "initialization")
@@ -187,5 +187,68 @@ func TestSnapshotLKG_CorruptChain(t *testing.T) {
 	restartedState := GetActiveState()
 	if restartedState == nil || restartedState.Providers["old"] == nil {
 		t.Fatalf("expected restarted registry to maintain the recovered 'old' state")
+	}
+}
+
+func TestListSnapshots(t *testing.T) {
+	tempDB := "test_list_snapshots.db"
+	defer os.Remove(tempDB)
+
+	db, err := sql.Open("sqlite", tempDB)
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`
+		CREATE TABLE registry_snapshots (
+			version TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			checksum TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+
+	state := &RegistryState{
+		Providers:      make(map[string]*Provider),
+		Models:         make(map[string]*Model),
+		ProviderModels: make(map[string]map[string]*ProviderModel),
+		Accounts:       make(map[string]*Account),
+	}
+
+	for _, reason := range []string{"first", "second", "third"} {
+		if _, err := CreateSnapshot(db, state, reason); err != nil {
+			t.Fatalf("failed to create snapshot %q: %v", reason, err)
+		}
+	}
+
+	metas, err := ListSnapshots(db, 0)
+	if err != nil {
+		t.Fatalf("ListSnapshots returned error: %v", err)
+	}
+	if len(metas) != 3 {
+		t.Fatalf("expected 3 snapshots, got %d", len(metas))
+	}
+	for _, m := range metas {
+		if m.Version == "" {
+			t.Error("expected non-empty version")
+		}
+	}
+
+	limited, err := ListSnapshots(db, 1)
+	if err != nil {
+		t.Fatalf("ListSnapshots(limit=1) returned error: %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("expected 1 snapshot with limit=1, got %d", len(limited))
+	}
+
+	if _, err := ListSnapshots(nil, 10); err == nil {
+		t.Error("expected error for nil db")
 	}
 }

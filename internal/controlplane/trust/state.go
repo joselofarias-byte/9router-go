@@ -36,6 +36,12 @@ type Record struct {
 	TotalFailures int
 	LastSuccessAt time.Time
 	LastFailureAt time.Time
+
+	// TotalLatencyMs/LatencySamples accumulate probe-observed round-trip
+	// latency so scoring can read a real average TTFT for this node instead
+	// of the neutral placeholder used before any probe has run.
+	TotalLatencyMs int64
+	LatencySamples int
 }
 
 type Manager struct {
@@ -133,6 +139,44 @@ func (m *Manager) SuccessRate(provider, model, account string) (rate float64, ha
 		return 0, false
 	}
 	return float64(r.TotalSuccess) / float64(total), true
+}
+
+// RecordLatency stores an observed round-trip latency (ms) for a node,
+// typically from a verification probe run outside the hot path. It never
+// affects trust level or quarantine — only the running average consulted by
+// scoring for the performance dimension.
+func (m *Manager) RecordLatency(provider, model, account string, latencyMs int) {
+	if latencyMs < 0 {
+		return
+	}
+	k := m.key(provider, model, account)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	r, exists := m.records[k]
+	if !exists {
+		r = &Record{Level: TrustUnknown}
+		m.records[k] = r
+	}
+	r.TotalLatencyMs += int64(latencyMs)
+	r.LatencySamples++
+}
+
+// LatencyStats returns the average observed latency (ms) for a node and
+// whether any probe has recorded a sample yet. Callers should fall back to a
+// neutral performance score when hasData is false.
+func (m *Manager) LatencyStats(provider, model, account string) (avgMs int, hasData bool) {
+	k := m.key(provider, model, account)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	r, exists := m.records[k]
+	if !exists || r.LatencySamples == 0 {
+		return 0, false
+	}
+	return int(r.TotalLatencyMs / int64(r.LatencySamples)), true
 }
 
 // RecordSnapshot is a read-only copy of a trust Record plus the node key it

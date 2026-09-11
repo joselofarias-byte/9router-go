@@ -166,3 +166,41 @@ func TestEngine_SelectCandidates_AccountRiskOrdering(t *testing.T) {
 		t.Errorf("expected safe-api to outrank antigravity when otherwise equivalent, got order %+v", res)
 	}
 }
+
+// TestEngine_SelectCandidates_ProbeLatencyWiring verifies that a probe-observed
+// latency recorded on the shared trust manager (via Manager.RecordLatency)
+// actually reaches the scoring engine's performance dimension, closing the
+// gap the routing engine used to leave as a permanently neutral placeholder.
+func TestEngine_SelectCandidates_ProbeLatencyWiring(t *testing.T) {
+	registry.InitRegistry(nil)
+	state := registry.GetActiveState()
+
+	state.Providers["fast"] = &registry.Provider{ID: "fast", IsActive: true}
+	state.Providers["slow"] = &registry.Provider{ID: "slow", IsActive: true}
+
+	state.ProviderModels["fast"] = map[string]*registry.ProviderModel{
+		"m": {ProviderID: "fast", ModelID: "m", PricingMode: "free", IsActive: true},
+	}
+	state.ProviderModels["slow"] = map[string]*registry.ProviderModel{
+		"m": {ProviderID: "slow", ModelID: "m", PricingMode: "free", IsActive: true},
+	}
+
+	state.Accounts["fa"] = &registry.Account{ID: "fa", ProviderID: "fast", IsActive: true}
+	state.Accounts["sa"] = &registry.Account{ID: "sa", ProviderID: "slow", IsActive: true}
+
+	tm := trust.NewManager()
+	tm.RecordLatency("fast", "m", "fa", 100)  // well under the 500ms ideal TTFT
+	tm.RecordLatency("slow", "m", "sa", 5000) // far over — should incur a performance penalty
+
+	engine := &Engine{TrustManager: tm}
+	res := engine.SelectCandidates("m", PolicyBalanced)
+	if len(res) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(res))
+	}
+	if res[0].ProviderID != "fast" {
+		t.Fatalf("expected the low-latency probe result to outrank the high-latency one, got order %+v", res)
+	}
+	if res[0].Score.Total <= res[1].Score.Total {
+		t.Errorf("expected fast candidate to score strictly higher, got fast=%.2f slow=%.2f", res[0].Score.Total, res[1].Score.Total)
+	}
+}
