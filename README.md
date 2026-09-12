@@ -5,7 +5,7 @@
 
 High-performance Go proxy gateway for [9Router](https://github.com/decolua/9router) LLM routing.
 
-> **Sync:** `v1.8.8` ↔ `decolua/9router v0.5.65` (31 commits `v0.5.59...v0.5.65`) — see `CHANGELOG.md` & `ARCHITECTURE.md` for the latest flow diagrams (Gemini 3.8, Opencode 1.3, Ollama web_fetch, SSRF hardening).
+> **Sync:** `v1.8.11` ↔ `decolua/9router v0.5.75` + upstream PR ports (#3973, #3981, #3968) — see `CHANGELOG.md` & `ARCHITECTURE.md` for details.
 
 > **9Router** is a local AI routing gateway + dashboard. This Go proxy replaces the Next.js `/v1/*` routes for high-throughput LLM traffic, while the [9Router dashboard](https://github.com/decolua/9router) handles management UI (providers, API keys, combos, usage tracking).
 
@@ -103,18 +103,106 @@ tryForwardWithConnection()
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flow diagrams (combo, fusion, error classification, locking, SSE stall, etc.).
 
-## Quick Start
+## 📥 Download & Installation
+
+### Option 1: Pre-built Binaries (Recommended)
+Download the latest binary for your OS and architecture from [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest):
+
+| Platform | Architecture | Binary |
+|----------|--------------|--------|
+| **Linux** | x86_64 (`amd64`) | [`9router-go-linux-amd64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-linux-amd64) |
+| **Linux** | ARM64 (`arm64`) | [`9router-go-linux-arm64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-linux-arm64) |
+| **macOS** | Apple Silicon (`arm64`) | [`9router-go-darwin-arm64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-darwin-arm64) |
+| **macOS** | Intel (`amd64`) | [`9router-go-darwin-amd64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-darwin-amd64) |
+| **Windows** | x86_64 (`amd64`) | [`9router-go-windows-amd64.exe`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-windows-amd64.exe) |
+
+**One-liner download (Linux / macOS):**
+```bash
+# Detect OS & Arch, download to ./9router-go and make executable
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+curl -sL "https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-${OS}-${ARCH}" -o 9router-go
+chmod +x 9router-go
+```
+
+### Option 2: Docker
+```bash
+docker run -d \
+  --name 9router-go \
+  -p 20130:20130 \
+  -v ~/.9router/db:/root/.9router/db \
+  luqmenul/9router-go:latest
+```
+
+### Option 3: Go Install
+```bash
+go install github.com/luqman-v1/9router-go/cmd/9router-go@latest
+```
+
+### Option 4: Build from Source
+```bash
+git clone https://github.com/luqman-v1/9router-go.git
+cd 9router-go
+go build -o 9router-go ./cmd/9router-go/
+```
+
+---
+
+## 🚀 Running 9Router-Go
 
 ```bash
-# Build
-go build -o 9router-go ./cmd/9router-go/
+# Run with default settings (port 20130, automatically locates ~/.9router/db/data.sqlite)
+./9router-go
 
-# Run (standalone, no dashboard needed)
+# Or specify custom port or database path:
 PORT=20128 ./9router-go
+# or using flags:
+./9router-go --port 20128 --db-path ~/.9router/db/data.sqlite
 
-# Health check
-curl http://localhost:20128/health
+# Verify server health:
+curl http://localhost:20130/health
 ```
+
+---
+
+## 🔌 How to Use (Client Setup)
+
+9Router-Go provides an **OpenAI-compatible `/v1` endpoint** (plus native Claude `/v1/messages` and Gemini format translation).
+
+### 1. Direct cURL Example
+```bash
+curl http://localhost:20130/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "ag/gemini-3.8-flash-high",
+    "messages": [{"role": "user", "content": "Hello 9Router!"}],
+    "stream": true
+  }'
+```
+
+### 2. Claude Code CLI
+Configure your environment variables to point Claude Code to 9Router:
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:20130/v1"
+export ANTHROPIC_API_KEY="sk-your-key"
+claude
+```
+
+### 3. Oh My Pi (`omp`)
+In `~/.omp/agent/models.yml`:
+```yaml
+providers:
+  myco:
+    baseUrl: http://localhost:20130/v1
+    apiKey: sk-your-key
+    api: openai-completions
+```
+
+### 4. Cursor / VS Code / Cline / Continue
+- **Base URL**: `http://localhost:20130/v1`
+- **API Key**: `sk-your-api-key` (or any string if authentication is public/single-user)
+- **Model**: Select any configured model or combo (e.g., `ag/gemini-3.8-flash-high`, `deepseek/deepseek-chat`, combo name).
 
 ## Combo Strategies
 
