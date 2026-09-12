@@ -307,7 +307,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	if sessionKey != "" {
 		statesMu.Lock()
 		if prev, ok := pendingJSON[sessionKey]; ok {
-			dataPart = append(prev, dataPart...)
+			dataPart = append(prev.data, dataPart...)
 			delete(pendingJSON, sessionKey)
 		}
 		statesMu.Unlock()
@@ -317,7 +317,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	if err := json.Unmarshal(dataPart, &chunk); err != nil {
 		if sessionKey != "" && isTruncatedJSON(err) && len(dataPart) < maxPendingJSON {
 			statesMu.Lock()
-			pendingJSON[sessionKey] = dataPart
+			pendingJSON[sessionKey] = pendingFragment{data: dataPart, createdAt: time.Now()}
 			statesMu.Unlock()
 			return nil, nil // hold the fragment until the continuation arrives
 		}

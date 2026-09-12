@@ -208,10 +208,10 @@ func TestPruneStaleStates_PrunesPendingJSON(t *testing.T) {
 	// Seed stale state and orphan pendingJSON
 	staleKey := "stale-session-123"
 	states[staleKey] = &StreamState{CreatedAt: time.Now().Add(-15 * time.Minute)}
-	pendingJSON[staleKey] = []byte(`{"fragment":"stale"}`)
+	pendingJSON[staleKey] = pendingFragment{data: []byte(`{"fragment":"stale"}`), createdAt: time.Now().Add(-15 * time.Minute)}
 
 	orphanKey := "orphan-session-456"
-	pendingJSON[orphanKey] = []byte(`{"fragment":"orphan"}`)
+	pendingJSON[orphanKey] = pendingFragment{data: []byte(`{"fragment":"orphan"}`), createdAt: time.Now().Add(-15 * time.Minute)}
 
 	// Populate enough entries to trigger pruning threshold
 	for i := range 55 {

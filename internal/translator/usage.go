@@ -7,13 +7,18 @@ import (
 	"time"
 )
 
+type pendingFragment struct {
+	data      []byte
+	createdAt time.Time
+}
+
 var (
 	statesMu sync.Mutex
 	states   = make(map[string]*StreamState)
 	// pendingJSON holds the tail of a truncated SSE JSON payload, keyed by
 	// sessionKey, until the continuation chunk arrives. Some upstreams (opencode
 	// free-tier) split a single JSON object across multiple SSE events.
-	pendingJSON = make(map[string][]byte)
+	pendingJSON = make(map[string]pendingFragment)
 )
 
 // maxPendingJSON bounds a single buffered fragment so a hostile/endless
@@ -42,8 +47,8 @@ func pruneStaleStatesLocked() {
 			delete(pendingJSON, k)
 		}
 	}
-	for k := range pendingJSON {
-		if _, exists := states[k]; !exists {
+	for k, f := range pendingJSON {
+		if f.createdAt.IsZero() || now.Sub(f.createdAt) > 10*time.Minute {
 			delete(pendingJSON, k)
 		}
 	}
