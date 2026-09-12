@@ -1,6 +1,25 @@
 # Changelog
 
 
+## [v1.8.11] — 2026-09-12
+
+### 🐛 Bug Fixes & Parity — Upstream PR Porting
+
+**Gemini Multiple System Messages Preservation (PR #3973):**
+- `internal/translator/gemini.go` — Preserved all `role: "system"` messages in `req.SystemInstruction.Parts` rather than overwriting earlier instructions with the last turn, ensuring all system prompts and developer directives reach Gemini models.
+
+**Antigravity Thinking Budget & Output Tokens Guard (PR #3981):**
+- `internal/translator/gemini.go` & `internal/translator/antigravity.go` — Guarded `maxOutputTokens > thinkingBudget` across `TranslateOpenAIToGemini` and `hardenAntigravityRequest`, preventing HTTP 400 `INVALID_ARGUMENT: max_tokens must be greater than thinking.budget_tokens` and erroneous connection locks on reasoning models.
+- Added support for `max_completion_tokens`, `thinking.budget_tokens`, and `thinking_budget`.
+
+**Claude Document Block Support for Antigravity & OpenAI (PR #3968):**
+- `internal/translator/request.go` & `internal/translator/types.go` — Added `document` block handling in `TranslateClaudeToOpenAI` and `OpenAIFile` struct in `OpenAIContentBlock`, converting base64 PDF documents into OpenAI file format that flows into Gemini/Antigravity `inlineData`.
+
+**Client Cancellation Tracing & Stream Telemetry:**
+- `internal/handlers/chat/fallback.go` — Differentiated client cancellations (`errors.Is(fwdErr, context.Canceled)` or `ctx.Err() != nil`) from true upstream failures, logging `INF [fallback] client canceled request` and recording status `499` in traces instead of raising false `WRN upstream failed` alarms.
+- `internal/handlers/chat/gemini_handler.go` — Added accurate `totalBytesWritten` accumulation for OpenAI format streaming branches and terminal `[DONE]` frame.
+- `internal/handlers/chat/fallback.go` & `internal/handlers/chat/combo.go` — Refactored hardcoded HTTP status codes to standard `net/http` constants (`http.StatusOK`, `StatusClientClosedRequest`).
+
 ## [v1.8.10] — 2026-09-11
 
 ### ✨ Features & Parity — Next.js v0.5.75 Sync (27 Commits)

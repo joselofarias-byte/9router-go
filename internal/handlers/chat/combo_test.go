@@ -405,7 +405,7 @@ func TestCollectPanel_allFail(t *testing.T) {
 func TestResponseBuffer(t *testing.T) {
 	buf := &responseBuffer{header: http.Header{}}
 	buf.Header().Set("Content-Type", "application/json")
-	buf.WriteHeader(200)
+	buf.WriteHeader(http.StatusOK)
 	n, err := buf.Write([]byte(`{"hello":"world"}`))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -413,8 +413,8 @@ func TestResponseBuffer(t *testing.T) {
 	if n != 17 {
 		t.Errorf("wrote %d bytes, want 17", n)
 	}
-	if buf.code != 200 {
-		t.Errorf("status %d, want 200", buf.code)
+	if buf.code != http.StatusOK {
+		t.Errorf("status %d, want %d", buf.code, http.StatusOK)
 	}
 	if buf.body.String() != `{"hello":"world"}` {
 		t.Errorf("body %q, want %q", buf.body.String(), `{"hello":"world"}`)

@@ -351,6 +351,66 @@ func TestStripCompetitivePrompts(t *testing.T) {
 		t.Errorf("expected competitive prompt removed from contents, got %s", stripped.Contents[0].Parts[0].Text)
 	}
 }
+func TestStripCompetitivePrompts_NormalizesHarnessTagsInSystemOnly(t *testing.T) {
+	req := &translator.GeminiRequest{
+		SystemInstruction: &translator.GeminiContent{
+			Role: "user",
+			Parts: []translator.GeminiPart{
+				{Text: "<system-conventions>\nRFC 2119 body stays.</system-conventions> <system-directive>dir stays</system-directive> <critical>crit stays</critical> Oh My Pi coding harness Oh My Pi omp Live"},
+			},
+		},
+		Contents: []translator.GeminiContent{
+			{
+				Role: "user",
+				Parts: []translator.GeminiPart{
+					{Text: "<system-conventions> caller text untouched Oh My Pi"},
+				},
+			},
+		},
+	}
+
+	stripped := translator.StripCompetitivePrompts(req)
+	sys := stripped.SystemInstruction.Parts[0].Text
+	for _, want := range []string{"<conventions>", "RFC 2119 body stays", "<instructions>dir stays", "<important>crit stays", "AI coding assistant"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("expected system text to contain %q, got %q", want, sys)
+		}
+	}
+	for _, banned := range []string{"system-conventions", "system-directive", "critical", "Oh My Pi"} {
+		if strings.Contains(sys, banned) {
+			t.Errorf("expected system text to drop %q, got %q", banned, sys)
+		}
+	}
+	kept := stripped.Contents[0].Parts[0].Text
+	if !strings.Contains(kept, "<system-conventions>") || !strings.Contains(kept, "Oh My Pi") {
+		t.Errorf("expected caller content preserved, got %q", kept)
+	}
+}
+
+func TestWrapForAntigravity_NormalizesTriggerSystemPrompt(t *testing.T) {
+	geminiBody := []byte(`{"system_instruction":{"role":"user","parts":[{"text":"<system-conventions>\nRFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."}]},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	inner := unwrapInnerRequest(t, wrapped)
+	si, _ := inner["system_instruction"].(map[string]any)
+	if si == nil {
+		t.Fatal("system_instruction missing from wrapped request")
+	}
+	parts, _ := si["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatal("system_instruction.parts missing")
+	}
+	part, _ := parts[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if strings.Contains(text, "system-conventions") {
+		t.Errorf("expected trigger tag normalized, got %q", text)
+	}
+	if !strings.Contains(text, "<conventions>") || !strings.Contains(text, "RFC 2119") {
+		t.Errorf("expected neutral tag with intact body, got %q", text)
+	}
+}
 
 func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
 	validBackendModels := map[string]bool{

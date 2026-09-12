@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
 )
+
+// StatusClientClosedRequest is the canonical HTTP status for client connection aborts (nginx 499).
+const StatusClientClosedRequest = 499
 
 // handleAccountFallback attempts to forward a request with automatic account fallback.
 func (h *ChatHandler) handleAccountFallback(
@@ -233,9 +237,11 @@ func (h *ChatHandler) tryForwardWithConnection(
 	// Lightweight request trace for /debug/traces (provider/model latency).
 	status := "error"
 	if fwdErr == nil {
-		status = "200"
+		status = strconv.Itoa(http.StatusOK)
+	} else if isClientCanceled(ctx, fwdErr) {
+		status = strconv.Itoa(StatusClientClosedRequest)
 	} else if ue, ok := fwdErr.(*upstreamError); ok && ue.StatusCode > 0 {
-		status = fmt.Sprintf("%d", ue.StatusCode)
+		status = strconv.Itoa(ue.StatusCode)
 	}
 	tracing.Record(tracing.Span{
 		Provider:   provider,
@@ -268,9 +274,9 @@ func (h *ChatHandler) tryForwardWithConnection(
 		if errors.As(fwdErr, &ue) {
 			statusCode = ue.StatusCode
 		}
-		// antigravity with a cached "no project" verdict already logged its
-		// one-time onboarding hint — don't re-WARN on every retried request.
-		if projectProbeCached(connectionID) {
+		if isClientCanceled(ctx, fwdErr) {
+			log.Info("fallback", "client canceled request", "provider", provider, "model", model, "conn", connectionID)
+		} else if projectProbeCached(connectionID) {
 			log.Debug("fallback", "upstream skipped (cached no-project)", "provider", provider, "model", model, "conn", connectionID, "error", fwdErr)
 		} else {
 			log.Warn("fallback", "upstream failed", "provider", provider, "model", model, "conn", connectionID, "status", statusCode, "error", fwdErr)
@@ -278,6 +284,20 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 	return fwdErr
 }
+func isClientCanceled(ctx context.Context, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "client closed")
+}
+
 
 // applyTokenSavers runs RTK compression and prompt injection on the request body.
 // false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.

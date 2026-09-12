@@ -490,3 +490,70 @@ func TestTranslateClaudeToOpenAI_AdaptiveEffortNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestTranslateClaudeToOpenAI_DocumentBlock(t *testing.T) {
+	claudeJSON := []byte(`{
+		"model": "claude-opus-4-6-thinking",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "explain this document"},
+				{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK..."}}
+			]
+		}]
+	}`)
+
+	openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+	if err != nil {
+		t.Fatalf("TranslateClaudeToOpenAI failed: %v", err)
+	}
+
+	var oreq OpenAIRequest
+	if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if len(oreq.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(oreq.Messages))
+	}
+
+	var blocks []OpenAIContentBlock
+	rawContent, err := json.Marshal(oreq.Messages[0].Content)
+	if err != nil {
+		t.Fatalf("marshal message content: %v", err)
+	}
+	if err := json.Unmarshal(rawContent, &blocks); err != nil {
+		t.Fatalf("unmarshal content blocks: %v", err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(blocks))
+	}
+	if blocks[0].Type != "text" || blocks[0].Text != "explain this document" {
+		t.Errorf("block 0 mismatch: %#v", blocks[0])
+	}
+	if blocks[1].Type != "file" || blocks[1].File == nil {
+		t.Fatalf("block 1 must be file block, got: %#v", blocks[1])
+	}
+	expectedURL := "data:application/pdf;base64,JVBERi0xLjQK..."
+	if blocks[1].File.FileData != expectedURL {
+		t.Errorf("got FileData %q, want %q", blocks[1].File.FileData, expectedURL)
+	}
+
+	// Also verify that passing this translated OpenAI format to TranslateOpenAIToGemini creates an InlineData part
+	geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+	var geminiReq GeminiRequest
+	if err := json.Unmarshal(geminiBytes, &geminiReq); err != nil {
+		t.Fatalf("unmarshal geminiReq: %v", err)
+	}
+	if len(geminiReq.Contents) != 1 || len(geminiReq.Contents[0].Parts) != 2 {
+		t.Fatalf("expected 2 parts in Gemini contents, got: %#v", geminiReq.Contents)
+	}
+	part2 := geminiReq.Contents[0].Parts[1]
+	if part2.InlineData == nil || part2.InlineData.MimeType != "application/pdf" {
+		t.Errorf("expected InlineData application/pdf, got: %#v", part2.InlineData)
+	}
+}

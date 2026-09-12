@@ -145,15 +145,21 @@ type GeminiStreamChunk struct {
 // TranslateOpenAIToGemini converts an OpenAI-compatible request body to Gemini native format.
 func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	var oreq struct {
-		Model           string         `json:"model"`
-		Messages        jsontext.Value `json:"messages"`
-		Temperature     *float64       `json:"temperature,omitempty"`
-		MaxTokens       *int           `json:"max_tokens,omitempty"`
-		TopP            *float64       `json:"top_p,omitempty"`
-		TopK            *int           `json:"top_k,omitempty"`
-		Stream          bool           `json:"stream,omitempty"`
-		Tools           jsontext.Value `json:"tools,omitempty"`
-		ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+		Model               string         `json:"model"`
+		Messages            jsontext.Value `json:"messages"`
+		Temperature         *float64       `json:"temperature,omitempty"`
+		MaxTokens           *int           `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int           `json:"max_completion_tokens,omitempty"`
+		TopP                *float64       `json:"top_p,omitempty"`
+		TopK                *int           `json:"top_k,omitempty"`
+		Stream              bool           `json:"stream,omitempty"`
+		Tools               jsontext.Value `json:"tools,omitempty"`
+		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+		Thinking            *struct {
+			Type         string `json:"type"`
+			BudgetTokens int    `json:"budget_tokens"`
+		} `json:"thinking,omitempty"`
+		ThinkingBudget *int `json:"thinking_budget,omitempty"`
 	}
 	if err := json.Unmarshal(openaiBody, &oreq); err != nil {
 		return nil, fmt.Errorf("parse OpenAI request: %w", err)
@@ -190,16 +196,14 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		}
 	}
 
+	var systemParts []GeminiPart
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "system":
 			content := extractContentString(msg.Content)
 			if strings.TrimSpace(content) != "" {
-				req.SystemInstruction = &GeminiContent{
-					Parts: []GeminiPart{{Text: content}},
-				}
+				systemParts = append(systemParts, GeminiPart{Text: content})
 			}
-
 		case "user":
 			parts := convertContentToGeminiParts(msg.Content)
 			if len(parts) > 0 {
@@ -295,6 +299,12 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			req.Contents = append(req.Contents, GeminiContent{Role: "user", Parts: parts})
 		}
 	}
+	if len(systemParts) > 0 {
+		req.SystemInstruction = &GeminiContent{
+			Role:  "user",
+			Parts: systemParts,
+		}
+	}
 
 	// Normalize Gemini contents: merge adjacent same-role messages, strip empty parts,
 	// and ensure first turn is "user" (parity with decolua/9router v0.5.75 #e7b5f09).
@@ -331,19 +341,40 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	if oreq.Temperature != nil {
 		genConfig["temperature"] = *oreq.Temperature
 	}
-	if oreq.MaxTokens != nil {
-		genConfig["maxOutputTokens"] = *oreq.MaxTokens
-	}
+
 	if oreq.TopP != nil {
 		genConfig["topP"] = *oreq.TopP
 	}
 	if oreq.TopK != nil {
 		genConfig["topK"] = *oreq.TopK
 	}
+	maxTokens := oreq.MaxTokens
+	if maxTokens == nil {
+		maxTokens = oreq.MaxCompletionTokens
+	}
+
+	thinkingBudget := 0
 	if oreq.ReasoningEffort != "" {
+		thinkingBudget = effortToBudget(oreq.ReasoningEffort)
+	} else if oreq.Thinking != nil && oreq.Thinking.BudgetTokens > 0 {
+		thinkingBudget = oreq.Thinking.BudgetTokens
+	} else if oreq.ThinkingBudget != nil && *oreq.ThinkingBudget > 0 {
+		thinkingBudget = *oreq.ThinkingBudget
+	}
+
+	if thinkingBudget > 0 {
 		genConfig["thinkingConfig"] = map[string]interface{}{
-			"thinkingBudget": effortToBudget(oreq.ReasoningEffort),
+			"thinkingBudget":  thinkingBudget,
+			"includeThoughts": true,
 		}
+		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT
+		if maxTokens == nil || *maxTokens <= thinkingBudget {
+			adjustedMax := thinkingBudget + 8192
+			maxTokens = &adjustedMax
+		}
+	}
+	if maxTokens != nil {
+		genConfig["maxOutputTokens"] = *maxTokens
 	}
 	if len(genConfig) > 0 {
 		configJSON, err := json.Marshal(genConfig)

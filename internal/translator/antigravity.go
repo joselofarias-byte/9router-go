@@ -212,11 +212,47 @@ var competitivePromptBlacklist = []string{
 	"Anthropic's Claude Agent SDK",
 }
 
+// Harness tag patterns that trigger false 429 RESOURCE_EXHAUSTED rejections on
+// the Antigravity gateway (parity with decolua/9router PR #3987). OMP-family
+// harnesses inject these XML markers in system text; normalizing them to
+// neutral tags keeps instruction bodies intact while bypassing the filter.
+var (
+	harnessTagSystemConventions = regexp.MustCompile(`(?i)<(/?)system[-_]conventions>`)
+	harnessTagSystemDirective   = regexp.MustCompile(`(?i)<(/?)system[-_]directive>`)
+	harnessTagCritical          = regexp.MustCompile(`(?i)<(/?)critical>`)
+	harnessBrandOMPFull         = regexp.MustCompile(`(?i)Oh My Pi coding harness`)
+	harnessBrandOMP             = regexp.MustCompile(`(?i)Oh My Pi`)
+	harnessBrandOMPLive         = regexp.MustCompile(`(?i)omp Live`)
+)
+
 var opencodeRegex = regexp.MustCompile(`(?i)\bopencode\b`)
 
+// normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
+// Bodies are preserved; only the marker names change.
+func normalizeHarnessMarkers(text string) string {
+	text = harnessTagSystemConventions.ReplaceAllString(text, "<${1}conventions>")
+	text = harnessTagSystemDirective.ReplaceAllString(text, "<${1}instructions>")
+	text = harnessTagCritical.ReplaceAllString(text, "<${1}important>")
+	text = harnessBrandOMPFull.ReplaceAllString(text, "AI coding assistant")
+	text = harnessBrandOMP.ReplaceAllString(text, "coding assistant")
+	text = harnessBrandOMPLive.ReplaceAllString(text, "coding assistant live")
+	return text
+}
+
 func rewriteCompetingBranding(text string) string {
+	return rewriteBrandingText(text, true)
+}
+
+// rewriteBrandingText applies competitive-prompt rewrites. Harness markers
+// (tags + branding) are fingerprints of system-instruction text only;
+// user/model messages, tool definitions, arguments, and results keep the
+// existing Claude-SDK + opencode handling and are never harness-normalized.
+func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	for _, phrase := range competitivePromptBlacklist {
 		text = strings.ReplaceAll(text, phrase, "")
+	}
+	if isSystemInstruction {
+		text = normalizeHarnessMarkers(text)
 	}
 	text = opencodeRegex.ReplaceAllStringFunc(text, func(m string) string {
 		switch m {
@@ -262,7 +298,7 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 		var filtered []GeminiPart
 		for _, p := range c.Parts {
 			if p.Text != "" {
-				text := rewriteCompetingBranding(p.Text)
+				text := rewriteBrandingText(p.Text, false)
 				if strings.TrimSpace(text) == "" && p.FunctionCall == nil && p.FunctionResponse == nil && p.InlineData == nil && p.FileData == nil && p.ThoughtSignature == "" {
 					continue
 				}
@@ -380,9 +416,29 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 	}
 
 	gc, _ := m["generationConfig"].(map[string]any)
-	if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
-		gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
-		changed = true
+	if gc != nil {
+		if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
+			gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
+			changed = true
+		}
+		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT (PR #3981)
+		var thinkingBudget float64
+		if tc, ok := gc["thinkingConfig"].(map[string]any); ok {
+			if tb, ok := tc["thinkingBudget"].(float64); ok {
+				thinkingBudget = tb
+			}
+		}
+		if thinkingBudget > 0 {
+			curMax, hasMax := gc["maxOutputTokens"].(float64)
+			if !hasMax || curMax <= thinkingBudget {
+				newMax := thinkingBudget + 8192
+				if newMax > maxAntigravityOutputTokens {
+					newMax = maxAntigravityOutputTokens
+				}
+				gc["maxOutputTokens"] = newMax
+				changed = true
+			}
+		}
 	}
 
 	if !changed {

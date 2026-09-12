@@ -225,6 +225,12 @@ type OpenAIContentBlock struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text,omitempty"`
 	ImageUrl *OpenAIImageUrl `json:"image_url,omitempty"`
+	File     *OpenAIFile     `json:"file,omitempty"`
+}
+
+// OpenAIFile holds inline file/document data (e.g. data:application/pdf;base64,...).
+type OpenAIFile struct {
+	FileData string `json:"file_data"`
 }
 
 // OpenAIImageUrl holds a data URL for inline images.

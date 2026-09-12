@@ -410,14 +410,16 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 				totalBytesWritten += n
 			}
 		} else {
-			hw.Write(openaiChunk)
+			n, _ := hw.Write(openaiChunk)
+			totalBytesWritten += n
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
 	})
 	if !translateResponse {
-		hw.Write([]byte("data: [DONE]\n\n"))
+		n, _ := hw.Write([]byte("data: [DONE]\n\n"))
+		totalBytesWritten += n
 		if flusher != nil {
 			flusher.Flush()
 		}

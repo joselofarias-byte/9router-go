@@ -506,3 +506,122 @@ func TestWrapForAntigravityPreservesThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestTranslateOpenAIToGemini_MultipleSystemMessagesPreserved(t *testing.T) {
+	openaiJSON := []byte(`{
+		"model": "gemini-2.5-flash",
+		"messages": [
+			{"role": "system", "content": "System instruction 1: behave well."},
+			{"role": "system", "content": "System instruction 2: format as json."},
+			{"role": "user", "content": "Hello"}
+		]
+	}`)
+
+	geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+
+	var req GeminiRequest
+	if err := json.Unmarshal(geminiBytes, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+
+	if req.SystemInstruction == nil {
+		t.Fatal("expected SystemInstruction to be populated")
+	}
+	if len(req.SystemInstruction.Parts) != 2 {
+		t.Fatalf("expected 2 parts in SystemInstruction, got %d", len(req.SystemInstruction.Parts))
+	}
+	if req.SystemInstruction.Parts[0].Text != "System instruction 1: behave well." {
+		t.Errorf("part 0 mismatch: %s", req.SystemInstruction.Parts[0].Text)
+	}
+	if req.SystemInstruction.Parts[1].Text != "System instruction 2: format as json." {
+		t.Errorf("part 1 mismatch: %s", req.SystemInstruction.Parts[1].Text)
+	}
+}
+
+func TestTranslateOpenAIToGemini_ThinkingBudgetExceedsMaxTokensGuard(t *testing.T) {
+	t.Run("reasoning effort high with small max_tokens", func(t *testing.T) {
+		openaiJSON := []byte(`{
+			"model": "gemini-3.8-flash-high",
+			"reasoning_effort": "high",
+			"max_tokens": 1000,
+			"messages": [{"role": "user", "content": "hi"}]
+		}`)
+
+		geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+		if err != nil {
+			t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+		}
+
+		var m map[string]any
+		if err := json.Unmarshal(geminiBytes, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		gc, ok := m["generationConfig"].(map[string]any)
+		if !ok {
+			t.Fatal("expected generationConfig")
+		}
+		tc, ok := gc["thinkingConfig"].(map[string]any)
+		if !ok {
+			t.Fatal("expected thinkingConfig")
+		}
+		budget := tc["thinkingBudget"].(float64)
+		maxTokens := gc["maxOutputTokens"].(float64)
+		if maxTokens <= budget {
+			t.Errorf("expected maxOutputTokens (%v) > thinkingBudget (%v)", maxTokens, budget)
+		}
+	})
+
+	t.Run("thinking budget explicit override", func(t *testing.T) {
+		openaiJSON := []byte(`{
+			"model": "gemini-3.8-flash-high",
+			"thinking_budget": 4096,
+			"max_tokens": 2048,
+			"messages": [{"role": "user", "content": "hi"}]
+		}`)
+
+		geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+		if err != nil {
+			t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+		}
+
+		var m map[string]any
+		if err := json.Unmarshal(geminiBytes, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		gc := m["generationConfig"].(map[string]any)
+		maxTokens := gc["maxOutputTokens"].(float64)
+		if maxTokens <= 4096 {
+			t.Errorf("expected maxOutputTokens (%v) > 4096", maxTokens)
+		}
+	})
+}
+
+func TestHardenAntigravityRequest_GuardsThinkingBudget(t *testing.T) {
+	reqBody := []byte(`{
+		"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+		"generationConfig": {
+			"maxOutputTokens": 2048,
+			"thinkingConfig": {
+				"thinkingBudget": 4096,
+				"includeThoughts": true
+			}
+		}
+	}`)
+
+	hardened := hardenAntigravityRequest(reqBody)
+	var m map[string]any
+	if err := json.Unmarshal(hardened, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	gc := m["generationConfig"].(map[string]any)
+	maxTokens := gc["maxOutputTokens"].(float64)
+	if maxTokens <= 4096 {
+		t.Errorf("expected maxOutputTokens (%v) > 4096", maxTokens)
+	}
+}
+

@@ -455,7 +455,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 				if fwdErr != nil {
 					if ctx.Err() != nil {
-						lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
+						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
 					}
 					var ue *upstreamError
@@ -644,7 +644,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 				if fwdErr != nil {
 					if ctx.Err() != nil {
-						lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
+						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
 					}
 					var ue *upstreamError
