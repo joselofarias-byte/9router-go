@@ -1,5 +1,5 @@
 {
   "latestVersion": "1.8.11",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.11: Parity bug fixes from upstream decolua/9router (PR #3973 multiple system messages preservation in Gemini systemInstruction, PR #3981 Antigravity thinkingBudget maxOutputTokens guard & reasoning effort support, PR #3968 Claude document PDF block support to Gemini inlineData), client cancellation logging (status 499 & false upstream failure suppression), accurate gemini stream bytesWritten telemetry, and HTTP status code constant refactor."
+  "releaseNotes": "v1.8.11: Parity bug fixes from upstream decolua/9router (PR #3973 multiple system messages preservation in Gemini systemInstruction, PR #3981 Antigravity thinkingBudget maxOutputTokens guard & reasoning effort support, PR #3968 Claude document PDF block support to Gemini inlineData), client cancellation logging (status 499 & false upstream failure suppression), accurate gemini stream bytesWritten telemetry, HTTP status code constant refactor, proxy http.Transport connection pooling, TTL pruning for pendingJSON stream fragments, and net/http/pprof live profiling endpoints."
 }
