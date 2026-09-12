@@ -47,3 +47,21 @@ func TestSetupRoutes(t *testing.T) {
 		t.Errorf("expected /chat/completions route to be registered, got status %d", w.Code)
 	}
 }
+
+func TestSetupServerRouter_PprofMounted(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, path := range []string{"/debug/pprof/", "/debug/pprof/heap", "/debug/pprof/goroutine"} {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected %s to return 200 OK, got %d", path, w.Code)
+		}
+	}
+}

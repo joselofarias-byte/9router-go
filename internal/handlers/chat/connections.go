@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
+	"sync"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -19,6 +19,11 @@ var CredentialFallbacks = map[string]string{
 	"ollama-search": "ollama",
 	"zai-search":    "glm",
 }
+var (
+	proxyClientsMu sync.RWMutex
+	proxyClients   = make(map[string]*http.Client)
+)
+
 
 // GetBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly.
@@ -272,13 +277,27 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	}
 
 	if proxyType == "http" || proxyType == "" {
-		transport := &http.Transport{
-			Proxy: http.ProxyURL(parsedURL),
+		proxyClientsMu.RLock()
+		client, ok := proxyClients[proxyURLStr]
+		proxyClientsMu.RUnlock()
+		if ok {
+			return client
 		}
-		return &http.Client{
-			Transport: transport,
+
+		proxyClientsMu.Lock()
+		defer proxyClientsMu.Unlock()
+		if client, ok = proxyClients[proxyURLStr]; ok {
+			return client
+		}
+
+		baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+		baseTransport.Proxy = http.ProxyURL(parsedURL)
+		client = &http.Client{
+			Transport: baseTransport,
 			Timeout:   h.Client.Timeout,
 		}
+		proxyClients[proxyURLStr] = client
+		return client
 	}
 
 	// For Edge Relays (vercel, cloudflare, deno), standard client is used because

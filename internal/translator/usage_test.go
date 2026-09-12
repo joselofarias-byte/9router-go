@@ -3,7 +3,9 @@ package translator
 import (
 	"context"
 	json "encoding/json/v2"
+	"fmt"
 	"testing"
+	"time"
 )
 
 // --- Context-based Usage ---
@@ -199,4 +201,43 @@ func TestTranslateGeminiChunkToOpenAI_cachedTokens(t *testing.T) {
 			t.Errorf("expected state.Usage.CachedTokens=100, got %+v", state.Usage)
 		}
 	})
+}
+
+func TestPruneStaleStates_PrunesPendingJSON(t *testing.T) {
+	statesMu.Lock()
+	// Seed stale state and orphan pendingJSON
+	staleKey := "stale-session-123"
+	states[staleKey] = &StreamState{CreatedAt: time.Now().Add(-15 * time.Minute)}
+	pendingJSON[staleKey] = []byte(`{"fragment":"stale"}`)
+
+	orphanKey := "orphan-session-456"
+	pendingJSON[orphanKey] = []byte(`{"fragment":"orphan"}`)
+
+	// Populate enough entries to trigger pruning threshold
+	for i := range 55 {
+		k := fmt.Sprintf("filler-%d", i)
+		states[k] = &StreamState{CreatedAt: time.Now()}
+	}
+
+	pruneStaleStatesLocked()
+
+	_, stateStillExists := states[staleKey]
+	_, pendingStillExists := pendingJSON[staleKey]
+	_, orphanStillExists := pendingJSON[orphanKey]
+
+	// Cleanup filler
+	for i := range 55 {
+		delete(states, fmt.Sprintf("filler-%d", i))
+	}
+	statesMu.Unlock()
+
+	if stateStillExists {
+		t.Errorf("expected stale state to be pruned")
+	}
+	if pendingStillExists {
+		t.Errorf("expected stale pendingJSON to be pruned with stale state")
+	}
+	if orphanStillExists {
+		t.Errorf("expected orphan pendingJSON to be pruned")
+	}
 }

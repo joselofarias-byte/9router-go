@@ -3,7 +3,7 @@ package handlers
 import (
 	json "encoding/json/v2"
 	"net/http"
-
+	"net/http/pprof"
 	"github.com/go-chi/chi/v5"
 
 	"9router/proxy/internal/constants"
@@ -131,6 +131,14 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 			w.Write([]byte(`{"status":"ok","message":"hello"}`))
 		}
 	})
+
+	// Profiling endpoints (pprof)
+	r.HandleFunc("/debug/pprof/", pprof.Index)
+	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	r.HandleFunc("/debug/pprof/*", pprof.Index)
 
 	// API-key protected domain routes (includes /admin/health/reset so health
 	// state cannot be reset by an unauthenticated caller — open-source hardening)

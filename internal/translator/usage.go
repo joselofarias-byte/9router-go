@@ -32,13 +32,19 @@ func isTruncatedJSON(err error) bool {
 }
 
 func pruneStaleStatesLocked() {
-	if len(states) < 50 {
+	if len(states) < 50 && len(pendingJSON) < 50 {
 		return
 	}
 	now := time.Now()
 	for k, v := range states {
 		if v == nil || v.CreatedAt.IsZero() || now.Sub(v.CreatedAt) > 10*time.Minute {
 			delete(states, k)
+			delete(pendingJSON, k)
+		}
+	}
+	for k := range pendingJSON {
+		if _, exists := states[k]; !exists {
+			delete(pendingJSON, k)
 		}
 	}
 }
