@@ -34,6 +34,8 @@ type Engine struct {
 
 // SelectCandidates evaluates a requested model/pool against the active registry snapshot,
 // applying the specified routing policy, and returns a sorted list of fallback candidate nodes.
+// An empty requestedModel means "all models allowed by policy". This is used by virtual
+// routes such as free-best, where the policy itself defines the candidate pool.
 func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteNode {
 	state := registry.GetActiveState()
 	if state == nil {
@@ -41,52 +43,34 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 	}
 
 	var candidates []RouteNode
-
-	// In a complete implementation, this would look up the routing pool definition
-	// and expand requestedModel to all candidate models in the pool.
-	// For now, we do a direct lookup of all ProviderModels matching the requested ID.
 	for provID, providerModels := range state.ProviderModels {
-		// Filter out inactive or missing providers entirely
 		p, ok := state.Providers[provID]
 		if !ok || p == nil || !p.IsActive {
 			continue
 		}
 
 		for _, pm := range providerModels {
-			// Defensively skip nil entries
-			if pm == nil {
+			if pm == nil || !pm.IsActive {
 				continue
 			}
 
-			// Basic filtering (match requested name/alias)
-			if pm.ModelID != requestedModel {
+			// Empty model means dynamic pool selection; otherwise preserve exact-match behavior.
+			if requestedModel != "" && pm.ModelID != requestedModel {
 				continue
 			}
 
-			// Filter out inactive models
-			if !pm.IsActive {
-				continue
-			}
-
-			// Enforce Policy constraints
-			isFree := (pm.PricingMode == "free" || pm.PricingMode == "free_tier")
+			isFree := pm.PricingMode == "free" || pm.PricingMode == "free_tier"
 			if policy == PolicyFreeOnly && !isFree {
-				continue // strict drop
+				continue
 			}
 
 			riskProfile := providers.GetProviderRiskProfile(provID)
-
-			// Find accounts for this provider
 			for _, acc := range state.Accounts {
-				if acc == nil {
-					continue
-				}
-				if acc.ProviderID != provID || !acc.IsActive {
+				if acc == nil || acc.ProviderID != provID || !acc.IsActive {
 					continue
 				}
 
 				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, acc.ID)
-
 				if policy == PolicyTrusted && trustLvl != trust.TrustTrusted && trustLvl != trust.TrustVerified {
 					continue
 				}
@@ -95,16 +79,12 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					TrustLevel:         trustLvl,
 					IsFreeTier:         isFree,
 					AccountRiskPenalty: riskProfile.ScorePenalty,
-					// TTFT, Latency, etc., would be pulled from a metrics store
 				}
 
 				score := scoring.Calculate(factors)
 				if !score.IsRoutable {
 					continue
 				}
-
-				// If FreeFirst, strongly boost free models so they float to the top.
-				// Account-risk penalties still order peers within the free tier.
 				if policy == PolicyFreeFirst && isFree {
 					score.Total += 1000.0
 				}
@@ -120,12 +100,9 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 		}
 	}
 
-	// Pre-shuffle to distribute load among equally scored nodes
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
-
-	// Sort candidates by score descending (stable due to preceding shuffle)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].Score.Total > candidates[j].Score.Total
 	})
