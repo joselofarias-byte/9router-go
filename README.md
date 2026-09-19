@@ -1,7 +1,10 @@
-# 9router-go
+# 9router-go (AI Free Routing Fabric fork)
 
-[![CI](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml)
-[![Release](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml)
+This repository is **joselofarias-byte/9router-go**, a self-hosted Termux/ARM64-capable fork of [luqman-v1/9router-go](https://github.com/luqman-v1/9router-go). It keeps the upstream data plane and adds the Fabric control plane: discovery, verification, scoring, and dynamic free routing for OpenCode.
+
+Ask OpenCode for model `free-best` (aliases: `fabric-free`, `free`). Those names are one logical pool, not a hard-coded provider list. See `docs/FABRIC.md` and `9ROUTER-GO-FABRIC-INTEGRATION-REPORT.md`.
+
+[![CI](https://github.com/joselofarias-byte/9router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/joselofarias-byte/9router-go/actions/workflows/ci.yml)
 
 High-performance Go proxy gateway for [9Router](https://github.com/decolua/9router) LLM routing.
 

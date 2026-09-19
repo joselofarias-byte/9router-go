@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+### Fabric integration (this fork)
+
+- Rebased fork-specific Fabric work onto upstream `v1.8.17` (`5aee802`) without merging obsolete branch commits.
+- Unified `fabric-free`, `free-best`, and `free` as one dynamic verified free pool.
+- Wired probes, trust/quota/session scoring, Kira + Kiro discovery, admin Fabric routes, Termux CGO/netcheck docs, and adversarial/benchmark coverage.
+
 ### 🔄 Upstream Parity Sync — `decolua/9router` v0.5.75…v0.5.81 (100%)
 
 **Model Catalog & Routing:**

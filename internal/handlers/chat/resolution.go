@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/controlplane/pools"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
@@ -179,6 +180,14 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
 
+	// Fabric virtual models: fabric-free, free-best, and free share one pool.
+	if pools.IsPool(modelStr) {
+		if info := h.resolveFabricPool(modelStr); info != nil {
+			return info, nil
+		}
+		return nil, fabricNoRouteError(modelStr)
+	}
+
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
 		parts := strings.SplitN(modelStr, "/", 2)
@@ -216,34 +225,34 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	if h.Repo != nil {
 		aliasTarget, err := h.Repo.GetModelAlias(modelStr)
 		if err == nil && aliasTarget != "" {
-		if strings.Contains(aliasTarget, "/") {
-			parts := strings.SplitN(aliasTarget, "/", 2)
-			prefix := parts[0]
-			model := parts[1]
+			if strings.Contains(aliasTarget, "/") {
+				parts := strings.SplitN(aliasTarget, "/", 2)
+				prefix := parts[0]
+				model := parts[1]
 
-			if info := h.resolvePrefixProvider(prefix, model); info != nil {
-				return info, nil
-			}
-
-			provider := resolveProviderAlias(prefix)
-			if provider != prefix {
-				if info := h.resolvePrefixProvider(provider, model); info != nil {
+				if info := h.resolvePrefixProvider(prefix, model); info != nil {
 					return info, nil
 				}
-				if h.Repo != nil {
-					if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
-						conns, _ := h.Repo.GetProviderConnections(provider, true)
-						if len(conns) == 0 {
-							return &ModelInfo{Provider: node.ID, Model: model}, nil
+
+				provider := resolveProviderAlias(prefix)
+				if provider != prefix {
+					if info := h.resolvePrefixProvider(provider, model); info != nil {
+						return info, nil
+					}
+					if h.Repo != nil {
+						if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
+							conns, _ := h.Repo.GetProviderConnections(provider, true)
+							if len(conns) == 0 {
+								return &ModelInfo{Provider: node.ID, Model: model}, nil
+							}
 						}
 					}
 				}
+				return &ModelInfo{
+					Provider: provider,
+					Model:    model,
+				}, nil
 			}
-			return &ModelInfo{
-				Provider: provider,
-				Model:    model,
-			}, nil
-		}
 		}
 	}
 
@@ -257,27 +266,27 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	if h.Repo != nil {
 		combo, err := h.Repo.GetComboByName(modelStr)
 		if err == nil && combo != nil && combo.Models != "" {
-		var modelStrings []string
-		if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
-			// Flatten nested combos into concrete leaves so rotation covers
-			// every reachable model (a nested combo entry used to collapse to
-			// its first leaf, so combo-wombo -> free-tier never rotated).
-			flattened, flatErr := h.flattenComboModels(modelStrings)
-			if flatErr != nil {
-				return nil, flatErr
-			}
-			if len(flattened) > 0 {
-				firstInfo := h.resolveModelEntry(flattened[0])
-				if firstInfo == nil {
-					firstInfo, _ = h.resolveModel(flattened[0])
+			var modelStrings []string
+			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
+				// Flatten nested combos into concrete leaves so rotation covers
+				// every reachable model (a nested combo entry used to collapse to
+				// its first leaf, so combo-wombo -> free-tier never rotated).
+				flattened, flatErr := h.flattenComboModels(modelStrings)
+				if flatErr != nil {
+					return nil, flatErr
 				}
-				if firstInfo != nil {
-					firstInfo.ComboModels = flattened
-					firstInfo.Strategy = combo.Strategy
-					return firstInfo, nil
+				if len(flattened) > 0 {
+					firstInfo := h.resolveModelEntry(flattened[0])
+					if firstInfo == nil {
+						firstInfo, _ = h.resolveModel(flattened[0])
+					}
+					if firstInfo != nil {
+						firstInfo.ComboModels = flattened
+						firstInfo.Strategy = combo.Strategy
+						return firstInfo, nil
+					}
 				}
 			}
-		}
 		}
 	}
 

@@ -25,6 +25,14 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	for k, v := range cfg.StaticHeaders {
 		headers[k] = v
 	}
+	// CodeBuddy/WorkBuddy API keys are accepted as Bearer credentials by the
+	// chat endpoint, while the official CLI also sends X-API-Key. Mirror both
+	// forms whenever the provider is identified by its CodeBuddy request
+	// marker. This keeps OAuth/Bearer compatibility and makes static ck_* API
+	// keys work without introducing a second provider implementation.
+	if apiKey != "" && hasHeaderKey(cfg.StaticHeaders, "x-codebuddy-request") {
+		headers["X-API-Key"] = apiKey
+	}
 	if isStream {
 		headers["Accept"] = "text/event-stream"
 	}
@@ -33,6 +41,15 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
 	}
 	return resp, nil
+}
+
+func hasHeaderKey(headers map[string]string, name string) bool {
+	for k := range headers {
+		if http.CanonicalHeaderKey(k) == http.CanonicalHeaderKey(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadBody reads and returns the response body (capped to prevent

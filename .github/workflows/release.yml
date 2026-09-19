@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: luqmenul/9router-go
+  REGISTRY_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
 
 jobs:
   binaries:
@@ -67,6 +67,7 @@ jobs:
 
   docker:
     name: Build and push Docker image
+    if: vars.ENABLE_DOCKER_RELEASE == 'true' && vars.DOCKERHUB_IMAGE != ''
     runs-on: ubuntu-latest
     environment: prod
     steps:

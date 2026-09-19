@@ -2,9 +2,9 @@ package handlers
 
 import (
 	json "encoding/json/v2"
+	"github.com/go-chi/chi/v5"
 	"net/http"
 	"net/http/pprof"
-	"github.com/go-chi/chi/v5"
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
@@ -115,6 +115,12 @@ func SetupRoutes(r interface {
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
+
+	// Fabric control-plane observability (API-key protected via SetupServerRouter)
+	r.Get("/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/admin/explain-route", chatH.HandleAdminExplainRoute)
+	r.Get("/admin/fabric/status", chatH.HandleFabricStatus)
+	r.Post("/admin/fabric/probe", chatH.HandleFabricProbe)
 }
 
 // SetupServerRouter mounts public endpoints (/health, /api/hello) and

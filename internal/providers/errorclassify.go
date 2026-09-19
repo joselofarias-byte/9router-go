@@ -14,13 +14,29 @@ type ErrorRule struct {
 	Backoff    bool   // true = use exponential backoff (rate limit)
 }
 
+type ErrorCategory string
+
+const (
+	ErrTransient ErrorCategory = "transient"
+	ErrRateLimit ErrorCategory = "rate_limit"
+	ErrQuota     ErrorCategory = "quota_exhausted"
+	ErrAuth      ErrorCategory = "auth_failed"
+	ErrPermanent ErrorCategory = "permanent"
+
+	// ErrModelNotFound is a missing model on an otherwise reachable provider.
+	ErrModelNotFound ErrorCategory = "model_not_found"
+	ErrNetwork       ErrorCategory = "network"
+	ErrTimeout       ErrorCategory = "timeout"
+	ErrSession       ErrorCategory = "session_expired"
+)
+
 // BackoffConfig controls exponential backoff scaling.
 var BackoffConfig = struct {
 	BaseMs   int
 	MaxMs    int
 	MaxLevel int
 }{
-	BaseMs:   2000,       // 2 seconds base
+	BaseMs:   2000,          // 2 seconds base
 	MaxMs:    5 * 60 * 1000, // 5 minutes cap
 	MaxLevel: 15,
 }
@@ -30,26 +46,40 @@ const TransientCooldownMs = 30 * 1000 // 30 seconds
 
 // cooldown durations (ms) used by ERROR_RULES
 const (
-	cooldownLong  = 2 * 60 * 1000  // 2 minutes
-	cooldownShort = 5 * 1000       // 5 seconds
+	cooldownLong  = 2 * 60 * 1000 // 2 minutes
+	cooldownShort = 5 * 1000      // 5 seconds
 )
 
 // ErrorRules is the ordered list of error classification rules, matching Next.js ERROR_RULES.
 // Checked top-to-bottom: text rules first (by order), then status rules.
 var ErrorRules = []ErrorRule{
 	// --- Text-based rules (checked first, order = priority) ---
-	{Text: "no credentials",              CooldownMs: cooldownLong},
-	{Text: "request not allowed",         CooldownMs: cooldownShort},
-	{Text: "improperly formed request",   CooldownMs: cooldownLong},
-	{Text: "rate limit",                  Backoff: true},
-	{Text: "too many requests",           Backoff: true},
-	{Text: "quota exceeded",              Backoff: true},
-	{Text: "capacity",                    Backoff: true},
-	{Text: "overloaded",                  Backoff: true},
-	{Text: "resource_exhausted",          Backoff: true},
+	{Text: "no credentials", CooldownMs: cooldownLong},
+	{Text: "request not allowed", CooldownMs: cooldownShort},
+	{Text: "improperly formed request", CooldownMs: cooldownLong},
+	{Text: "rate limit", Backoff: true},
+	{Text: "too many requests", Backoff: true},
+	{Text: "quota exceeded", Backoff: true},
+	{Text: "capacity", Backoff: true},
+	{Text: "overloaded", Backoff: true},
+	{Text: "resource_exhausted", Backoff: true},
 	{Text: "resource has been exhausted", Backoff: true},
-	{Text: "model_capacity_exhausted",    Backoff: true},
+	{Text: "model_capacity_exhausted", Backoff: true},
 	{Text: "server is temporarily unavailable", Backoff: true},
+	{Text: "model not found", CooldownMs: cooldownLong},
+	{Text: "does not exist", CooldownMs: cooldownLong},
+	{Text: "unknown model", CooldownMs: cooldownLong},
+	{Text: "context deadline exceeded", CooldownMs: cooldownShort},
+	{Text: "client.timeout exceeded", CooldownMs: cooldownShort},
+	{Text: "i/o timeout", CooldownMs: cooldownShort},
+	{Text: "no such host", CooldownMs: cooldownLong},
+	{Text: "connection refused", CooldownMs: cooldownShort},
+	{Text: "network is unreachable", CooldownMs: cooldownLong},
+	{Text: "connection reset by peer", CooldownMs: cooldownShort},
+	{Text: "invalid session", CooldownMs: cooldownLong},
+	{Text: "session expired", CooldownMs: cooldownLong},
+	{Text: "token expired", CooldownMs: cooldownLong},
+	{Text: "refresh token", CooldownMs: cooldownLong},
 
 	// --- Status-based rules (fallback when text doesn't match) ---
 	{Status: 401, CooldownMs: cooldownLong},
@@ -61,6 +91,7 @@ var ErrorRules = []ErrorRule{
 	{Status: 503, Backoff: true},
 	{Status: 504, Backoff: true},
 }
+
 // GetQuotaCooldown calculates exponential backoff cooldown for rate limits.
 // Level 0 → 2s, Level 1 → 2s, Level 2 → 4s, Level 3 → 8s, ... capped at MaxMs.
 func GetQuotaCooldown(backoffLevel int) int {
@@ -74,6 +105,7 @@ type ErrorClassification struct {
 	ShouldFallback  bool
 	CooldownMs      int
 	NewBackoffLevel int // only meaningful when the matched rule has Backoff=true
+	Category        ErrorCategory
 }
 
 // ClassifyError classifies an upstream error by matching text and status against ErrorRules.
@@ -88,36 +120,12 @@ func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClas
 	for _, rule := range ErrorRules {
 		// Text-based match (substring, case-insensitive)
 		if rule.Text != "" && lowerError != "" && strings.Contains(lowerError, rule.Text) {
-			if rule.Backoff {
-				newLevel := min(backoffLevel+1, BackoffConfig.MaxLevel)
-				return ErrorClassification{
-					ShouldFallback:  true,
-					CooldownMs:      GetQuotaCooldown(newLevel),
-					NewBackoffLevel: newLevel,
-				}
-			}
-			return ErrorClassification{
-				ShouldFallback:  true,
-				CooldownMs:      rule.CooldownMs,
-				NewBackoffLevel: backoffLevel,
-			}
+			return buildClassification(rule, backoffLevel)
 		}
 
 		// Status-based match
 		if rule.Status != 0 && rule.Status == statusCode {
-			if rule.Backoff {
-				newLevel := min(backoffLevel+1, BackoffConfig.MaxLevel)
-				return ErrorClassification{
-					ShouldFallback:  true,
-					CooldownMs:      GetQuotaCooldown(newLevel),
-					NewBackoffLevel: newLevel,
-				}
-			}
-			return ErrorClassification{
-				ShouldFallback:  true,
-				CooldownMs:      rule.CooldownMs,
-				NewBackoffLevel: backoffLevel,
-			}
+			return buildClassification(rule, backoffLevel)
 		}
 	}
 
@@ -126,5 +134,42 @@ func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClas
 		ShouldFallback:  true,
 		CooldownMs:      TransientCooldownMs,
 		NewBackoffLevel: backoffLevel,
+		Category:        ErrTransient,
 	}
+}
+
+func buildClassification(rule ErrorRule, backoffLevel int) ErrorClassification {
+	c := ErrorClassification{
+		ShouldFallback: true,
+	}
+
+	if rule.Backoff {
+		c.NewBackoffLevel = min(backoffLevel+1, BackoffConfig.MaxLevel)
+		c.CooldownMs = GetQuotaCooldown(c.NewBackoffLevel)
+	} else {
+		c.NewBackoffLevel = backoffLevel
+		c.CooldownMs = rule.CooldownMs
+	}
+
+	// Categorize the error
+	c.Category = ErrTransient // default unless overridden
+	if rule.Status == 402 || rule.Text == "quota exceeded" || rule.Text == "capacity" {
+		c.Category = ErrQuota
+	} else if rule.Status == 429 || rule.Text == "rate limit" || rule.Text == "too many requests" || rule.Text == "overloaded" {
+		c.Category = ErrRateLimit
+	} else if rule.Text == "invalid session" || rule.Text == "session expired" || rule.Text == "token expired" || rule.Text == "refresh token" {
+		c.Category = ErrSession
+	} else if rule.Status == 401 || rule.Status == 403 || rule.Text == "no credentials" || rule.Text == "request not allowed" {
+		c.Category = ErrAuth
+	} else if rule.Text == "model not found" || rule.Text == "does not exist" || rule.Text == "unknown model" {
+		c.Category = ErrModelNotFound
+	} else if rule.Text == "context deadline exceeded" || rule.Text == "client.timeout exceeded" || rule.Text == "i/o timeout" {
+		c.Category = ErrTimeout
+	} else if rule.Text == "no such host" || rule.Text == "connection refused" || rule.Text == "network is unreachable" || rule.Text == "connection reset by peer" {
+		c.Category = ErrNetwork
+	} else if rule.Status == 404 || rule.Text == "improperly formed request" {
+		c.Category = ErrPermanent
+	}
+
+	return c
 }

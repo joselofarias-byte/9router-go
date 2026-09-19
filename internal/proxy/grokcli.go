@@ -41,16 +41,33 @@ func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.Pro
 		"User-Agent":               "grok-shell/0.2.99 (linux; x86_64)",
 		"x-grok-client-identifier": "grok-shell",
 		"x-grok-client-version":    "0.2.99",
+		"X-XAI-Token-Auth":         "xai-grok-cli",
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) == nil && payload.Model != "" {
+		headers["x-grok-model-override"] = payload.Model
 	}
 	setAuth(headers, cfg, apiKey)
 	streamHeaders(headers, isStream)
-	targetURL := cfg.BaseURL
-	if targetURL == "" {
-		targetURL = "https://cli-chat-proxy.grok.com/v1/responses"
-	} else if strings.TrimRight(targetURL, "/") == "https://cli-chat-proxy.grok.com" {
-		targetURL = "https://cli-chat-proxy.grok.com/v1/responses"
-	}
+	targetURL := resolveGrokCLIURL(cfg.BaseURL)
 	return DoRequest(ctx, client, "POST", targetURL, headers, body)
+}
+
+func resolveGrokCLIURL(base string) string {
+	if base == "" {
+		return "https://cli-chat-proxy.grok.com/v1/responses"
+	}
+	trimmed := strings.TrimRight(base, "/")
+	switch trimmed {
+	case "https://cli-chat-proxy.grok.com", "https://cli-chat-proxy.grok.com/v1":
+		return "https://cli-chat-proxy.grok.com/v1/responses"
+	}
+	if strings.HasSuffix(trimmed, "/v1") {
+		return trimmed + "/responses"
+	}
+	return base
 }
 
 // ForwardCodex forwards to codex / perplexity-agent using OpenAI Responses API format.
@@ -94,13 +111,13 @@ func ForwardKimchi(ctx context.Context, client *http.Client, cfg *providers.Prov
 func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	invocationID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), time.Now().UnixNano())
 	headers := map[string]string{
-		"X-Amz-Target":                     "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		"Amz-Sdk-Request":                  "attempt=1; max=3",
-		"Amz-Sdk-Invocation-Id":            invocationID,
-		"Accept":                           "application/vnd.amazon.eventstream",
-		"User-Agent":                       "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-		"X-Amz-User-Agent":                 "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
-		"x-amzn-kiro-agent-mode":           "spec",
+		"X-Amz-Target":                    "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		"Amz-Sdk-Request":                 "attempt=1; max=3",
+		"Amz-Sdk-Invocation-Id":           invocationID,
+		"Accept":                          "application/vnd.amazon.eventstream",
+		"User-Agent":                      "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+		"X-Amz-User-Agent":                "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+		"x-amzn-kiro-agent-mode":          "spec",
 		"x-amzn-codewhisperer-machine-id": "kiro-desktop",
 	}
 	if apiKey != "" {
@@ -186,11 +203,11 @@ func ForwardAzure(ctx context.Context, client *http.Client, cfg *providers.Provi
 // Body transformation (force stream=true) is done by the caller.
 func ForwardCommandcode(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte) (*http.Response, error) {
 	headers := map[string]string{
-		"Content-Type":          "application/json",
-		"Authorization":         "Bearer " + apiKey,
+		"Content-Type":           "application/json",
+		"Authorization":          "Bearer " + apiKey,
 		"x-command-code-version": "0.25.7",
-		"x-cli-environment":     "cli",
-		"Accept":                "text/event-stream",
+		"x-cli-environment":      "cli",
+		"Accept":                 "text/event-stream",
 	}
 	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 }

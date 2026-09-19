@@ -459,6 +459,14 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
+					if connID != "" {
+						var ue *upstreamError
+						if errors.As(fwdErr, &ue) {
+							recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, ue.StatusCode, ue.Body, 0)
+						} else {
+							recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, false, 0, []byte(fwdErr.Error()), 0)
+						}
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
@@ -490,6 +498,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					continue
 				}
 
+				if connID != "" {
+					recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, true, 0, nil, 0)
+				}
 				entrySuccess = true
 				break
 			}
@@ -675,6 +686,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					continue
 				}
 
+				if connID != "" {
+					recordRouteOutcome(modelInfo.Provider, modelInfo.Model, connID, true, 0, nil, 0)
+				}
 				entrySuccess = true
 				break
 			}

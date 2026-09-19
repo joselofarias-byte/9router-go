@@ -94,10 +94,18 @@ func (h *ChatHandler) handleAccountFallback(
 			}
 		}
 		log.Debug("fallback", "connection", "conn", c.ID, "connObj", connObj.ID)
+		fwdStart := time.Now()
 		if err := h.tryForwardWithConnection(ctx, w, provider, model, c.ID, connData, body, isStream, translateResponse, endpoint); err == nil {
+			recordRouteOutcome(provider, model, connObj.ID, true, 0, nil, int(time.Since(fwdStart).Milliseconds()))
 			return nil
 		} else {
 			lastErr = err
+			var ue *upstreamError
+			if errors.As(err, &ue) {
+				recordRouteOutcome(provider, model, connObj.ID, false, ue.StatusCode, ue.Body, int(time.Since(fwdStart).Milliseconds()))
+			} else {
+				recordRouteOutcome(provider, model, connObj.ID, false, 0, []byte(err.Error()), int(time.Since(fwdStart).Milliseconds()))
+			}
 		}
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {

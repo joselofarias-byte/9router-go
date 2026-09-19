@@ -1,8 +1,12 @@
 # 9Router Go Proxy — Architecture Documentation
 
-> **Version sync:** `9router-go v1.8.8` ↔ `decolua/9router v0.5.65` (Next.js) — 100% engine parity, 31 commits `v0.5.59...v0.5.65`. Diagrams below are for maintainers/AI to understand the ported Go flows.
+> **Version sync:** this Fabric fork tracks upstream `9router-go v1.8.17`. Data-plane diagrams below remain the engine of record. The fork control plane is documented in `docs/FABRIC.md`.
 
 **For AI/Maintainers:** Go repo is the *engine* (proxy, SSE, translation), Next.js is the *dashboard UI* — they share `~/.9router/db/data.sqlite` (WAL). All `providerConnections.data` JSON blobs, `kv` (`modelAliases`, `customModels`), and `combos` are 1:1 compatible. Do not duplicate translation logic; check `internal/translator` first. E2E tests are in `internal/handlers/chat/*_e2e_test.go` (deterministic mocks, no real network).
+
+## Fabric control plane (this fork)
+
+`resolveModel()` intercepts `fabric-free`, `free-best`, and `free` before combo/alias lookup. Those names expand from the live registry snapshot into a scored fallback list. Ordinary `provider/model` strings still follow the data-plane flow below. See `docs/FABRIC.md`.
 
 ## Request Lifecycle
 

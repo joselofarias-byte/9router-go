@@ -10,7 +10,7 @@ AUTO_UPDATE ?= false
 
 LDFLAGS := -s -w -X '9router/proxy/internal/updater.CurrentVersion=$(VERSION)'
 
-.PHONY: build run dev version update test test-short vet bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help
+.PHONY: build run dev version update test test-short vet bench bench-go cross build-termux build-termux-cgo build-netcheck mitm-enable mitm-disable mitm-status docker docker-build clean help
 
 ## build — compile binary with version embedding
 build:
@@ -60,6 +60,20 @@ cross:
 	GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-darwin-arm64 ./cmd/9router-go/
 	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-windows-amd64.exe ./cmd/9router-go/
 	@ls -lh $(BINARY_NAME)-*
+
+## build-termux — CI-validated CGO-free Android/ARM64 binary
+build-termux:
+	CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)-termux-arm64 ./cmd/9router-go/
+	@ls -lh $(BINARY_NAME)-termux-arm64
+
+## build-termux-cgo — Termux ARM64 with Bionic getaddrinfo (needs Android NDK/clang)
+build-termux-cgo:
+	bash scripts/build-termux.sh
+
+## build-netcheck — credential-free DNS/TLS smoke check for Termux
+build-netcheck:
+	CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o 9router-netcheck-android-arm64 ./cmd/9router-netcheck/
+	@ls -lh 9router-netcheck-android-arm64
 
 ## mitm-enable — start MITM proxy
 mitm-enable: build
