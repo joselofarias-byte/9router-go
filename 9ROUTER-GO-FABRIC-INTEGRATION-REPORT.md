@@ -3,7 +3,7 @@
 **Fork:** [joselofarias-byte/9router-go](https://github.com/joselofarias-byte/9router-go)  
 **Integration branch:** `cursor/fabric-integration-0049`  
 **Base:** `origin/sync/upstream-2026-09-15` ≡ `upstream/main` @ `5aee802` (v1.8.17)  
-**PR:** _filled after open_  
+**PR:** https://github.com/joselofarias-byte/9router-go/pull/16  
 **Date:** 2026-09-19
 
 This report is the single source of truth for the integration. It records what was inspected, what was ported, what was discarded, and what still needs a real phone or live account.
@@ -229,7 +229,7 @@ These are CPU/allocation numbers, not live provider RTT.
 
 - Branch: `cursor/fabric-integration-0049`
 - Remote: `origin` = joselofarias-byte/9router-go only. `upstream` used for fetch/compare; never pushed.
-- PR URL: _see top of this file after open_
+- PR URL: https://github.com/joselofarias-byte/9router-go/pull/16
 
 ## 12. Remaining risks (need real Termux / accounts)
 
