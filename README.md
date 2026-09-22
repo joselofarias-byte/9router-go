@@ -116,6 +116,27 @@ PORT=20128 ./9router-go
 curl http://localhost:20128/health
 ```
 
+### Local llama.cpp / llama-server
+
+The fork includes a zero-auth OpenAI-compatible provider for a local
+`llama-server`. By default it forwards to
+`http://127.0.0.1:8080/v1/chat/completions`.
+
+Use the provider/model form from any OpenAI-compatible client:
+
+```bash
+curl http://127.0.0.1:20128/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama-local/qwen-local","messages":[{"role":"user","content":"Reply with LOCAL_OK"}]}'
+```
+
+Aliases `llama/` and `local/` resolve to `llama-local/`. To point the
+provider at another local OpenAI-compatible endpoint, set the full chat URL:
+
+```bash
+LLAMA_LOCAL_URL=http://127.0.0.1:9090/v1/chat/completions PORT=20128 ./9router-go
+```
+
 ## Combo Strategies
 
 Combo models support multiple routing strategies, configurable per combo:
@@ -197,6 +218,7 @@ via CLI flag or environment variable (CLI flag overrides env).
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `20128` | Server port |
+| `LLAMA_LOCAL_URL` | `http://127.0.0.1:8080/v1/chat/completions` | Local llama.cpp/OpenAI-compatible chat endpoint |
 | `DATA_DIR` | `~/.9router/` | Data directory (DB, JWT secret) |
 | `DB_PATH` | `DATA_DIR/db/data.sqlite` | Custom SQLite DB path (overrides DATA_DIR) |
 | `LOG_FILE` | stderr | Log output file (defaults to stderr when unset) |
