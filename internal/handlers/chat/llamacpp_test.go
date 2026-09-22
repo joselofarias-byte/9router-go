@@ -200,6 +200,56 @@ func TestLlamaCpp_CloudBaseURLAndRelayNeverDial(t *testing.T) {
 	}
 }
 
+func TestConnectionLocalOnly_RejectsCloudAndSkipsRelay(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("create proxyPools: %v", err)
+	}
+	repo := db.NewRepo(database)
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name:     "vercel-relay",
+		ProxyURL: "https://my-relay.vercel.app",
+		Type:     "vercel",
+	})
+	if err != nil {
+		t.Fatalf("insert pool: %v", err)
+	}
+	handler := NewChatHandler(repo)
+
+	_, err = handler.GetProviderConfig("openai", &ConnectionData{
+		LocalOnly: true,
+		BaseURL:   "https://api.openai.com/v1/chat/completions",
+		APIKey:    "sk-should-not-leak",
+	})
+	if err == nil || !strings.Contains(err.Error(), "local-only") {
+		t.Fatalf("localOnly cloud override: %v", err)
+	}
+
+	cfg, err := handler.GetProviderConfig("openai", &ConnectionData{
+		LocalOnly:   true,
+		BaseURL:     "http://127.0.0.1:8080/v1/chat/completions",
+		ProxyPoolID: pool["id"].(string),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LocalOnly || !cfg.NoAuth {
+		t.Fatalf("opt-in local connection lost flags: %+v", cfg)
+	}
+	if cfg.BaseURL != "http://127.0.0.1:8080/v1/chat/completions" {
+		t.Fatalf("opt-in local URL relayed to %s", cfg.BaseURL)
+	}
+}
+
 func TestGetBestConnection_LlamaCppNoAuth(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

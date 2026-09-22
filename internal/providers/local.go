@@ -41,6 +41,18 @@ func AssertLoopbackURL(raw string) error {
 	return fmt.Errorf("%w: host %q", ErrNotLoopback, host)
 }
 
+// IsLocalAPIType reports provider node apiType/type values that mean a local
+// OpenAI-compatible server (llama-server or local Ollama). Cloud
+// "openai-compatible" nodes are not included.
+func IsLocalAPIType(apiType string) bool {
+	switch ResolveAlias(strings.TrimSpace(apiType)) {
+	case "llamacpp", "ollama-local":
+		return true
+	default:
+		return false
+	}
+}
+
 func isLoopbackHost(host string) bool {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "" {

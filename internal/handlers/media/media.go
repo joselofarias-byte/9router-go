@@ -688,7 +688,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 // servers. A local-only target that is not loopback is rejected here.
 func (h *MediaHandler) prepareMediaClient(req *http.Request, cfg *providers.ProviderConfig, apiKey, targetURL string, connData *chat.ConnectionData) (*http.Client, error) {
 	cfg = providers.LocalAuthConfig(cfg, apiKey)
-	if cfg == nil || !cfg.LocalOnly || !cfg.NoAuth {
+	if cfg != nil && cfg.LocalOnly && cfg.NoAuth {
+		// The inbound gateway key was copied onto this request. Do not forward it.
+		req.Header.Del("Authorization")
+		req.Header.Del("X-Api-Key")
+	} else {
 		header := ""
 		scheme := ""
 		if cfg != nil {

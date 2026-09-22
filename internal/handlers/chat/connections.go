@@ -204,16 +204,37 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 					baseURL = strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 				}
 			}
+			nodeType := ""
+			if node.Type != nil {
+				nodeType = *node.Type
+			}
+			localAPI := providers.IsLocalAPIType(nodeData.APIType) || providers.IsLocalAPIType(nodeType)
 			baseCfg = &providers.ProviderConfig{
 				BaseURL:    baseURL,
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
+				NoAuth:     localAPI,
+				LocalOnly:  localAPI,
+			}
+			if localAPI {
+				baseCfg.DefaultAPIKey = "local"
 			}
 		}
 	}
 
 	if baseCfg == nil {
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
+	}
+
+	// An explicit connection flag locks a custom node the same way llamacpp is locked.
+	if connData != nil && connData.LocalOnly {
+		baseCfg.LocalOnly = true
+		if providers.IsPlaceholderLocalKey(extractAPIKey(connData)) {
+			baseCfg.NoAuth = true
+			if baseCfg.DefaultAPIKey == "" {
+				baseCfg.DefaultAPIKey = "local"
+			}
+		}
 	}
 
 	// Local-only providers never inherit an edge relay. A loopback URL on any

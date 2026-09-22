@@ -99,6 +99,19 @@ func TestLlamaCppProvider_LocalNoAuth(t *testing.T) {
 	}
 }
 
+func TestIsLocalAPIType(t *testing.T) {
+	for _, apiType := range []string{"llamacpp", "llama.cpp", "llama-server", "gguf", "ollama-local", " LC "} {
+		if !IsLocalAPIType(apiType) {
+			t.Errorf("expected local api type %q", apiType)
+		}
+	}
+	for _, apiType := range []string{"openai-compatible", "openai", "ollama", "anthropic", ""} {
+		if IsLocalAPIType(apiType) {
+			t.Errorf("expected non-local api type %q", apiType)
+		}
+	}
+}
+
 func TestIsPlaceholderLocalKey(t *testing.T) {
 	for _, key := range []string{"", "public", "local", "NONE", " no-auth "} {
 		if !IsPlaceholderLocalKey(key) {
