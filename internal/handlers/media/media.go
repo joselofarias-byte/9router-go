@@ -17,6 +17,7 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 )
 
 // MediaHandler handles embeddings, responses, audio, video, image, and web tool endpoints.
@@ -527,8 +528,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			for k, v := range r.Header {
 				req.Header[k] = v
 			}
-			handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-			client := h.ChatH.GetClientForConnection(connData)
+			client, err := h.prepareMediaClient(req, providerCfg, apiKey, targetURL, connData)
+			if err != nil {
+				lastErr = err.Error()
+				continue
+			}
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
@@ -622,8 +626,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		req.Header[k] = v
 	}
 
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	client := h.ChatH.GetClientForConnection(connData)
+	client, err := h.prepareMediaClient(req, providerCfg, apiKey, targetURL, connData)
+	if err != nil {
+		log.Error("media", "local upstream refused", "endpoint", endpoint, "provider", modelInfo.Provider, "error", err)
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	// Log search query for observability (was "nebak" before)
 	if endpoint == "/v1/search" {
 		var qb struct {
@@ -673,6 +681,23 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		h.ChatH.LogUsage(logInfo, nil, latencyMs, body, nil)
 	}
+}
+
+// prepareMediaClient applies the local-only auth and dial rules before a media
+// request leaves the process. Placeholder keys are not sent to loopback
+// servers. A local-only target that is not loopback is rejected here.
+func (h *MediaHandler) prepareMediaClient(req *http.Request, cfg *providers.ProviderConfig, apiKey, targetURL string, connData *chat.ConnectionData) (*http.Client, error) {
+	cfg = providers.LocalAuthConfig(cfg, apiKey)
+	if cfg == nil || !cfg.LocalOnly || !cfg.NoAuth {
+		header := ""
+		scheme := ""
+		if cfg != nil {
+			header = cfg.AuthHeader
+			scheme = cfg.AuthScheme
+		}
+		handlerutil.SetAuthHeader(req, apiKey, header, scheme)
+	}
+	return h.ChatH.ClientForUpstream(cfg, targetURL, connData)
 }
 
 // BuildEmbeddingsURL converts a chat completions URL to an embeddings URL.
