@@ -36,11 +36,32 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	if isStream {
 		headers["Accept"] = "text/event-stream"
 	}
+	client, err := clientForUpstream(cfg, cfg.BaseURL, client)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
 	}
 	return resp, nil
+}
+
+// clientForUpstream forces a direct loopback dial when the provider is
+// local-only or the target URL is already loopback. A local-only provider
+// aimed at any other host fails before a dial, so a cloud URL never sees the
+// request body or the API key.
+func clientForUpstream(cfg *providers.ProviderConfig, targetURL string, client *http.Client) (*http.Client, error) {
+	if cfg != nil && cfg.LocalOnly {
+		if err := providers.AssertLoopbackURL(targetURL); err != nil {
+			return nil, fmt.Errorf("local provider refused non-local upstream: %w", err)
+		}
+		return DirectLoopbackClient(client), nil
+	}
+	if providers.IsLoopbackURL(targetURL) {
+		return DirectLoopbackClient(client), nil
+	}
+	return client, nil
 }
 
 func hasHeaderKey(headers map[string]string, name string) bool {
