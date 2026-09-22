@@ -21,6 +21,10 @@ type ProviderConfig struct {
 	VoicesURL     string            // override /audio/voices listing endpoint
 	FetchURL      string            // override /web/fetch endpoint (Jina, Firecrawl, etc.)
 	FetchMethod   string            // HTTP method for fetch: GET or POST (default POST)
+	// LocalOnly means this provider's chat, media, and fetch traffic must stay
+	// on a loopback address. Connection baseUrl overrides, edge relays, and
+	// outbound proxies cannot move it onto a public host.
+	LocalOnly bool
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
@@ -354,9 +358,23 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"ollama-local": {
-		BaseURL:    "http://localhost:11434/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:       "http://127.0.0.1:11434/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		NoAuth:        true,
+		DefaultAPIKey: "local",
+		LocalOnly:     true,
+	},
+	// llamacpp is llama.cpp's llama-server OpenAI-compatible endpoint.
+	// Default bind is 127.0.0.1:8080. Qwen Code addresses it as
+	// llamacpp/<gguf-alias>. No FetchURL: this provider has no cloud side path.
+	"llamacpp": {
+		BaseURL:       "http://127.0.0.1:8080/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		NoAuth:        true,
+		DefaultAPIKey: "local",
+		LocalOnly:     true,
 	},
 	"minimax-cn": {
 		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
@@ -373,13 +391,13 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "x-api-key",
 		AuthScheme: "raw",
 		StaticHeaders: map[string]string{
-			"anthropic-version":                        "2023-06-01",
-			"Anthropic-Beta":                           "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
+			"anthropic-version":                         "2023-06-01",
+			"Anthropic-Beta":                            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
 			"Anthropic-Dangerous-Direct-Browser-Access": "true",
-			"User-Agent":                               "claude-cli/2.1.258 (external, sdk-cli)",
-			"X-App":                                    "cli",
-			"X-Stainless-Helper-Method":                "stream",
-			"X-Stainless-Retry-Count":                  "0",
+			"User-Agent":                                "claude-cli/2.1.258 (external, sdk-cli)",
+			"X-App":                                     "cli",
+			"X-Stainless-Helper-Method":                 "stream",
+			"X-Stainless-Retry-Count":                   "0",
 		},
 	},
 	"codex": {
