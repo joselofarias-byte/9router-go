@@ -171,6 +171,11 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 
 	if connData != nil && connData.BaseURL != "" {
 		if cfg, ok := providers.KnownProviders[provider]; ok {
+			if cfg.LocalOnly {
+				if err := providers.AssertLoopbackURL(connData.BaseURL); err != nil {
+					return nil, fmt.Errorf("provider %s is local-only: %w", provider, err)
+				}
+			}
 			cloned := cfg
 			cloned.BaseURL = connData.BaseURL
 			baseCfg = &cloned
@@ -211,6 +216,21 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
+	// Local-only providers never inherit an edge relay. A loopback URL on any
+	// provider is also left alone: rewriting it to a cloud relay would upload
+	// the prompt off-device to reach a server that is on this machine.
+	if baseCfg.LocalOnly {
+		if err := providers.AssertLoopbackURL(baseCfg.BaseURL); err != nil {
+			return nil, fmt.Errorf("provider %s is local-only: %w", provider, err)
+		}
+		if baseCfg.FetchURL != "" {
+			if err := providers.AssertLoopbackURL(baseCfg.FetchURL); err != nil {
+				return nil, fmt.Errorf("provider %s fetch URL is not local: %w", provider, err)
+			}
+		}
+		return baseCfg, nil
+	}
+
 	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
 	if connData != nil {
 		var relayURL string
@@ -234,6 +254,10 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 
 		if relayURL != "" && !internalproxy.ShouldBypassNoProxy(baseCfg.BaseURL, noProxy) {
+			if providers.IsLoopbackURL(baseCfg.BaseURL) {
+				log.Warn("routing", "skipping edge relay for loopback upstream", "provider", provider)
+				return baseCfg, nil
+			}
 			cloned := *baseCfg
 			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
 			cloned.BaseURL = relayURL
@@ -327,4 +351,20 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
 	// URL rewriting and x-relay headers are handled at request time.
 	return h.Client
+}
+
+// ClientForUpstream returns the HTTP client that may dial targetURL.
+// Local-only providers and any loopback target use a direct dial that ignores
+// HTTP_PROXY and refuses redirects onto a public host.
+func (h *ChatHandler) ClientForUpstream(cfg *providers.ProviderConfig, targetURL string, connData *ConnectionData) (*http.Client, error) {
+	if cfg != nil && cfg.LocalOnly {
+		if err := providers.AssertLoopbackURL(targetURL); err != nil {
+			return nil, fmt.Errorf("provider is local-only: %w", err)
+		}
+		return internalproxy.DirectLoopbackClient(h.Client), nil
+	}
+	if providers.IsLoopbackURL(targetURL) {
+		return internalproxy.DirectLoopbackClient(h.Client), nil
+	}
+	return h.getClientForConnection(connData), nil
 }
