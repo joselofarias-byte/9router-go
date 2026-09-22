@@ -5,6 +5,13 @@ import (
 	"os"
 )
 
+func localProviderURL() string {
+	if v := os.Getenv("LLAMA_LOCAL_URL"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:8080/v1/chat/completions"
+}
+
 // ProviderConfig describes how to reach an upstream provider.
 type ProviderConfig struct {
 	BaseURL       string
@@ -357,6 +364,12 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "http://localhost:11434/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+	},
+	"llama-local": {
+		BaseURL:    localProviderURL(),
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		NoAuth:     true,
 	},
 	"minimax-cn": {
 		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
