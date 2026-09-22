@@ -29,4 +29,4 @@ jobs:
           name: 9router-go-termux-arm64
           path: dist/termux/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
