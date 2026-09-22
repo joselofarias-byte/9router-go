@@ -21,6 +21,9 @@ import (
 )
 
 // handleAccountFallback attempts to forward a request with automatic account fallback.
+// A local-only provider that cannot be reached fails this call. It does not
+// consult providers.LocalCloudFallbackPolicy and does not switch to a cloud
+// provider. That policy is an unwired proposal and has no credentials.
 func (h *ChatHandler) handleAccountFallback(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -155,6 +158,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 			log.Warn("fallback", "OAuth token refresh error", "conn", connectionID, "error", err)
 		}
 	}
+	providerCfg = providers.LocalAuthConfig(providerCfg, apiKey)
 
 	pipedBody := h.applyTokenSavers(body)
 	// Sanitize tool schemas for all OpenAI-compatible providers (opencode, gemini-openai, etc.)
@@ -175,7 +179,10 @@ func (h *ChatHandler) tryForwardWithConnection(
 		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)
 	}()
 
-	httpClient := h.getClientForConnection(connData)
+	httpClient, err := h.ClientForUpstream(providerCfg, providerCfg.BaseURL, connData)
+	if err != nil {
+		return fmt.Errorf("local upstream: %w", err)
+	}
 	sessionID := handlerutil.GetSessionID(ctx)
 
 	if exec := executor.Get(provider); exec != nil {

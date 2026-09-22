@@ -22,9 +22,12 @@ type ModelInfo struct {
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey                 string                 `json:"apiKey"`
-	AccessToken            string                 `json:"accessToken"`
-	BaseURL                string                 `json:"baseUrl,omitempty"`
+	APIKey      string `json:"apiKey"`
+	AccessToken string `json:"accessToken"`
+	BaseURL     string `json:"baseUrl,omitempty"`
+	// LocalOnly opts this connection into the loopback lock even when the
+	// provider id is a custom OpenAI-compatible node. It carries no credentials.
+	LocalOnly              bool                   `json:"localOnly,omitempty"`
 	ProxyPoolID            string                 `json:"proxyPoolId,omitempty"`
 	ConnectionProxyEnabled bool                   `json:"connectionProxyEnabled,omitempty"`
 	ConnectionProxyURL     string                 `json:"connectionProxyUrl,omitempty"`

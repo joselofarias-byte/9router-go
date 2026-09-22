@@ -49,10 +49,7 @@ func (h *ChatHandler) ResolveModel(modelStr string) (*ModelInfo, error) {
 
 // resolveProviderAlias resolves a provider alias to its canonical ID.
 func resolveProviderAlias(alias string) string {
-	if canonical, ok := providers.ProviderAliasMap[alias]; ok {
-		return canonical
-	}
-	return alias
+	return providers.ResolveAlias(alias)
 }
 
 // resolveModelEntry parses a single "provider/model" string into a ModelInfo

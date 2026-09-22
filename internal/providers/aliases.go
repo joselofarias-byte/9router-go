@@ -1,5 +1,7 @@
 package providers
 
+import "strings"
+
 // ProviderAliasMap maps short aliases to canonical provider IDs.
 var ProviderAliasMap = map[string]string{
 	"aai":            "assemblyai",
@@ -88,11 +90,22 @@ var ProviderAliasMap = map[string]string{
 	"ws":             "windsurf",
 	"xq":             "xquik",
 	"zd":             "zed",
+	"gguf":           "llamacpp",
+	"lc":             "llamacpp",
+	"llama":          "llamacpp",
+	"llama-cpp":      "llamacpp",
+	"llama-server":   "llamacpp",
+	"llama.cpp":      "llamacpp",
 }
 
 // ResolveAlias returns the canonical provider ID for an alias, or the alias itself if not found.
+// Lookup is case-insensitive for known aliases. Unknown ids are returned unchanged
+// so custom node ids keep their original casing.
 func ResolveAlias(alias string) string {
 	if canonical, ok := ProviderAliasMap[alias]; ok {
+		return canonical
+	}
+	if canonical, ok := ProviderAliasMap[strings.ToLower(alias)]; ok {
 		return canonical
 	}
 	return alias
