@@ -49,6 +49,8 @@ var ProviderAliasMap = map[string]string{
 	"jina":           "jina-ai",
 	"kc":             "kilocode",
 	"km":             "kimi",
+	"llama":          "llama-local",
+	"local":          "llama-local",
 	"kr":             "kiro",
 	"mimo":           "xiaomi-mimo",
 	"mm":             "minimax",
