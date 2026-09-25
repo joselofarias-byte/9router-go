@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -11,7 +12,18 @@ import (
 	"9router/proxy/internal/proxy/executor"
 )
 
+// skipOpenCodeLive keeps default CI on local fixtures. OpenCode's public free
+// tier now returns 403 unless the caller is the OpenCode client, so these
+// tests are opt-in via OPENCODE_LIVE=1.
+func skipOpenCodeLive(t *testing.T) {
+	t.Helper()
+	if os.Getenv("OPENCODE_LIVE") != "1" {
+		t.Skip("set OPENCODE_LIVE=1 to call the live OpenCode Muse Spark endpoint")
+	}
+}
+
 func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
+	skipOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -65,6 +77,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
+	skipOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -109,6 +122,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
+	skipOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -161,6 +175,7 @@ func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
+	skipOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

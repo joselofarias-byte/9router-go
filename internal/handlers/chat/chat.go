@@ -378,6 +378,22 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	seenIDs := make(map[string]bool, len(data))
+	for _, m := range data {
+		seenIDs[strings.ToLower(m.ID)] = true
+	}
+	for _, id := range []string{"free", "free-best"} {
+		if seenIDs[id] {
+			continue
+		}
+		data = append(data, modelObj{
+			ID:      id,
+			Object:  "model",
+			Created: now,
+			OwnedBy: "fabric",
+		})
+	}
+
 	if data == nil {
 		data = []modelObj{}
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
@@ -150,6 +151,65 @@ func stripModelContextMarker(modelStr string) string {
 	return modelStr
 }
 
+func isVirtualFreeRoute(modelStr string) bool {
+	switch strings.ToLower(strings.TrimSpace(modelStr)) {
+	case "free", "free-best":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveDynamicFreeBest builds a transient fallback combo from discovered
+// free and free-tier models that also have an active local provider connection.
+// An explicit alias or combo named free / free-best is resolved earlier and wins.
+func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
+	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("free route: no discovered free or free-tier models with an active local connection")
+	}
+
+	models := make([]string, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		model := c.UpstreamModel
+		if model == "" {
+			model = c.ModelID
+		}
+		if c.ProviderID == "" || model == "" {
+			continue
+		}
+		entry := c.ProviderID + "/" + model
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		models = append(models, entry)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("free route: no routable free models")
+	}
+
+	var first *ModelInfo
+	resolved := make([]string, 0, len(models))
+	for _, entry := range models {
+		info := h.resolveModelEntry(entry)
+		if info == nil {
+			continue
+		}
+		resolved = append(resolved, entry)
+		if first == nil {
+			first = info
+		}
+	}
+	if first == nil {
+		return nil, fmt.Errorf("free route: failed to resolve free candidates")
+	}
+	first.ComboModels = resolved
+	first.Strategy = "fallback"
+	return first, nil
+}
+
 // resolveModel resolves a model string through aliases, combos, and provider/model parsing.
 // Returns the first concrete ModelInfo found, or an error.
 func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
@@ -216,6 +276,13 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				}
 			}
 		}
+	}
+
+	// Built-in virtual route. Checked after aliases and combos so a caller-defined
+	// "free" or "free-best" pool keeps working, and before the common-provider
+	// fallback so the name cannot be sent to a paid provider by accident.
+	if isVirtualFreeRoute(modelStr) {
+		return h.resolveDynamicFreeBest()
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")

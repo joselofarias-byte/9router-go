@@ -129,6 +129,14 @@ Combo models support multiple routing strategies, configurable per combo:
 
 All strategies support **auto-capability-switch**: if the request body contains images or PDFs, capable models (OpenAI, Anthropic, Gemini, etc.) are floated to the front automatically.
 
+### Built-in free route
+
+`free` and `free-best` are virtual models. No combo row is required.
+
+On each request they expand into a fallback chain of models the Fabric registry currently marks `free` or `free_tier`, and only when that provider also has an active local connection. Paid and unclassified models are left out. If discovery has not published any eligible model, the request fails instead of being sent to a paid provider under that name. An explicit alias or combo named `free` or `free-best` still wins.
+
+Other projects can point an OpenAI-compatible client at this proxy and set the model to `free-best`. The names are also listed by `GET /v1/models`.
+
 ### Fusion
 
 Fusion runs multiple models as a panel in parallel:

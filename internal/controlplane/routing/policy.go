@@ -34,6 +34,8 @@ type Engine struct {
 
 // SelectCandidates evaluates a requested model/pool against the active registry snapshot,
 // applying the specified routing policy, and returns a sorted list of fallback candidate nodes.
+// An empty requestedModel selects every active model the policy allows. Virtual routes
+// such as free and free-best use that form to build a dynamic pool.
 func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteNode {
 	state := registry.GetActiveState()
 	if state == nil {
@@ -58,13 +60,13 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 				continue
 			}
 
-			// Basic filtering (match requested name/alias)
-			if pm.ModelID != requestedModel {
+			// Filter out inactive models
+			if !pm.IsActive {
 				continue
 			}
 
-			// Filter out inactive models
-			if !pm.IsActive {
+			// Empty model means dynamic pool selection; otherwise preserve exact-match behavior.
+			if requestedModel != "" && pm.ModelID != requestedModel {
 				continue
 			}
 

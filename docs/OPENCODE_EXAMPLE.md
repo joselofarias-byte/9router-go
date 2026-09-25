@@ -29,6 +29,12 @@ Create or update `opencode.json` with a custom OpenAI-compatible provider that p
         },
         "deepseek-chat": {
           "name": "deepseek-chat via 9router"
+        },
+        "free-best": {
+          "name": "Best currently discovered free model"
+        },
+        "free": {
+          "name": "Discovered free and free-tier pool"
         }
       }
     }
@@ -41,3 +47,5 @@ Set `NINE_ROUTER_API_KEY` only when the local 9router-go endpoint requires authe
 OpenCode must point to 9router-go/Fabric, not directly to UnoRouter or another upstream provider. UnoRouter remains an optional Fabric discovery/provider source configured separately through `UNOROUTER_API_KEY`; its credentials are not part of the OpenCode configuration above.
 
 The `models` map should contain the exact model IDs you want visible in OpenCode. Keep the IDs unchanged so 9router-go can apply its existing translation, routing, health, quota, and fallback behavior without a parallel catalog or IDE-specific routing layer.
+
+`free` and `free-best` are built-in virtual routes. They expand to discovered `free` / `free_tier` models that already have an active local connection. A combo or alias with the same name overrides that pool.
