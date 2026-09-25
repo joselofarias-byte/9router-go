@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
@@ -151,8 +153,12 @@ func stripModelContextMarker(modelStr string) string {
 	return modelStr
 }
 
+// isVirtualFreeRoute reports the built-in names. free and free-best are the
+// same dynamic pool: score order puts the current best candidate first, and
+// both names then fall back through the rest of that free-only chain.
+// Matching trims space and ignores case.
 func isVirtualFreeRoute(modelStr string) bool {
-	switch strings.ToLower(strings.TrimSpace(modelStr)) {
+	switch canonicalVirtualName(modelStr) {
 	case "free", "free-best":
 		return true
 	default:
@@ -160,34 +166,28 @@ func isVirtualFreeRoute(modelStr string) bool {
 	}
 }
 
+func canonicalVirtualName(modelStr string) string {
+	return strings.ToLower(strings.TrimSpace(modelStr))
+}
+
 // resolveDynamicFreeBest builds a transient fallback combo from discovered
 // free and free-tier models that also have an active local provider connection.
 // An explicit alias or combo named free / free-best is resolved earlier and wins.
+// The error return is fail-closed: callers must not continue into the
+// openai/anthropic/deepseek fallback with the virtual name.
 func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("free route: no discovered free or free-tier models with an active local connection")
 	}
 
-	models := make([]string, 0, len(candidates))
-	seen := make(map[string]bool, len(candidates))
-	for _, c := range candidates {
-		model := c.UpstreamModel
-		if model == "" {
-			model = c.ModelID
-		}
-		if c.ProviderID == "" || model == "" {
-			continue
-		}
-		entry := c.ProviderID + "/" + model
-		if seen[entry] {
-			continue
-		}
-		seen[entry] = true
-		models = append(models, entry)
-	}
+	// Second gate. SelectCandidates already drops non-free rows; this re-reads
+	// the current registry so a paid, unknown, inactive, or disconnected model
+	// cannot enter the chain if the policy filter or a stale candidate is wrong.
+	state := registry.GetActiveState()
+	models := freeRouteEntries(state, candidates)
 	if len(models) == 0 {
-		return nil, fmt.Errorf("free route: no routable free models")
+		return nil, fmt.Errorf("free route: no discovered free or free-tier models with an active local connection")
 	}
 
 	var first *ModelInfo
@@ -208,6 +208,188 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	first.ComboModels = resolved
 	first.Strategy = "fallback"
 	return first, nil
+}
+
+// freeRouteEntries returns provider/upstream pairs that are still free and
+// backed by an active provider plus an active local account in state.
+func freeRouteEntries(state *registry.RegistryState, candidates []routing.RouteNode) []string {
+	if state == nil {
+		return nil
+	}
+	models := make([]string, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		pm, ok := eligibleFreeProviderModel(state, c)
+		if !ok {
+			continue
+		}
+		model := pm.UpstreamModel
+		if model == "" {
+			model = pm.ModelID
+		}
+		if c.ProviderID == "" || model == "" {
+			continue
+		}
+		entry := c.ProviderID + "/" + model
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		models = append(models, entry)
+	}
+	return models
+}
+
+func eligibleFreeProviderModel(state *registry.RegistryState, c routing.RouteNode) (*registry.ProviderModel, bool) {
+	if state == nil || c.ProviderID == "" || c.ModelID == "" || c.AccountID == "" {
+		return nil, false
+	}
+	provider := state.Providers[c.ProviderID]
+	if provider == nil || !provider.IsActive {
+		return nil, false
+	}
+	account := state.Accounts[c.AccountID]
+	if account == nil || !account.IsActive || account.ProviderID != c.ProviderID {
+		return nil, false
+	}
+	pm := providerModelByID(state.ProviderModels[c.ProviderID], c.ModelID)
+	if pm == nil || !pm.IsActive || pm.ProviderID != c.ProviderID || !routing.IsFreePricing(pm.PricingMode) {
+		return nil, false
+	}
+	return pm, true
+}
+
+func providerModelByID(models map[string]*registry.ProviderModel, modelID string) *registry.ProviderModel {
+	if models == nil || modelID == "" {
+		return nil
+	}
+	if pm := models[modelID]; pm != nil && pm.ModelID == modelID {
+		return pm
+	}
+	for _, pm := range models {
+		if pm != nil && pm.ModelID == modelID {
+			return pm
+		}
+	}
+	return nil
+}
+
+// resolveComboModel expands a stored combo. ok is false when the row is not a
+// usable combo so the caller can keep walking. A flatten error is returned
+// with ok true so a broken explicit combo is not replaced by another route.
+func (h *ChatHandler) resolveComboModel(combo *models.Combo) (*ModelInfo, error, bool) {
+	if combo == nil || combo.Models == "" {
+		return nil, nil, false
+	}
+	var modelStrings []string
+	if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err != nil || len(modelStrings) == 0 {
+		return nil, nil, false
+	}
+	// Flatten nested combos into concrete leaves so rotation covers
+	// every reachable model (a nested combo entry used to collapse to
+	// its first leaf, so combo-wombo -> free-tier never rotated).
+	flattened, flatErr := h.flattenComboModels(modelStrings)
+	if flatErr != nil {
+		return nil, flatErr, true
+	}
+	if len(flattened) == 0 {
+		return nil, nil, false
+	}
+	firstInfo := h.resolveModelEntry(flattened[0])
+	if firstInfo == nil {
+		firstInfo, _ = h.resolveModel(flattened[0])
+	}
+	if firstInfo == nil {
+		return nil, nil, false
+	}
+	firstInfo.ComboModels = flattened
+	firstInfo.Strategy = combo.Strategy
+	return firstInfo, nil, true
+}
+
+func (h *ChatHandler) concreteAliasTarget(target string) *ModelInfo {
+	if !strings.Contains(target, "/") {
+		return nil
+	}
+	parts := strings.SplitN(target, "/", 2)
+	provider := resolveProviderAlias(parts[0])
+	if _, ok := providers.KnownProviders[provider]; !ok {
+		if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
+			return info
+		}
+	}
+	return &ModelInfo{Provider: provider, Model: parts[1]}
+}
+
+// resolveFoldedVirtualOverride matches an alias or combo whose name differs
+// from the request only by case or surrounding space. Exact-case lookups have
+// already run. Alias wins over combo, matching the exact-case order.
+func (h *ChatHandler) resolveFoldedVirtualOverride(modelStr string) (*ModelInfo, error, bool) {
+	canonical := canonicalVirtualName(modelStr)
+	if canonical != "free" && canonical != "free-best" {
+		return nil, nil, false
+	}
+
+	if aliases, err := h.Repo.GetModelAliases(); err == nil {
+		target, ok := foldedAliasTarget(aliases, canonical)
+		if ok {
+			if info := h.concreteAliasTarget(target); info != nil {
+				return info, nil, true
+			}
+		}
+	}
+
+	combos, err := h.Repo.GetCombos()
+	if err != nil {
+		return nil, nil, false
+	}
+	matched := foldedComboName(combos, canonical)
+	if matched == "" || matched == modelStr {
+		return nil, nil, false
+	}
+	combo, err := h.Repo.GetComboByName(matched)
+	if err != nil {
+		return nil, err, true
+	}
+	return h.resolveComboModel(combo)
+}
+
+func foldedAliasTarget(aliases map[string]string, canonical string) (string, bool) {
+	var target string
+	found := false
+	for key, value := range aliases {
+		if !strings.EqualFold(strings.TrimSpace(key), canonical) {
+			continue
+		}
+		if strings.TrimSpace(key) == canonical {
+			return value, true
+		}
+		if !found {
+			target = value
+			found = true
+		}
+	}
+	return target, found
+}
+
+func foldedComboName(combos []*models.Combo, canonical string) string {
+	matched := ""
+	for _, combo := range combos {
+		if combo == nil {
+			continue
+		}
+		name := strings.TrimSpace(combo.Name)
+		if !strings.EqualFold(name, canonical) {
+			continue
+		}
+		if name == canonical {
+			return combo.Name
+		}
+		if matched == "" {
+			matched = combo.Name
+		}
+	}
+	return matched
 }
 
 // resolveModel resolves a model string through aliases, combos, and provider/model parsing.
@@ -254,34 +436,22 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 
 	// 3. Check if it's a combo name
 	combo, err := h.Repo.GetComboByName(modelStr)
-	if err == nil && combo != nil && combo.Models != "" {
-		var modelStrings []string
-		if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
-			// Flatten nested combos into concrete leaves so rotation covers
-			// every reachable model (a nested combo entry used to collapse to
-			// its first leaf, so combo-wombo -> free-tier never rotated).
-			flattened, flatErr := h.flattenComboModels(modelStrings)
-			if flatErr != nil {
-				return nil, flatErr
-			}
-			if len(flattened) > 0 {
-				firstInfo := h.resolveModelEntry(flattened[0])
-				if firstInfo == nil {
-					firstInfo, _ = h.resolveModel(flattened[0])
-				}
-				if firstInfo != nil {
-					firstInfo.ComboModels = flattened
-					firstInfo.Strategy = combo.Strategy
-					return firstInfo, nil
-				}
-			}
+	if err == nil {
+		if info, comboErr, ok := h.resolveComboModel(combo); ok {
+			return info, comboErr
 		}
 	}
 
 	// Built-in virtual route. Checked after aliases and combos so a caller-defined
 	// "free" or "free-best" pool keeps working, and before the common-provider
 	// fallback so the name cannot be sent to a paid provider by accident.
+	// Case and surrounding space fold onto the same route: FREE and " free-best "
+	// are the virtual names, and an alias or combo stored under any case of
+	// those names still wins.
 	if isVirtualFreeRoute(modelStr) {
+		if info, overrideErr, ok := h.resolveFoldedVirtualOverride(modelStr); ok {
+			return info, overrideErr
+		}
 		return h.resolveDynamicFreeBest()
 	}
 

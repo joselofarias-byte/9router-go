@@ -36,6 +36,11 @@ func (a *OrcaRouterAdapter) SourceID() string {
 	return "orcarouter"
 }
 
+// ScopedProviderIDs returns the provider whose catalog this adapter owns.
+func (a *OrcaRouterAdapter) ScopedProviderIDs() []string {
+	return []string{"orcarouter"}
+}
+
 func (a *OrcaRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 	// Fallback mechanism to robustly support generic OpenAI-compatible structures
 	// if specific OrcaRouter endpoints fail.

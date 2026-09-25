@@ -7,11 +7,19 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"9router/proxy/internal/controlplane/registry"
+	_ "modernc.org/sqlite"
 )
 
+func resetSyncState() {
+	genMu.Lock()
+	lastSyncGen = 0
+	hasSyncedOnce = false
+	genMu.Unlock()
+}
+
 func TestSyncAccountsFromDB(t *testing.T) {
+	resetSyncState()
 	tempDB := "test_sync_accounts.db"
 	defer os.Remove(tempDB)
 
@@ -125,10 +133,7 @@ func TestSyncAccountsFromDB_PartialFailureRetries(t *testing.T) {
 		"acc-1", "prov-1", "bearer", 1, "{}", now, now)
 
 	// Ensure clean initial state
-	genMu.Lock()
-	lastSyncGen = 0
-	hasSyncedOnce = false
-	genMu.Unlock()
+	resetSyncState()
 
 	// Force the full scan query to fail by injecting a bad query
 	originalQuery := queryFullAccounts
@@ -186,10 +191,7 @@ func TestSyncAccountsFromDB_EmptyDB(t *testing.T) {
 		"stale-acc": {ID: "stale-acc", ProviderID: "stale-prov", IsActive: true},
 	})
 
-	genMu.Lock()
-	lastSyncGen = 0
-	hasSyncedOnce = false
-	genMu.Unlock()
+	resetSyncState()
 
 	err := SyncAccountsFromDB(db)
 	if err != nil {
@@ -199,6 +201,104 @@ func TestSyncAccountsFromDB_EmptyDB(t *testing.T) {
 	state := registry.GetActiveState()
 	if len(state.Accounts) != 0 {
 		t.Errorf("expected 0 accounts after syncing from empty DB, got %d", len(state.Accounts))
+	}
+}
+
+func TestPublishAccounts_IgnoresStaleGeneration(t *testing.T) {
+	registry.InitRegistry(nil)
+	resetSyncState()
+	genMu.Lock()
+	lastSyncGen = 6
+	hasSyncedOnce = true
+	genMu.Unlock()
+	registry.UpdateAccounts(map[string]*registry.Account{
+		"new": {ID: "new", ProviderID: "p", IsActive: true},
+	})
+
+	if publishAccounts(5, true, map[string]*registry.Account{
+		"old": {ID: "old", ProviderID: "p", IsActive: true},
+	}) {
+		t.Fatal("stale generation was published")
+	}
+	state := registry.GetActiveState()
+	if _, exists := state.Accounts["old"]; exists {
+		t.Fatal("stale account overwrote the newer snapshot")
+	}
+	if _, exists := state.Accounts["new"]; !exists {
+		t.Fatal("newer account missing after stale publish")
+	}
+
+	if !publishAccounts(7, true, map[string]*registry.Account{
+		"newer": {ID: "newer", ProviderID: "p", IsActive: false},
+	}) {
+		t.Fatal("newer generation was rejected")
+	}
+	state = registry.GetActiveState()
+	if state.Accounts["newer"] == nil || state.Accounts["newer"].IsActive {
+		t.Fatalf("newer generation did not replace accounts: %+v", state.Accounts)
+	}
+}
+
+func TestRefreshAccountsAfterSnapshot_DropsResurrectedConnection(t *testing.T) {
+	tempDB := "test_sync_accounts_refresh.db"
+	defer os.Remove(tempDB)
+
+	db, err := sql.Open("sqlite", tempDB)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+		CREATE TABLE providerConnections (
+			id TEXT PRIMARY KEY,
+			provider TEXT NOT NULL,
+			authType TEXT NOT NULL,
+			isActive INTEGER DEFAULT 1,
+			data TEXT NOT NULL,
+			createdAt TEXT NOT NULL,
+			updatedAt TEXT NOT NULL
+		);
+		CREATE TABLE controlplane_meta (key TEXT PRIMARY KEY, val INTEGER NOT NULL);
+		INSERT INTO controlplane_meta (key, val) VALUES ('accounts_generation', 1);
+		CREATE TRIGGER trg_providerConnections_after_insert AFTER INSERT ON providerConnections BEGIN UPDATE controlplane_meta SET val = val + 1 WHERE key = 'accounts_generation'; END;
+		CREATE TRIGGER trg_providerConnections_after_update AFTER UPDATE ON providerConnections BEGIN UPDATE controlplane_meta SET val = val + 1 WHERE key = 'accounts_generation'; END;
+		CREATE TRIGGER trg_providerConnections_after_delete AFTER DELETE ON providerConnections BEGIN UPDATE controlplane_meta SET val = val + 1 WHERE key = 'accounts_generation'; END;
+	`); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	registry.InitRegistry(nil)
+	resetSyncState()
+
+	now := time.Now().Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO providerConnections (id, provider, authType, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"acc-1", "groq", "bearer", 1, "{}", now, now); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := SyncAccountsFromDB(db); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE providerConnections SET isActive = 0 WHERE id = 'acc-1'`); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+	if err := SyncAccountsFromDB(db); err != nil {
+		t.Fatalf("sync after deactivate: %v", err)
+	}
+	if registry.GetActiveState().Accounts["acc-1"].IsActive {
+		t.Fatal("deactivated connection still active after sync")
+	}
+
+	// A discovery snapshot can publish an older account view and leave the
+	// generation fast path believing it is current.
+	registry.UpdateAccounts(map[string]*registry.Account{
+		"acc-1": {ID: "acc-1", ProviderID: "groq", IsActive: true},
+	})
+	if err := RefreshAccountsAfterSnapshot(db); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	acc := registry.GetActiveState().Accounts["acc-1"]
+	if acc == nil || acc.IsActive {
+		t.Fatalf("resurrected connection was not cleared: %+v", acc)
 	}
 }
 
@@ -223,6 +323,7 @@ func TestSyncAccountsFromDB_Concurrency(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO controlplane_meta (key, val) VALUES ('accounts_generation', 1);`)
 
 	registry.InitRegistry(nil)
+	resetSyncState()
 
 	// Launch multiple goroutines calling SyncAccountsFromDB concurrently
 	// Run this test with `-race`

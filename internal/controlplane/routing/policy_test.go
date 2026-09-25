@@ -83,6 +83,10 @@ func TestEngine_SelectCandidates_DynamicFreePool(t *testing.T) {
 	state.ProviderModels["p2"] = map[string]*registry.ProviderModel{
 		"qwen":    {ProviderID: "p2", ModelID: "qwen", PricingMode: "free_tier", IsActive: true},
 		"unknown": {ProviderID: "p2", ModelID: "deepseek-chat-free", PricingMode: "unknown", IsActive: true},
+		"upper":   {ProviderID: "p2", ModelID: "upper", PricingMode: "FREE", IsActive: true},
+		"spaced":  {ProviderID: "p2", ModelID: "spaced", PricingMode: "free ", IsActive: true},
+		"trial":   {ProviderID: "p2", ModelID: "trial", PricingMode: "trial", IsActive: true},
+		"blank":   {ProviderID: "p2", ModelID: "blank", PricingMode: "", IsActive: true},
 	}
 	state.ProviderModels["p_inactive"] = map[string]*registry.ProviderModel{
 		"free-but-down": {ProviderID: "p_inactive", ModelID: "free-but-down", PricingMode: "free", IsActive: true},
@@ -112,7 +116,7 @@ func TestEngine_SelectCandidates_DynamicFreePool(t *testing.T) {
 			t.Errorf("expected free pool to include %s, got %#v", want, got)
 		}
 	}
-	for _, banned := range []string{"p1/gpt-4", "p1/dropped", "p2/deepseek-chat-free", "p_inactive/free-but-down", "p_missing/orphan"} {
+	for _, banned := range []string{"p1/gpt-4", "p1/dropped", "p2/deepseek-chat-free", "p2/upper", "p2/spaced", "p2/trial", "p2/blank", "p_inactive/free-but-down", "p_missing/orphan"} {
 		if got[banned] {
 			t.Errorf("free pool included %s", banned)
 		}

@@ -19,6 +19,13 @@ const (
 	PolicyTrusted   Policy = "trusted-only"
 )
 
+// IsFreePricing reports whether Fabric currently classifies a model as free.
+// The comparison is exact: discovery writes "free" and "free_tier", and any
+// other spelling stays out of the free pool.
+func IsFreePricing(mode string) bool {
+	return mode == "free" || mode == "free_tier"
+}
+
 type RouteNode struct {
 	ProviderID    string
 	ModelID       string
@@ -70,8 +77,10 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 				continue
 			}
 
-			// Enforce Policy constraints
-			isFree := (pm.PricingMode == "free" || pm.PricingMode == "free_tier")
+			// Enforce Policy constraints. Only the exact Fabric classifications
+			// "free" and "free_tier" count. "FREE", "free ", "trial", empty,
+			// paid, and unknown are not eligible for a free-only pool.
+			isFree := IsFreePricing(pm.PricingMode)
 			if policy == PolicyFreeOnly && !isFree {
 				continue // strict drop
 			}

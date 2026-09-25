@@ -31,6 +31,11 @@ func (a *ClineFreeAdapter) SourceID() string {
 	return "cline-free"
 }
 
+// ScopedProviderIDs returns the provider whose free catalog this adapter owns.
+func (a *ClineFreeAdapter) ScopedProviderIDs() []string {
+	return []string{"cline"}
+}
+
 type clineCatalogModel struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
