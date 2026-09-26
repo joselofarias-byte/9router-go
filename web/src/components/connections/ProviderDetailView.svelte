@@ -2562,6 +2562,15 @@
             <span class="material-symbols-outlined text-[18px]">login</span>
             Connect Google Account
           </button>
+        {:else if providerId === 'kiro'}
+          <button
+            type="button"
+            onclick={handleAddConnectionClick}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px]"
+          >
+            <span class="material-symbols-outlined text-[18px]">login</span>
+            Connect Kiro
+          </button>
         {:else if hasDualAuthModes}
           <button
             type="button"
@@ -2917,7 +2926,15 @@
           <span class="material-symbols-outlined text-[18px]">vpn_key</span>
           {isAuthorizingFreebuff ? 'Polling Authorization...' : 'Authorize Freebuff CLI'}
         </button>
-      {:else if hasDualAuthModes}
+      {:else if providerId === 'kiro'}
+        <button
+          type="button"
+          onclick={handleAddConnectionClick}
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+        >
+          <span class="material-symbols-outlined text-[18px]">login</span>
+          Connect Kiro
+        </button>
         <button
           type="button"
           onclick={handleAddConnectionClick}
