@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
 )
 
 func modelsIDs(t *testing.T, h *ChatHandler) []string {
@@ -163,5 +164,203 @@ func TestHandleModels_DisabledBuiltinExcluded(t *testing.T) {
 	}
 	if !strings.Contains(joined, "cx/gpt-5.6-sol") {
 		t.Errorf("non-disabled cx/gpt-5.6-sol must stay, got:\n%s", joined)
+	}
+}
+
+func TestHandleModels_ActiveRowWinsOverInactiveDuplicate(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+
+	// Same provider with one active and one inactive row: the active row
+	// keeps the provider serviceable, so its models must stay listed.
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cx-on', 'codex', 'oauth', 'Codex On', 1, 1, '{"prefix":"cx","apiKey":"tok-on"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'),
+		('conn-cx-off', 'codex', 'oauth', 'Codex Off', 2, 0, '{"prefix":"cx","apiKey":"tok-off"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed codex rows: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('customModels', 'cx|custom-on|llm', ?)`,
+		`{"providerAlias":"cx","id":"custom-on","type":"llm","name":"custom-on"}`); err != nil {
+		t.Fatalf("seed custom: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	ids := modelsIDs(t, h)
+	joined := strings.Join(ids, "\n")
+	if !strings.Contains(joined, "cx/custom-on") {
+		t.Errorf("custom model of an active connection must stay listed despite an inactive sibling row, got:\n%s", joined)
+	}
+}
+
+func TestHandleModels_AllRowsInactiveHidesProvider(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cx-off1', 'codex', 'oauth', 'Codex Off 1', 1, 0, '{"prefix":"cx","apiKey":"tok-1"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'),
+		('conn-cx-off2', 'codex', 'oauth', 'Codex Off 2', 2, 0, '{"prefix":"cx","apiKey":"tok-2"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed codex rows: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('customModels', 'cx|custom-off|llm', ?)`,
+		`{"providerAlias":"cx","id":"custom-off","type":"llm","name":"custom-off"}`); err != nil {
+		t.Fatalf("seed custom: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	for _, id := range modelsIDs(t, h) {
+		if strings.HasPrefix(id, "cx/") {
+			t.Errorf("provider with only inactive rows must publish nothing, got %q", id)
+		}
+	}
+}
+
+func TestIsLLMModelID(t *testing.T) {
+	tests := []struct {
+		modelID string
+		wantLLM bool
+	}{
+		{modelID: "claude-sonnet-4.6", wantLLM: true},
+		{modelID: "deepseek-ai/DeepSeek-V4-Flash", wantLLM: true},
+		{modelID: "nvidia/nv-embedqa-e5-v5", wantLLM: false},
+		{modelID: "text-embedding-3-large", wantLLM: false},
+		{modelID: "tts-1-hd", wantLLM: false},
+		{modelID: "openai/gpt-4o-mini-tts", wantLLM: false},
+		{modelID: "gpt-image-2.5", wantLLM: false},
+		{modelID: "black-forest-labs/FLUX.1-schnell", wantLLM: false},
+		{modelID: "stability-ai/sdxl-turbo", wantLLM: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			if got := isLLMModelID(tt.modelID); got != tt.wantLLM {
+				t.Errorf("isLLMModelID(%q) = %v, want %v", tt.modelID, got, tt.wantLLM)
+			}
+		})
+	}
+}
+
+// Upstream: providerSpecificData.enabledModels replaces the static catalog.
+func TestHandleModels_EnabledModelsOverrideCatalog(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+
+	connData := `{"prefix":"cx","apiKey":"tok-codex","providerSpecificData":{"enabledModels":["gpt-6-astra"]}}`
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cx-en', 'codex', 'oauth', 'Codex Enabled', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, connData); err != nil {
+		t.Fatalf("seed codex: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	ids := modelsIDs(t, h)
+	joined := strings.Join(ids, "\n")
+	if !strings.Contains(joined, "cx/gpt-6-astra") {
+		t.Errorf("enabled model must be listed, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "cx/gpt-5.6-sol") {
+		t.Errorf("catalog entry outside enabledModels must not be listed, got:\n%s", joined)
+	}
+}
+
+// Upstream: alias targets merge into the owning provider; the alias key itself
+// is never published as a model id.
+func TestHandleModels_AliasTargetMergedIntoProvider(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cc-alias', 'claude', 'apikey', 'Claude Alias', 1, 1, '{"apiKey":"sk-cc"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed claude: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'my-claude', '"cc/my-claude-alias"')`); err != nil {
+		t.Fatalf("seed alias: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	ids := modelsIDs(t, h)
+	joined := strings.Join(ids, "\n")
+	if !strings.Contains(joined, "cc/my-claude-alias") {
+		t.Errorf("alias target must be merged into the connected provider, got:\n%s", joined)
+	}
+	for _, id := range ids {
+		if id == "my-claude" {
+			t.Errorf("alias key must not be published as a model id")
+		}
+	}
+}
+
+// Upstream: combo entries come first and are owned by "combo".
+func TestHandleModels_ComboOwnedByCombo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-1', 'llm-combo', 'llm', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		`["deepseek/deepseek-chat","groq/llama-3-70b"]`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	NewChatHandler(db.NewRepo(database)).HandleModels(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			ID      string                        `json:"id"`
+			OwnedBy string                        `json:"owned_by"`
+			Caps    *providers.CapabilitiesDetail `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Data) == 0 {
+		t.Fatal("expected combo entry")
+	}
+	// Upstream pushes every combo before the first provider model.
+	comboIdx, providerIdx := -1, -1
+	for i, m := range resp.Data {
+		if m.OwnedBy == "combo" {
+			if comboIdx == -1 {
+				comboIdx = i
+				continue
+			}
+			continue
+		}
+		if providerIdx == -1 {
+			providerIdx = i
+		}
+	}
+	if comboIdx == -1 {
+		t.Fatal("expected a combo entry owned_by 'combo'")
+	}
+	if providerIdx != -1 && comboIdx > providerIdx {
+		t.Errorf("combos must precede provider models, combo at %d, provider at %d", comboIdx, providerIdx)
+	}
+	for _, m := range resp.Data {
+		if m.ID != "llm-combo" {
+			continue
+		}
+		if m.Caps == nil {
+			t.Error("expected aggregated capabilities for the combo entry")
+		}
 	}
 }

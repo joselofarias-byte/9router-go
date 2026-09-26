@@ -2,18 +2,20 @@
 
 ## [Unreleased]
 
-### 🐛 `GET /v1/models` hanya menampilkan model yang benar-benar available (fix issue #1)
+### 🐛 `GET /v1/models` — port penuh `buildModelsList` upstream Next.js (fix issue #1)
 
-- Gejala: `/v1/models` membanjiri katalog — provider tanpa credential (`ghost customs` di `kv.customModels`) tetap terkirim, dan model yang di-`disable` ikut muncul, sehingga totalMelonjak ke ratusan/ribuan-an entry.
-- Akar 1 (custom models): `buildModelsList` mencetak SEMUA baris `kv.customModels` selama tabel `providerConnections` tidak kosong, tanpa cek koneksi. Parity upstream `v1/models/route.js`: `customModelIds` difilter ke `alias === staticAlias || outputAlias || providerId` dari loop `activeConnectionByProvider` — custom tanpa koneksi tidak pernah masuk daftar.
-- Akar 2 (koneksi nonaktif): `GetProviderConnections("", true)` tidak memfilter `isActive` di level repo, sehingga baris `isActive=0` sempat lolos; filter hanya mengecek credential.
-- Akar 3 (fallback statis): cabang `len(activeConnections) == 0` neuen purposely static dump, termasuk ketika semua baris ada tapi inactive/tanpa credential.
-- Perbaikan `internal/handlers/chat/chat.go`:
-  - `buildModelsList` — gate `conn.IsActive == 0 || !connectionHasCredential(conn)` (koneksi aktif + credential) pada gate active provider.
-  - static dump hanya saat `providerConnections` benar-benar kosong (atau handler tanpa Repo); baris ghost tidak lagi membocorkan seluruh katalog.
-  - custom models — `connectedProviders` (alias/canonical dari koneksi aktif + node row yang punya koneksi) + `customVisibleAlias` (node row id → prefix terdaftar, alias/canonical provider); custom di luar daftar itu dilewati, dan `isDisabled` kini ikut berlaku untuk custom.
-- Dampak (DB asli user, 8 provider aktif + 16 node): 640 → 606 model, dan prefix tanpa koneksi lenyap (`oc`, `qd`, `gemini`, `Id/deepseek-*` dari 4 node tak bertautan). `clinepass/*` tetap utuh karena koneksinya aktif.
-- Tests: `TestHandleModels_CustomOnlyWhenConnected`, `TestHandleModels_CustomHiddenWhenProviderInactive`, `TestHandleModels_DisabledCustomExcluded`, `TestHandleModels_DisabledBuiltinExcluded`; test lama `TestHandleModels_CustomModels` / `TestHandleModels_MapsProviderNodeRowIDToPrefix` kini seed koneksi yang sesuai (tanpa itu, kredensial node dan alias ikut hilang). Suite penuh: 1416 pass.
+- Gejala: `/v1/models` membanjiri katalog — `ghost customs` di `kv.customModels` untuk provider yang tak terhubung ikut terkirim, alias key dipublikasikan sebagai model sendiri, `enabledModels` diabaikan, dan model media/embedding ikut muncul. Di DB asli user: 640 model, `clinepass/` dobel dengan `cp/`, 4 node mati tetap menampakkan 21 model.
+- Sumber kebenaran: `~/htdocs/9router/src/app/api/v1/models/route.js` (`buildModelsList`, `KIND_SLUG_MAP`, `MODEL_TYPE_TO_KIND`, `inferKindFromUnknownModelId`, `aggregateComboCapabilities`).
+- `internal/handlers/chat/models_list.go` (baru, builder dipindah keluar dari `chat.go` — `chat.go` 1331 → 897 baris):
+  - urutan upstream: **combos dulu** (`owned_by: "combo"`, caps agregat dari seluruh daun combo via `MergeCapabilitiesDetail`), baru model per koneksi.
+  - `isActive !== false` **saja** — upstream tidak mensyaratkan credential untuk listing, jadi gate credential dari 9router-go sengaja dibalik (`TestHandleModels_SkipsCredentiallessConnections` diganti `TestHandleModels_ActiveConnectionPublishesCatalog`).
+  - per koneksi: `staticAlias` = alias katalog, `outputAlias` = `providerSpecificData.prefix`; `enabledModels` (psd atau top-level) **menggantikan** katalog statis; lalu digabung custom model yang `providerAlias ∈ {staticAlias, outputAlias, providerId}` (hanya bertipe llm) dan target `modelAliases` yang prefix-nya cocok; `isDisabled(outputAlias|staticAlias, id)` ditegakkan; prefix `outputAlias/`, `staticAlias/`, `providerId/` pada id dibersihkan.
+  - alias key **tidak lagi** jadi model id sendiri (upstream hanya memakai target-nya), dan custom model tak bertipe kini ikut disaring `isLLMModelID` (heuristik `embed|tts|speech|audio|voice|image|imagen|dall-e|flux|sdxl|sd-|stable-diffusion`, sama dengan `inferKindFromUnknownModelId` upstream).
+  - static dump hanya bila tabel `providerConnections` benar-benar kosong (upstream `connections.length === 0`); web combo kini memakai field `kind` (`webSearch`/`webFetch`) seperti upstream.
+- Perbaikan turunan: provider dengan 1 baris aktif + 1 baris nonaktif tidak lagi dianggap disabled total (sebelumnya `tr/*` 153 model hilang).
+- Dampak (DB asli user): 640 → **743** model, semuanya dari koneksi aktif; `clinepass/` + `cp/` menyatu jadi `cp/*` (duplikat 10 hilang), `openrouter/*` customs menyatu ke `or/*`, `or/veo|sora|seedance|embed*` hilang sebagai model non-LLM, 8 combo muncul pertama dengan `owned_by: "combo"`.
+- Tests: `TestIsLLMModelID` (9 kasus), `TestHandleModels_EnabledModelsOverrideCatalog`, `TestHandleModels_AliasTargetMergedIntoProvider`, `TestHandleModels_ComboOwnedByCombo`, plus 4 test filtering dari commit sebelumnya; test legacy `TestHandleModelLookup_ProviderModel` / `TestHandleModels_IncludesTokenLimits` di-seed ulang sesuai semantik upstream (alias butuh provider terhubung). Suite penuh: 1431 pass.
+- Catatan parity tersisa: upstream memfilter kind lewat `type` per model di `PROVIDER_MODELS`, sedangkan registry Go masih menyimpan id saja, jadi model media yang id-nya tidak kena heuristik (mis. `parakeet-ctc-1.1b-asr`, `tacotron2`) masih ikut tampil.
 
 ### 🐛 Log fallback tidak menyebut akun/project yang gagal (Antigravity 403 `VALIDATION_REQUIRED`)
 

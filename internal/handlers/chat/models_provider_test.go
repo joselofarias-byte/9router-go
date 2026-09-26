@@ -140,7 +140,7 @@ func TestHandleModelLookup_CodexModel(t *testing.T) {
 	}
 }
 
-func TestHandleModels_SkipsCredentiallessConnections(t *testing.T) {
+func TestHandleModels_ActiveConnectionPublishesCatalog(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -148,7 +148,9 @@ func TestHandleModels_SkipsCredentiallessConnections(t *testing.T) {
 		t.Fatalf("delete connections: %v", err)
 	}
 
-	// Active connection with no auth material must not contribute models.
+	// Upstream parity (src/app/api/v1/models/route.js): connections are
+	// filtered on isActive only — listing does not require credentials, so an
+	// active codex row still contributes its catalog.
 	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-cx-plain', 'codex', 'oauth', 'Codex Bare', 1, 1, '{"prefix":"cx"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`)
 	if err != nil {
@@ -165,11 +167,10 @@ func TestHandleModels_SkipsCredentiallessConnections(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), `"id":"cx/`) {
-		t.Errorf("credentialless codex connection must not list models, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), `"id":"cx/`) {
+		t.Errorf("active connection must publish its catalog, got: %s", w.Body.String())
 	}
 }
-
 func TestHandleModels_ExcludesDisabledModels(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

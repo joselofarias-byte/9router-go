@@ -594,6 +594,31 @@ type CapabilitiesDetail struct {
 	ContextWindow           int  `json:"contextWindow,omitempty"`
 }
 
+// MergeCapabilitiesDetail unions two capability blocks, keeping the widest
+// context window. Upstream applies the same "union of leaves" rule when a combo
+// advertises the aggregated capabilities of its member models.
+func MergeCapabilitiesDetail(a, b CapabilitiesDetail) CapabilitiesDetail {
+	merged := a
+	merged.Vision = a.Vision || b.Vision
+	merged.PDF = a.PDF || b.PDF
+	merged.AudioInput = a.AudioInput || b.AudioInput
+	merged.VideoInput = a.VideoInput || b.VideoInput
+	merged.ImageOutput = a.ImageOutput || b.ImageOutput
+	merged.AudioOutput = a.AudioOutput || b.AudioOutput
+	merged.ThinkingCanDisable = a.ThinkingCanDisable || b.ThinkingCanDisable
+	merged.ThinkingEffortSupported = a.ThinkingEffortSupported || b.ThinkingEffortSupported
+	if a.ThinkingRange == nil {
+		merged.ThinkingRange = b.ThinkingRange
+	}
+	if b.ContextWindows > merged.ContextWindows {
+		merged.ContextWindows = b.ContextWindows
+	}
+	if b.ContextWindow > merged.ContextWindow {
+		merged.ContextWindow = b.ContextWindow
+	}
+	return merged
+}
+
 // GetCapabilitiesDetailForModel returns the full JSON-serializable capabilities map for /v1/models.
 func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 	caps := GetCapabilitiesForModel(provider, model)

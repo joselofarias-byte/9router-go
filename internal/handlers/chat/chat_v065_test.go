@@ -38,7 +38,12 @@ func TestHandleModelLookup_Kind(t *testing.T) {
 func TestHandleModelLookup_ProviderModel(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// Seed an alias for lookup
+	// Upstream parity: an alias target is only listed through a connected
+	// provider, so seed the claude (cc) connection it points at.
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cc-alias', 'claude', 'apikey', 'Claude Alias', 1, 1, '{"apiKey":"sk-test-cc"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed claude connection: %v", err)
+	}
 	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'cc/claude-sonnet-4-6', '"cc/claude-sonnet-4-6"')`); err != nil {
 		t.Fatalf("seed alias: %v", err)
 	}
