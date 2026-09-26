@@ -7,6 +7,12 @@
 - Fresh-`DATA_DIR` live smoke: login (`123456`) → `GET /api/settings` → `PUT /api/settings` → connections `[]` → API key created; all previously `no such table`, now working.
 - Tests: `TestEnsureCoreSchema` (tables+indexes, seeds, fresh-install flow, idempotency, legacy backfill). Docs: `DATABASE.md`, `ARCHITECTURE.md`, `README.md` updated; `ROADMAP.md` §1 criterion 1 done; `TECHNICAL_DEBT.md` DB-01/DB-04 resolved.
 
+### 📦 One-line installer (macOS/Linux/Windows) + simpler README
+
+- `install.sh` (new): detects OS/arch, downloads the latest release binary from GitHub, installs to `/usr/local/bin` (sudo/`~/.local/bin` fallback). Usage: `curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash`, then just `9router-go` (defaults: port `20130`, data `~/.9router` — no flags needed).
+- `install.ps1` (new): Windows PowerShell equivalent — installs `9router-go.exe` to `%LOCALAPPDATA%\9router-go` without admin, adds it to the user PATH, refuses on non-AMD64 or while the binary is running (Windows file lock). Usage: `irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex`.
+- README rewritten in upstream style (Why → How It Works → 3-step Quick Start); technical details (env table, API surface, auth, database) folded into an "Advanced" `<details>` block. Release table now has direct per-binary download links plus a "which file do I pick?" guide; Docker section split into ready-made image (`docker run luqmenul/9router-go:latest`, incl. mounting an existing `~/.9router`) vs compose-from-source.
+- Non-breaking: installer/docs only, no runtime behavior change; `VERSION`/`version.json` untouched at `1.9.2`, no tag moved.
 
 ### 🐛 `POST /api/models/test` 401 meski sudah login
 
