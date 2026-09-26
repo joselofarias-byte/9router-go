@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### 🐛 Kiro `403 The bearer token included in the request is invalid`
+
+- Gejala: `POST /api/models/test` / chat Kiro gagal 403 sementara token-nya sebenarnya valid — `GET ListAvailableModels` dengan token yang sama balas 200.
+- Akar: `extractAPIKey` selalu memprioritaskan `apiKey`, dan koneksi Kiro hasil *import* menyimpan **dua** kredensial (`apiKey` + `accessToken`). Kita mengirim `apiKey` itu sebagai `Authorization: Bearer` **dan** `x-amz-sso-bearer`, padahal upstream (`open-sse/executors/kiro.js` `buildHeaders`) memakai `apiKey` hanya untuk `authMethod: "api_key"`; sisanya memakai `accessToken`. CodeWhisperer menolak token itu dengan pesan "bearer token invalid" meski `accessToken`-nya sehat.
+- Perbaikan:
+  - `internal/handlers/chat/connections.go` — `resolveProviderAuthToken` menerapkan aturan upstream itu di jalur forward (hanya Kiro; provider lain tidak berubah).
+  - `internal/proxy/grokcli.go` — `ForwardKiro` sekarang mengirim `TokenType: API_KEY|EXTERNAL_IDP` sesuai `authMethod` dan `x-amzn-codewhisperer-profile-arn`, lalu **rotasi endpoint** seperti upstream: `q.<region>` → `codewhisperer.<region>` → `runtime.us-east-1.kiro.dev`, dengan fallback pada 401/403/404 (`KIRO_ENDPOINT_FALLBACK_STATUSES`); 400 tetap terminal. Host AWS di-regionalisasi dari `providerSpecificData.region`.
+- Verifikasi: `POST /v1/chat/completions {"model":"kr/claude-sonnet-4.5"}` → **200** (`"ok"`), sebelumnya 403; ketiga permukaan Kiro juga balas 200 saat diprobe langsung dengan `accessToken` yang sama.
+- Tests: `TestResolveProviderAuthToken_Kiro` (7 kasus: imported/builder-id/api_key/access-only/key-only/kosong/provider lain), `TestKiroEndpointsOrdering` (3), `TestKiroTokenType` (5), `TestKiroEndpointFallbackStatus` (401/403/404 fallback, 400/429/5xx terminal). Suite: 1466 pass.
+
 ### ✨ `GET /v1/models` — live catalog + bentuk respons identik upstream
 
 - `internal/handlers/chat/live_catalog.go` (baru): port `LIVE_MODEL_RESOLVERS` upstream — **kiro** (`GET https://q.<region>.amazonaws.com/ListAvailableModels` + fingerprint UA Kiro IDE, tiap model dipecah jadi varian `-thinking`/`-agentic`/`-thinking-agentic`, `auto` tanpa varian agentic), **grok-cli** (`GET <base>/v1/models` dengan header `x-grok-cli`), dan **node custom** (`fetchCompatibleModelIds`: `GET <baseUrl>/models`). Cache proses 5 menit per kredensial; 401/403 memicu refresh token sekali lalu retry; kegagalan jatuh ke katalog statis, tidak pernah mengosongkan provider.

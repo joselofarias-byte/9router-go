@@ -254,7 +254,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 	}
 
-	apiKey := extractAPIKey(connData)
+	apiKey := resolveProviderAuthToken(provider, connData, extractAPIKey(connData))
 	if apiKey == "" {
 		if providerCfg.DefaultAPIKey != "" {
 			apiKey = providerCfg.DefaultAPIKey

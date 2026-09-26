@@ -162,7 +162,7 @@ func ForwardKiro(w http.ResponseWriter, req *Request) error {
 		return err
 	}
 
-	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, body, req.IsStream)
+	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, body, req.IsStream, req.ConnData)
 	if err != nil {
 		return fmt.Errorf("ForwardKiro: %w", err)
 	}
@@ -215,10 +215,10 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 	})
 	if err != nil {
 		log.Error("executor", "kiro translation failed", "model", model, "error", err)
-	return nil, &proxy.UpstreamError{
-		StatusCode: http.StatusBadRequest,
-		Body:       []byte(fmt.Sprintf(`{"error":{"message":"kiro request could not be built: %v","type":"invalid_request_error","code":400}}`, err)),
-	}
+		return nil, &proxy.UpstreamError{
+			StatusCode: http.StatusBadRequest,
+			Body:       []byte(fmt.Sprintf(`{"error":{"message":"kiro request could not be built: %v","type":"invalid_request_error","code":400}}`, err)),
+		}
 	}
 	return out, nil
 }
@@ -347,7 +347,6 @@ func toCommandcodeImageBlock(part map[string]any) map[string]any {
 	}
 	return nil
 }
-
 
 // buildCommandcodeBody transforms OpenAI request payload into CommandCode schema
 // {threadId, memory, config, params} matching upstream openaiToCommandCodeRequest.
