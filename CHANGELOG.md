@@ -19,7 +19,20 @@
 - Route dipindah dari grup `RequireApiKey` (hanya menerima Bearer/`X-API-Key`) ke `RequireDashboardAuth` — parity upstream `dashboardGuard` (`src/app/api/models/test/route.js`). Sebelumnya dashboard yang login via cookie session mendapat `401 invalid_api_key`; kini cookie session, CLI token, dan API key valid sama-sama diterima, sama seperti `/api/models/custom|disabled|alias`.
 - Regression test: `TestSetupServerRouter_ModelTestDashboardSession` (anonim → 401, session valid → lolos).
 
-### 🛠️ Frontend Dev Workflow — HMR tanpa rebuild binary
+### 🐛 Kiro `400 Improperly formed request` — request OpenAI diteruskan mentah ke gateway
+
+- Akar: tidak ada translator OpenAI→Kiro di Go. `ForwardKiro` meneruskan body OpenAI apa adanya; gateway kiro.dev hanya menerima envelope `conversationState` dan menjawab `400 {"message":"Improperly formed request."}`. Upstream punya `openai-to-kiro.js`/`claude-to-kiro.js` yang belum di-port.
+- `internal/translator/kiro.go` (baru): port `openaiToKiroRequest` — bangun `conversationState` (chatTriggerType/conversationId/currentMessage/history), system+time-context disisipkan ke content user turn (gateway menolak `systemPrompt` top-level), tool_use/tool_result, image base64 → blok Kiro, `profileArn` dari `providerSpecificData`, `inferenceConfig`, history backfill `modelId`, merge user-turn berurutan. Session replay/thinking budget upstream belum diport.
+- `ForwardKiro` memakai translator untuk body OpenAI, pass-through untuk body yang sudah `conversationState` (MITM); strip prefix `kr/` dan suffix `-thinking`/`-agentic` sebelum `modelId`.
+- Tests: `TestOpenAIToKiro_*` (7) + `TestKiroUpstreamBody_*` mock-upstream (3).
+
+### 🐛 Modal Connect Kiro tidak terbuka + tombol OAuth/API Key tertimpa
+
+- Akar 1: `devicePollTimer` tidak pernah dideklarasikan → `stopDevicePoll()` melempar `ReferenceError` di dalam `openKiroOAuth()`, sehingga `showOAuthModal = true` tidak pernah tereksekusi (tanpa error di console karena async).
+- Akar 2: `isNoAuth` disimpulkan dari `category === 'free'`; kiro/gemini-cli punya `noAuth: false` tetapi tetap diperlakukan no-auth sehingga kartu Connections (tombolnya) tersembunyi. Parity upstream: hanya flag `noAuth` eksplisit. Diperbaiki juga di `combos/pickerData.ts`.
+- Akar 3: cabang `{:else if providerId === 'kiro'}` di baris tombol bawah menelan isi `{:else if hasDualAuthModes}` (tombol OAuth/API Key). Banner "Waiting…" + blok "MANUAL TOKEN IMPORT" disembunyikan saat daftar metode kiro tampil.
+- Tests: verifikasi browser (klik → 7 metode tampil, tanpa sisa markup generik).
+
 
 - `web/vite.config.ts` — dev proxy kini mencakup `/admin`; sebelumnya `resetHealth()` (`/admin/health/reset`) jatuh ke SPA fallback di mode dev karena tidak di-proxy ke Go.
 - `Makefile` — target baru `web-dev` (Vite dev server :5173 + HMR). Workflow dua terminal: `make dev` (Go :20130) + `make web-dev` → perubahan FE hot-reload tanpa rebuild/restart binary.
