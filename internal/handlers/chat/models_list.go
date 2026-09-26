@@ -75,6 +75,23 @@ func isLLMModelID(modelID string) bool {
 	}
 }
 
+// isLLMModelEntry resolves one merged id to its service kind the way upstream
+// does: a custom row's own type wins (already filtered by isLLMCustomModel),
+// then the registry entry's declared kind, and only ids with neither fall back
+// to the id heuristic. The /v1/models list is the LLM list (kindFilter
+// ["llm"]), so anything else stays out.
+func isLLMModelEntry(outputAlias, staticAlias, providerID, modelID string, fromCustom bool) bool {
+	if fromCustom {
+		return true
+	}
+	for _, key := range []string{outputAlias, staticAlias, providerID} {
+		if kind := providers.GetProviderModelKind(key, modelID); kind != "" {
+			return kind == "llm"
+		}
+	}
+	return isLLMModelID(modelID)
+}
+
 // isLLMCustomModel mirrors upstream modelKind() for a kv.customModels row: the
 // row's own `type` decides, and an unknown/absent type is an LLM.
 func isLLMCustomModel(modelType string) bool {
@@ -187,7 +204,7 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 				continue
 			}
 			for _, mID := range models {
-				if !isLLMModelID(mID) || isDisabled(alias, mID) {
+				if isDisabled(alias, mID) || !isLLMModelEntry(alias, alias, alias, mID, false) {
 					continue
 				}
 				data = appendStaticModel(data, seen, alias, mID)
@@ -300,9 +317,10 @@ func (h *ChatHandler) appendConnectionModels(
 		if isDisabled(outputAlias, modelID) || isDisabled(staticAlias, modelID) {
 			continue
 		}
-		// Upstream resolves kind from the row's own type for custom models, so
-		// the id heuristic only applies to ids without type metadata.
-		if !typedCustom[modelID] && !isLLMModelID(modelID) {
+		// Upstream resolves kind from the custom row's own type, then the
+		// registry entry's declared kind, and only then falls back to the id
+		// heuristic (modelKind → staticModelKindById → inferKindFromUnknownModelId).
+		if !isLLMModelEntry(outputAlias, staticAlias, providerID, modelID, typedCustom[modelID]) {
 			continue
 		}
 		fullID := outputAlias + "/" + modelID
@@ -378,9 +396,8 @@ func (h *ChatHandler) appendLooseCustomModels(data []ModelInfoObject, seen map[s
 				continue
 			}
 			h.registerCustomModelCaps(prefix, providerID, cm)
-			if !isLLMModelID(cm.ID) {
-				continue
-			}
+			// Upstream filters custom rows on their own `type` only — the id
+			// heuristic is never applied to a custom model.
 			fullID := prefix + "/" + cm.ID
 			if seen[fullID] {
 				continue

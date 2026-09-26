@@ -364,3 +364,35 @@ func TestHandleModels_ComboOwnedByCombo(t *testing.T) {
 		}
 	}
 }
+
+// Upstream filters the LLM list on the registry `kind`: nvidia's TTS/STT/
+// embedding models must stay out even though the account is active.
+func TestHandleModels_MediaKindModelsExcluded(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-nv-media', 'nvidia', 'apikey', 'NV Media', 1, 1, '{"apiKey":"nvapi-test"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed nvidia: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	joined := strings.Join(modelsIDs(t, h), "\n")
+	// nvidia/parakeet-ctc-1.1b-asr is deliberately absent: upstream strips the
+	// "nvidia/" qualifier before the kind lookup, so that vendor-prefixed id
+	// misses the registry kind and falls through to the id heuristic — same
+	// result on both sides.
+	for _, media := range []string{"fastpitch", "tacotron2", "nv-embedqa-e5-v5"} {
+		if strings.Contains(joined, media) {
+			t.Errorf("media model %q must not appear in the LLM list, got:\n%s", media, joined)
+		}
+	}
+	if !strings.Contains(joined, "minimaxai/minimax-m3") {
+		t.Errorf("nvidia LLM models must stay listed, got:\n%s", joined)
+	}
+}
