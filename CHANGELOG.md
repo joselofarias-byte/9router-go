@@ -1,7 +1,22 @@
 # Changelog
 
 
-## [Unreleased]
+### 🐛 `POST /api/models/test` 401 meski sudah login
+
+- Route dipindah dari grup `RequireApiKey` (hanya menerima Bearer/`X-API-Key`) ke `RequireDashboardAuth` — parity upstream `dashboardGuard` (`src/app/api/models/test/route.js`). Sebelumnya dashboard yang login via cookie session mendapat `401 invalid_api_key`; kini cookie session, CLI token, dan API key valid sama-sama diterima, sama seperti `/api/models/custom|disabled|alias`.
+- Regression test: `TestSetupServerRouter_ModelTestDashboardSession` (anonim → 401, session valid → lolos).
+
+### 🛠️ Frontend Dev Workflow — HMR tanpa rebuild binary
+
+- `web/vite.config.ts` — dev proxy kini mencakup `/admin`; sebelumnya `resetHealth()` (`/admin/health/reset`) jatuh ke SPA fallback di mode dev karena tidak di-proxy ke Go.
+- `Makefile` — target baru `web-dev` (Vite dev server :5173 + HMR). Workflow dua terminal: `make dev` (Go :20130) + `make web-dev` → perubahan FE hot-reload tanpa rebuild/restart binary.
+- `web/README.md` — didokumentasikan workflow dev dua-terminal dan caveat service worker dev (`sw.js` ikut terdaftar di dev; hard-refresh/unregister bila tampilan stale).
+### 🐛 Dashboard manifest/SW 404 + version check 401 spam
+
+- `GET /sw.js`, `/manifest.webmanifest`, and `/manifest.json` are now routed to the embedded SPA handler: chi has no catch-all, so the files referenced by `index.html` returned `404` even though they exist in `web/dist`, breaking manifest fetch and service-worker registration on every page load.
+- `GET /version`, `/api/version`, `/api/version/status`, and `/api/version/check` are now public (upstream `PUBLIC_API_PATHS` parity): the Sidebar polls `/api/version` on every dashboard page including `/login`, before any session or API key exists, so gating them behind `RequireApiKey` spammed `401 (Unauthorized)` in the console on every page load.
+- `POST /api/version/update`, `/api/version/shutdown`, and `/api/version/auto-update` stay admin-only (session or CLI token), matching upstream `ALWAYS_PROTECTED`.
+
 
 ### 🐛 Dashboard logging, request details, and cached-token parity
 

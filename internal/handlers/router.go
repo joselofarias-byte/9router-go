@@ -42,11 +42,8 @@ func SetupRoutes(r interface {
 	oauthH := oauth.NewOAuthHandler(repo)
 
 	dashH := dashboard.NewDashboardHandler(repo)
-	// Chat, Version & Models Domain
-	r.Get("/version", chatH.HandleVersion)
-	r.Get("/api/version", chatH.HandleVersion)
-	r.Get("/api/version/status", chatH.HandleVersionStatus)
-	r.Get("/api/version/check", chatH.HandleCheckUpdate)
+	// Chat & Models Domain (no version here: the four version GETs are
+	// public in SetupServerRouter, upstream PUBLIC_API_PATHS parity).
 	r.Get("/changelog", chatH.HandleChangelog)
 	r.Get("/api/changelog", chatH.HandleChangelog)
 	r.Get("/models", chatH.HandleModels)
@@ -62,7 +59,6 @@ func SetupRoutes(r interface {
 	r.Get("/api/models/catalog-sync", chatH.HandleCatalogSyncStatus)
 	r.Post("/api/models/catalog-sync", chatH.HandleCatalogSyncTrigger)
 	r.Get("/api/models", chatH.HandleModels)
-	r.Post("/api/models/test", chatH.HandleTestModel)
 	r.Post("/chat/completions", chatH.HandleChatCompletions)
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
@@ -139,7 +135,7 @@ func SetupRoutes(r interface {
 // RequireDashboardAuth by the server router, which lets a cookie-authenticated
 // browser session, a valid API key or the local CLI token through when login is
 // enabled (upstream dashboardGuard).
-func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
+func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) {
 	dashH := dashboard.NewDashboardHandler(repo)
 	ssoH := sso.NewHandler(repo)
 
@@ -191,6 +187,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Post("/api/models/custom", dashH.HandleSaveCustomModel)
 	r.Delete("/api/models/custom/{key}", dashH.HandleDeleteCustomModel)
 	r.Get("/api/models/disabled", dashH.HandleGetDisabledModels)
+	r.Post("/api/models/test", chatH.HandleTestModel)
 	mediaH := media.NewMediaHandler(repo, nil, nil)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
@@ -303,6 +300,14 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	// Version info is public (upstream PUBLIC_API_PATHS): the Sidebar polls
+	// /api/version on every dashboard page including /login, before any
+	// session or API key exists.
+	versionH := chat.NewChatHandler(repo, ts)
+	r.Get("/version", versionH.HandleVersion)
+	r.Get("/api/version", versionH.HandleVersion)
+	r.Get("/api/version/status", versionH.HandleVersionStatus)
+	r.Get("/api/version/check", versionH.HandleCheckUpdate)
 	// Embedded Native Dashboard SPA
 	webH := web.Handler()
 	oauthH := oauth.NewOAuthHandler(repo)
@@ -336,6 +341,9 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	r.HandleFunc("/favicon.ico", webH.ServeHTTP)
 	r.HandleFunc("/favicon.svg", webH.ServeHTTP)
 	r.HandleFunc("/icons.svg", webH.ServeHTTP)
+	r.HandleFunc("/sw.js", webH.ServeHTTP)
+	r.HandleFunc("/manifest.webmanifest", webH.ServeHTTP)
+	r.HandleFunc("/manifest.json", webH.ServeHTTP)
 	r.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if r.Method != http.MethodHead {
@@ -394,7 +402,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// reachable with a valid API key or the local CLI token (upstream parity).
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireDashboardAuth(repo))
-		SetupDashboardRoutes(r, repo)
+		SetupDashboardRoutes(r, repo, versionH)
 	})
 
 	SetupConsoleLogRoutes(r, repo)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { api, formatApiError, getAuthHeaders, getStoredAPIKey, isUsableAPIKey, responseErrorMessage } from './client'
+import { api, formatApiError, getAuthHeaders, getStoredAPIKey, isUsableAPIKey, onUnauthorized, responseErrorMessage } from './client'
 
 describe('dashboard API authentication and errors', () => {
 
@@ -99,5 +99,33 @@ describe('dashboard API authentication and errors', () => {
       redirectUri: 'http://localhost:20130/callback',
       state: 'state-123',
     })
+  })
+
+  it('triggers onUnauthorized and clears storage on 401 responses', async () => {
+    const originalFetch = globalThis.fetch
+    localStorage.setItem('9router_auth', 'true')
+
+    const { promise, resolve } = Promise.withResolvers<void>()
+    const unsub = onUnauthorized(() => {
+      resolve()
+    })
+
+    globalThis.fetch = async () => {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    try {
+      await expect(api.getConnections()).rejects.toThrow()
+      await promise
+
+      expect(localStorage.getItem('9router_auth')).toBeNull()
+    } finally {
+      unsub()
+      globalThis.fetch = originalFetch
+      localStorage.removeItem('9router_auth')
+    }
   })
 })

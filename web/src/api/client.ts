@@ -374,6 +374,59 @@ export async function responseErrorMessage(
     return text
   }
 }
+export type UnauthorizedListener = () => void
+const unauthorizedListeners: Set<UnauthorizedListener> = new Set()
+
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener)
+  return () => {
+    unauthorizedListeners.delete(listener)
+  }
+}
+
+let unauthorizedTimer: number | null = null
+
+export function handleUnauthorized(path?: string) {
+  // Do not redirect for public auth endpoints or if already on login page
+  if (
+    path === '/api/auth/login' ||
+    path === '/api/auth/status' ||
+    path === '/api/settings/require-login' ||
+    path === '/api/changelog'
+  ) {
+    return
+  }
+
+  if (typeof window !== 'undefined' && window.location.pathname === '/login') {
+    return
+  }
+
+  // Clear stale local auth session tokens and invalid stored keys
+  if (typeof sessionStorage !== 'undefined') {
+    sessionStorage.removeItem('9router_auth')
+  }
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('9router_auth')
+    localStorage.removeItem('9router_key')
+  }
+
+  // Debounce multiple concurrent 401 responses
+  if (unauthorizedTimer !== null) return
+  unauthorizedTimer = setTimeout(() => {
+    unauthorizedTimer = null
+    if (unauthorizedListeners.size > 0) {
+      for (const listener of unauthorizedListeners) {
+        try {
+          listener()
+        } catch (e) {
+          console.error('Error in onUnauthorized listener:', e)
+        }
+      }
+    } else if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.history.replaceState({ tab: 'login' }, '', '/login')
+    }
+  }, 50)
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = {
@@ -381,6 +434,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...(options.headers as Record<string, string> || {}),
   }
   const res = await fetch(path, { ...options, headers })
+  if (res.status === 401) {
+    handleUnauthorized(path)
+  }
   if (!res.ok) throw new Error(await responseErrorMessage(res))
   return res.json()
 }

@@ -9,20 +9,24 @@ The dashboard is a Svelte 5 single-page application built with Vite, TypeScript,
 - `src/components/` contains the dashboard views and reusable UI components.
 - `src/api/client.ts` provides the typed browser API client.
 - `src/lib/` contains shared Svelte state, model helpers, and UI primitives.
-- `vite.config.ts` enables the Svelte and Tailwind plugins. During development, Vite proxies `/api`, `/v1`, `/usage`, `/translator`, and `/debug` to `http://localhost:20130`.
+- `vite.config.ts` enables the Svelte and Tailwind plugins. During development, Vite proxies `/api`, `/v1`, `/usage`, `/translator`, `/debug`, and `/admin` to `http://localhost:20130`. (`/debug` covers `/debug/traces` latency tracing and pprof; `/admin` covers `POST /admin/health/reset`.)
 
 Components use Svelte 5 runes such as `$state`, `$derived`, and `$effect`, along with modern Svelte event handlers such as `onclick` and `onchange`.
 
 ## Development
 
-Install dependencies from this directory and start the Vite development server:
+Run the Go API server and the Vite dev server in **two terminals** — frontend changes hot-reload (HMR) with **no rebuild** and no binary restart:
 
 ```bash
-bun install --frozen-lockfile
-bun run dev
+make dev        # terminal 1: Go API on :20130 (go run, auto-rebuild on Go changes)
+make web-dev    # terminal 2: Vite dev server + HMR on :5173
 ```
 
-Run the native Go server separately on port `20130`. Open the Vite URL printed by the command; API requests are proxied to the Go server. The frontend port is independent of the Go server port.
+Open the Vite URL printed by `make web-dev` (default `http://localhost:5173`); API requests under `/api`, `/v1`, `/usage`, `/translator`, `/debug`, and `/admin` are proxied to the Go server. Static assets from `web/public/` (`/providers/*.png`, `/icons/*`, `/sw.js`, `/manifest*`) are served directly by Vite.
+
+Equivalently, from this directory: `bun install --frozen-lockfile && bun run dev`.
+
+> Dev-only caveat: the PWA service worker (`sw.js`) registers in dev too. If a page looks stale in the browser, hard-refresh or unregister the service worker via DevTools → Application → Service Workers.
 
 ## Scripts
 

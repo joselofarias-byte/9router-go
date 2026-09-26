@@ -1,15 +1,18 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/dbtest"
 )
@@ -121,6 +124,25 @@ func TestSetupServerRouter_PprofDisabledByDefault(t *testing.T) {
 		}
 	}
 }
+func TestSetupServerRouter_VersionPublic(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	// Sidebar polls /api/version on every dashboard page including /login,
+	// before any session or API key exists (upstream PUBLIC_API_PATHS).
+	for _, path := range []string{"/version", "/api/version", "/api/version/status", "/api/version/check"} {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code == http.StatusUnauthorized || w.Code == http.StatusNotFound {
+			t.Errorf("expected %s to be public, got %d", path, w.Code)
+		}
+	}
+}
 
 func TestSetupServerRouter_SPARoutes(t *testing.T) {
 	database, cleanup := setupTestDB(t)
@@ -182,6 +204,16 @@ func TestSetupServerRouter_SPARoutes(t *testing.T) {
 		t.Errorf("expected GET /providers/anthropic.png to return 200, got %d", wAsset.Code)
 	}
 
+	// PWA shell files referenced by index.html must be served at root
+	for _, p := range []string{"/sw.js", "/manifest.webmanifest", "/manifest.json"} {
+		req := httptest.NewRequest("GET", p, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected GET %s to return 200, got %d", p, w.Code)
+		}
+	}
+
 	// Ensure non-existent static assets return 404
 	reqMissing := httptest.NewRequest("GET", "/assets/missing.js", nil)
 	wMissing := httptest.NewRecorder()
@@ -241,5 +273,41 @@ func TestConsoleLogsRoutesUseDashboardSessionGate(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/translator/console-logs", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("open dashboard console request status = %d", rec.Code)
+	}
+}
+
+// TestSetupServerRouter_ModelTestDashboardSession — POST /api/models/test is a
+// dashboard endpoint (upstream src/app/api/models/test/route.js behind
+// dashboardGuard): a valid login session must pass the guard, an anonymous
+// request must still get 401.
+func TestSetupServerRouter_ModelTestDashboardSession(t *testing.T) {
+	t.Setenv("JWT_SECRET", "router-test-secret")
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	// requireLogin defaults to on when no settings row exists.
+	anon := httptest.NewRequest(http.MethodPost, "/api/models/test", bytes.NewReader([]byte(`{"model":"openai/gpt-4"}`)))
+	anon.Header.Set("Content-Type", "application/json")
+	anonRec := httptest.NewRecorder()
+	r.ServeHTTP(anonRec, anon)
+	if anonRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous /api/models/test status = %d, want 401", anonRec.Code)
+	}
+
+	token, err := auth.Sign("router-test-secret", time.Now())
+	if err != nil {
+		t.Fatalf("sign session token: %v", err)
+	}
+	sess := httptest.NewRequest(http.MethodPost, "/api/models/test", bytes.NewReader([]byte(`{"model":"openai/gpt-4"}`)))
+	sess.Header.Set("Content-Type", "application/json")
+	sess.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	sessRec := httptest.NewRecorder()
+	r.ServeHTTP(sessRec, sess)
+	if sessRec.Code != http.StatusOK {
+		t.Fatalf("session-authenticated /api/models/test status = %d, want 200 (ping outcome, not auth 401): %s", sessRec.Code, sessRec.Body.String())
 	}
 }
