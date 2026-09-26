@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+
+### 🐛 Log fallback tidak menyebut akun/project yang gagal (Antigravity 403 `VALIDATION_REQUIRED`)
+
+- Gejala: `WRN [fallback] upstream failed provider=antigravity ... status=403 error=... "Verify your account to continue."` hanya menampilkan `conn=<uuid>`, sehingga tidak jelas project ID / email mana yang harus diverifikasi di `accounts.google.com`.
+- `internal/handlers/chat/conn_identity.go` (baru): `connIdentityKV` (name, email, projectId dari `data.projectId` atau `data.providerSpecificData.projectId`, field kosong dilewati) + `connIdentityKVByID` (lookup via `Repo.GetProviderConnectionByID`, hanya di jalur failure).
+- `internal/handlers/chat/fallback.go`: log `upstream failed` dan `connection locked` kini menambah `connName=`, `email=`, `projectId=`. Contoh: `... status=403 cooldown_s=120 connName=AG Verify email=luqmangeminipro@gmail.com projectId=mega-rainfall-szp2g`.
+- Tests: `TestConnIdentityKV` (6 kasus: kedua bentuk projectId, field kosong, JSON rusak, nil conn) + `TestConnIdentityKVByID_MissingConnection` (handler tanpa Repo tidak panic). Smoke: upstream mock 403 `VALIDATION_REQUIRED` → kedua baris log membawa email + projectId.
+
 ### 🗄️ Fresh `.9router` self-bootstraps — no upstream install needed
 
 - `internal/db/schema.go` (`EnsureCoreSchema`, wired in `ProvideDatabase`): startup creates the 11 upstream core tables/indexes when absent (verbatim `schema.js` `TABLES`), backfills missing columns on legacy databases (same strip-`PRIMARY KEY`/`UNIQUE` guard as upstream `syncSchemaFromTables`), backfills Go-only `providerConnections.lastUsedAt`/`consecutiveUseCount`, and seeds `_meta.schemaVersion='1'` + empty settings row — all idempotent, existing data untouched.
