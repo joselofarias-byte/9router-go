@@ -579,19 +579,26 @@ func mergeCapabilities(base, overlay Capabilities) Capabilities {
 	}
 }
 
-// CapabilitiesDetail matches the serializable capabilities object expected by clients in /v1/models.
+// CapabilitiesDetail matches the serializable capabilities object expected by
+// clients in /v1/models (upstream getCapabilitiesForModel: vision, pdf,
+// audioInput, videoInput, imageOutput, audioOutput, search, tools, reasoning,
+// thinkingFormat, thinkingCanDisable, thinkingRange, contextWindow, maxOutput).
 type CapabilitiesDetail struct {
-	Vision                  bool `json:"vision"`
-	PDF                     bool `json:"pdf"`
-	AudioInput              bool `json:"audioInput"`
-	VideoInput              bool `json:"videoInput"`
-	ImageOutput             bool `json:"imageOutput"`
-	AudioOutput             bool `json:"audioOutput"`
-	ThinkingCanDisable      bool `json:"thinkingCanDisable"`
-	ThinkingRange           any  `json:"thinkingRange"`
-	ThinkingEffortSupported bool `json:"thinkingEffortSupported"`
-	ContextWindows          int  `json:"contextWindows,omitempty"`
-	ContextWindow           int  `json:"contextWindow,omitempty"`
+	Vision                  bool    `json:"vision"`
+	PDF                     bool    `json:"pdf"`
+	AudioInput              bool    `json:"audioInput"`
+	VideoInput              bool    `json:"videoInput"`
+	ImageOutput             bool    `json:"imageOutput"`
+	AudioOutput             bool    `json:"audioOutput"`
+	Search                  bool    `json:"search"`
+	Tools                   bool    `json:"tools"`
+	Reasoning               bool    `json:"reasoning"`
+	ThinkingFormat          *string `json:"thinkingFormat"`
+	ThinkingCanDisable      bool    `json:"thinkingCanDisable"`
+	ThinkingRange           any     `json:"thinkingRange"`
+	ThinkingEffortSupported bool    `json:"thinkingEffortSupported,omitempty"`
+	ContextWindow           int     `json:"contextWindow,omitempty"`
+	MaxOutput               int     `json:"maxOutput,omitempty"`
 }
 
 // MergeCapabilitiesDetail unions two capability blocks, keeping the widest
@@ -605,41 +612,51 @@ func MergeCapabilitiesDetail(a, b CapabilitiesDetail) CapabilitiesDetail {
 	merged.VideoInput = a.VideoInput || b.VideoInput
 	merged.ImageOutput = a.ImageOutput || b.ImageOutput
 	merged.AudioOutput = a.AudioOutput || b.AudioOutput
+	merged.Search = a.Search || b.Search
+	merged.Tools = a.Tools || b.Tools
+	merged.Reasoning = a.Reasoning || b.Reasoning
 	merged.ThinkingCanDisable = a.ThinkingCanDisable || b.ThinkingCanDisable
 	merged.ThinkingEffortSupported = a.ThinkingEffortSupported || b.ThinkingEffortSupported
 	if a.ThinkingRange == nil {
 		merged.ThinkingRange = b.ThinkingRange
 	}
-	if b.ContextWindows > merged.ContextWindows {
-		merged.ContextWindows = b.ContextWindows
+	if a.ThinkingFormat == nil {
+		merged.ThinkingFormat = b.ThinkingFormat
 	}
 	if b.ContextWindow > merged.ContextWindow {
 		merged.ContextWindow = b.ContextWindow
 	}
+	if b.MaxOutput > merged.MaxOutput {
+		merged.MaxOutput = b.MaxOutput
+	}
 	return merged
 }
 
-// GetCapabilitiesDetailForModel returns the full JSON-serializable capabilities map for /v1/models.
+// GetCapabilitiesDetailForModel returns the full JSON-serializable capabilities
+// map for /v1/models, matching upstream's key set and its
+// context_length / max_completion_tokens mirrors.
 func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 	caps := GetCapabilitiesForModel(provider, model)
-	cw, _ := GetModelTokenLimits(model)
+	cw, maxOut := GetModelTokenLimits(model)
 	if cw == 0 {
-		cw, _ = GetModelTokenLimits(provider + "/" + model)
+		cw, maxOut = GetModelTokenLimits(provider + "/" + model)
 	}
 	if cw == 0 {
 		cw = 128000
 	}
 	return CapabilitiesDetail{
-		Vision:                  caps.Vision,
-		PDF:                     caps.PDF,
-		AudioInput:              caps.AudioInput,
-		VideoInput:              caps.VideoInput,
-		ImageOutput:             caps.ImageOutput,
-		AudioOutput:             caps.AudioOutput,
-		ThinkingCanDisable:      true,
-		ThinkingRange:           nil,
-		ThinkingEffortSupported: false,
-		ContextWindows:          cw,
-		ContextWindow:           cw,
+		Vision:             caps.Vision,
+		PDF:                caps.PDF,
+		AudioInput:         caps.AudioInput,
+		VideoInput:         caps.VideoInput,
+		ImageOutput:        caps.ImageOutput,
+		AudioOutput:        caps.AudioOutput,
+		Search:             caps.Search,
+		Tools:              caps.Tools,
+		Reasoning:          caps.Reasoning,
+		ThinkingCanDisable: true,
+		ThinkingRange:      nil,
+		ContextWindow:      cw,
+		MaxOutput:          maxOut,
 	}
 }

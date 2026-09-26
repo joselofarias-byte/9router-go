@@ -35,13 +35,18 @@ func TestHandleModels_IncludesTokenLimits(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
+	// Upstream emits context_length / max_completion_tokens at the top level
+	// and contextWindow / maxOutput inside capabilities.
 	var resp struct {
 		Object string `json:"object"`
 		Data   []struct {
 			ID                  string `json:"id"`
 			ContextLength       *int   `json:"context_length"`
-			ContextWindow       *int   `json:"context_window"`
 			MaxCompletionTokens *int   `json:"max_completion_tokens"`
+			Capabilities        *struct {
+				ContextWindow int `json:"contextWindow"`
+				MaxOutput     int `json:"maxOutput"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 
@@ -62,8 +67,11 @@ func TestHandleModels_IncludesTokenLimits(t *testing.T) {
 		if m.ContextLength == nil || *m.ContextLength <= 0 {
 			t.Errorf("expected positive context_length for %s, got %v", m.ID, m.ContextLength)
 		}
-		if m.ContextWindow == nil || *m.ContextWindow <= 0 {
-			t.Errorf("expected positive context_window for %s, got %v", m.ID, m.ContextWindow)
+		if m.MaxCompletionTokens == nil || *m.MaxCompletionTokens <= 0 {
+			t.Errorf("expected positive max_completion_tokens for %s, got %v", m.ID, m.MaxCompletionTokens)
+		}
+		if m.Capabilities == nil || m.Capabilities.ContextWindow <= 0 {
+			t.Errorf("expected positive capabilities.contextWindow for %s, got %+v", m.ID, m.Capabilities)
 		}
 	}
 	if !found {

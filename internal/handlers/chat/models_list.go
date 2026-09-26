@@ -3,7 +3,6 @@ package chat
 import (
 	"regexp"
 	"strings"
-	"time"
 
 	json "encoding/json/v2"
 
@@ -12,16 +11,15 @@ import (
 	"9router/proxy/internal/providers"
 )
 
-// ModelInfoObject represents a model entry in the /v1/models response.
+// ModelInfoObject represents a model entry in the /v1/models response. The
+// key set mirrors upstream exactly: id, object, owned_by, capabilities and
+// (for LLM entries) context_length / max_completion_tokens.
 type ModelInfoObject struct {
 	ID                  string                        `json:"id"`
 	Object              string                        `json:"object"`
-	Kind                string                        `json:"kind,omitempty"`
-	Created             int64                         `json:"created"`
 	OwnedBy             string                        `json:"owned_by"`
 	Capabilities        *providers.CapabilitiesDetail `json:"capabilities,omitempty"`
 	ContextLength       int                           `json:"context_length,omitempty"`
-	ContextWindow       int                           `json:"context_window,omitempty"`
 	MaxCompletionTokens int                           `json:"max_completion_tokens,omitempty"`
 }
 
@@ -166,7 +164,6 @@ func (h *ChatHandler) disabledModelIndex() map[string]map[string]bool {
 // combos first, then one model set per active connection, with the static
 // catalog dump only when the connections table itself is empty.
 func (h *ChatHandler) buildModelsList() []ModelInfoObject {
-	now := time.Now().Unix()
 	var data []ModelInfoObject
 	seen := make(map[string]bool)
 	disabled := h.disabledModelIndex()
@@ -175,7 +172,7 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 	}
 
 	// 1. Combos first (upstream pushes them before provider models).
-	data = h.appendCombos(data, seen, now)
+	data = h.appendCombos(data, seen)
 
 	var allConns []*models.ProviderConnection
 	if h.Repo != nil {
@@ -193,10 +190,10 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 				if !isLLMModelID(mID) || isDisabled(alias, mID) {
 					continue
 				}
-				data = appendStaticModel(data, seen, now, alias, mID)
+				data = appendStaticModel(data, seen, alias, mID)
 			}
 		}
-		data = h.appendLooseCustomModels(data, seen, now, disabled)
+		data = h.appendLooseCustomModels(data, seen, disabled)
 		return finalizeModels(data)
 	}
 
@@ -219,7 +216,7 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 
 	for _, provID := range order {
 		conn := firstPerProvider[provID]
-		data = h.appendConnectionModels(data, seen, now, conn, provID, customs, aliases, isDisabled)
+		data = h.appendConnectionModels(data, seen, conn, provID, customs, aliases, isDisabled)
 	}
 
 	return finalizeModels(data)
@@ -231,7 +228,6 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 func (h *ChatHandler) appendConnectionModels(
 	data []ModelInfoObject,
 	seen map[string]bool,
-	now int64,
 	conn *models.ProviderConnection,
 	providerID string,
 	customs map[string][]*db.CustomModel,
@@ -320,17 +316,18 @@ func (h *ChatHandler) appendConnectionModels(
 			ctxLen, maxOut = providers.GetModelTokenLimits(fullID)
 		}
 		caps := providers.GetCapabilitiesDetailForModel(providerID, modelID)
-		if caps.ContextWindows > 0 && ctxLen == 0 {
-			ctxLen = caps.ContextWindows
+		if caps.ContextWindow > 0 && ctxLen == 0 {
+			ctxLen = caps.ContextWindow
+		}
+		if maxOut == 0 {
+			maxOut = caps.MaxOutput
 		}
 		data = append(data, ModelInfoObject{
 			ID:                  fullID,
 			Object:              "model",
-			Created:             now,
 			OwnedBy:             outputAlias,
 			Capabilities:        &caps,
 			ContextLength:       ctxLen,
-			ContextWindow:       ctxLen,
 			MaxCompletionTokens: maxOut,
 		})
 	}
@@ -338,7 +335,7 @@ func (h *ChatHandler) appendConnectionModels(
 }
 
 // appendStaticModel emits one static-registry entry (fresh-install path).
-func appendStaticModel(data []ModelInfoObject, seen map[string]bool, now int64, alias, modelID string) []ModelInfoObject {
+func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, modelID string) []ModelInfoObject {
 	fullID := alias + "/" + modelID
 	if seen[fullID] {
 		return data
@@ -347,24 +344,25 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, now int64, 
 
 	ctxLen, maxOut := providers.GetModelTokenLimits(modelID)
 	caps := providers.GetCapabilitiesDetailForModel(alias, modelID)
-	if caps.ContextWindows > 0 && ctxLen == 0 {
-		ctxLen = caps.ContextWindows
+	if caps.ContextWindow > 0 && ctxLen == 0 {
+		ctxLen = caps.ContextWindow
+	}
+	if maxOut == 0 {
+		maxOut = caps.MaxOutput
 	}
 	return append(data, ModelInfoObject{
 		ID:                  fullID,
 		Object:              "model",
-		Created:             now,
 		OwnedBy:             alias,
 		Capabilities:        &caps,
 		ContextLength:       ctxLen,
-		ContextWindow:       ctxLen,
 		MaxCompletionTokens: maxOut,
 	})
 }
 
 // appendLooseCustomModels lists custom models on a fresh install (upstream
 // lists every llm-typed custom row when there are no connections at all).
-func (h *ChatHandler) appendLooseCustomModels(data []ModelInfoObject, seen map[string]bool, now int64, disabled map[string]map[string]bool) []ModelInfoObject {
+func (h *ChatHandler) appendLooseCustomModels(data []ModelInfoObject, seen map[string]bool, disabled map[string]map[string]bool) []ModelInfoObject {
 	prefixMap := h.providerNodePrefixMap()
 	customs := h.customModelsByProvider()
 	for providerID, list := range customs {
@@ -393,17 +391,18 @@ func (h *ChatHandler) appendLooseCustomModels(data []ModelInfoObject, seen map[s
 				ctxLen, maxOut = providers.GetModelTokenLimits(cm.ID)
 			}
 			caps := providers.GetCapabilitiesDetailForModel(prefix, cm.ID)
-			if caps.ContextWindows > 0 && ctxLen == 0 {
-				ctxLen = caps.ContextWindows
+			if caps.ContextWindow > 0 && ctxLen == 0 {
+				ctxLen = caps.ContextWindow
+			}
+			if maxOut == 0 {
+				maxOut = caps.MaxOutput
 			}
 			data = append(data, ModelInfoObject{
 				ID:                  fullID,
 				Object:              "model",
-				Created:             now,
 				OwnedBy:             prefix,
 				Capabilities:        &caps,
 				ContextLength:       ctxLen,
-				ContextWindow:       ctxLen,
 				MaxCompletionTokens: maxOut,
 			})
 		}
@@ -444,7 +443,7 @@ func (h *ChatHandler) registerCustomModelCaps(prefix, providerID string, cm *db.
 
 // appendCombos lists combo names with the union of their leaf capabilities,
 // matching upstream aggregateComboCapabilities.
-func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool, now int64) []ModelInfoObject {
+func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool) []ModelInfoObject {
 	if h.Repo == nil {
 		return data
 	}
@@ -456,25 +455,26 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool,
 		if combo == nil || combo.Name == "" || seen[combo.Name] {
 			continue
 		}
+		// Upstream comboMatchesKinds: this endpoint is the LLM list
+		// (kindFilter ["llm"]), so webSearch/webFetch combos are excluded —
+		// they only appear under /v1/models/web. No kind (or an explicit
+		// "llm" kind) means an LLM combo.
+		if combo.Kind != nil {
+			if kind := strings.TrimSpace(*combo.Kind); kind != "" && kind != "llm" {
+				continue
+			}
+		}
 		seen[combo.Name] = true
 
 		entry := ModelInfoObject{
 			ID:      combo.Name,
 			Object:  "model",
-			Created: now,
 			OwnedBy: "combo",
 		}
-		kind := ""
-		if combo.Kind != nil {
-			kind = strings.TrimSpace(*combo.Kind)
-		}
-		if kind == "webSearch" || kind == "webFetch" {
-			// Upstream tags web combos with an explicit kind instead of caps.
-			entry.Kind = kind
-		} else if caps, ok := h.aggregateComboCapabilities(combo.Name); ok {
+		// Upstream combo entries carry capabilities only — no
+		// context_length / max_completion_tokens.
+		if caps, ok := h.aggregateComboCapabilities(combo.Name); ok {
 			entry.Capabilities = caps
-			entry.ContextLength = caps.ContextWindows
-			entry.ContextWindow = caps.ContextWindows
 		}
 		data = append(data, entry)
 	}
