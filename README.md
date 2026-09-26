@@ -46,16 +46,55 @@ Release artifacts (click to download directly):
 
 > **Orang awam pilih yang mana?** Windows → file `.exe`; Mac keluaran 2020 ke atas (M1/M2/M3/M4) → `darwin-arm64`, Mac Intel lama → `darwin-amd64`; VPS/server Linux → `linux-amd64`, Raspberry Pi → `linux-arm64`. Lengkapnya tetap di [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest) (ada juga `SHA256SUMS.txt` buat verifikasi).
 
-### Docker Compose
+### Docker (image jadi, paling gampang)
+
+Tidak mau build apa-apa? Pakai image yang sudah jadi dari Docker Hub:
+
+```bash
+docker run -d --name 9router-go --restart unless-stopped \
+  -p 20130:20130 \
+  -v 9router-data:/data \
+  -e PORT=20130 -e DATA_DIR=/data \
+  luqmenul/9router-go:latest
+curl http://localhost:20130/health
+```
+
+Update ke rilis baru:
+
+```bash
+docker pull luqmenul/9router-go:latest
+docker stop 9router-go && docker rm 9router-go
+# jalankan lagi perintah docker run di atas
+```
+
+Pakai data 9router yang sudah ada (provider, koneksi, combo ikut terbawa karena DB-nya sharing, lihat catatan di atas):
+
+```bash
+docker run -d --name 9router-go --restart unless-stopped \
+  -p 20130:20130 \
+  -v "$HOME/.9router:/data" \
+  -e PORT=20130 -e DATA_DIR=/data \
+  luqmenul/9router-go:latest
+```
+
+### Docker Compose (build dari source)
 
 ```bash
 docker compose up -d --build
 curl http://localhost:20130/health
 ```
 
-The bundled compose file persists `/data` in the `9router-data` volume. The image also contains the embedded dashboard; JavaScript is only needed while building the image.
+Perintah harian:
 
-> A new Docker volume is an empty SQLite file, not a complete schema. See [Database compatibility](#database-compatibility-and-bootstrap-limit) before first use.
+```bash
+docker compose logs -f          # lihat log
+docker compose up -d --build    # rebuild setelah update source
+docker compose down             # matikan (data di volume 9router-data tetap aman)
+```
+
+File `docker-compose.yml` bawaan menyimpan `/data` di volume `9router-data` dan dashboard sudah tertanam di image — JavaScript hanya dibutuhkan saat build. Variabel env (`INITIAL_PASSWORD`, `RTK_ENABLED`, dll, lihat tabel [Environment](#environment)) bisa ditambah di blok `environment:`.
+
+> Volume baru = file SQLite kosong, bukan skema lengkap. Lihat [Database compatibility](#database-compatibility-and-bootstrap-limit) sebelum pemakaian pertama — idealnya mount direktori 9router yang sudah terinisialisasi seperti contoh di atas.
 
 ### Build from source
 
