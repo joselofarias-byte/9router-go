@@ -199,7 +199,7 @@ func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T)
 		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
 	}
 	rec := httptest.NewRecorder()
-	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-test", 0)
+	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-test", 0, false)
 
 	if got := hits.Load(); got != 1 {
 		t.Errorf("expected 1 upstream hit (second combo model excluded), got %d", got)
@@ -253,7 +253,7 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
 	}
 	rec := httptest.NewRecorder()
-	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-retry", 0)
+	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-retry", 0, false)
 
 	if got := hits.Load(); got != 2 {
 		t.Errorf("expected 2 upstream hits (1 failure + 1 retry), got %d", got)
