@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### 🐛 `GET /v1/models` hanya menampilkan model yang benar-benar available (fix issue #1)
+
+- Gejala: `/v1/models` membanjiri katalog — provider tanpa credential (`ghost customs` di `kv.customModels`) tetap terkirim, dan model yang di-`disable` ikut muncul, sehingga totalMelonjak ke ratusan/ribuan-an entry.
+- Akar 1 (custom models): `buildModelsList` mencetak SEMUA baris `kv.customModels` selama tabel `providerConnections` tidak kosong, tanpa cek koneksi. Parity upstream `v1/models/route.js`: `customModelIds` difilter ke `alias === staticAlias || outputAlias || providerId` dari loop `activeConnectionByProvider` — custom tanpa koneksi tidak pernah masuk daftar.
+- Akar 2 (koneksi nonaktif): `GetProviderConnections("", true)` tidak memfilter `isActive` di level repo, sehingga baris `isActive=0` sempat lolos; filter hanya mengecek credential.
+- Akar 3 (fallback statis): cabang `len(activeConnections) == 0` neuen purposely static dump, termasuk ketika semua baris ada tapi inactive/tanpa credential.
+- Perbaikan `internal/handlers/chat/chat.go`:
+  - `buildModelsList` — gate `conn.IsActive == 0 || !connectionHasCredential(conn)` (koneksi aktif + credential) pada gate active provider.
+  - static dump hanya saat `providerConnections` benar-benar kosong (atau handler tanpa Repo); baris ghost tidak lagi membocorkan seluruh katalog.
+  - custom models — `connectedProviders` (alias/canonical dari koneksi aktif + node row yang punya koneksi) + `customVisibleAlias` (node row id → prefix terdaftar, alias/canonical provider); custom di luar daftar itu dilewati, dan `isDisabled` kini ikut berlaku untuk custom.
+- Dampak (DB asli user, 8 provider aktif + 16 node): 640 → 606 model, dan prefix tanpa koneksi lenyap (`oc`, `qd`, `gemini`, `Id/deepseek-*` dari 4 node tak bertautan). `clinepass/*` tetap utuh karena koneksinya aktif.
+- Tests: `TestHandleModels_CustomOnlyWhenConnected`, `TestHandleModels_CustomHiddenWhenProviderInactive`, `TestHandleModels_DisabledCustomExcluded`, `TestHandleModels_DisabledBuiltinExcluded`; test lama `TestHandleModels_CustomModels` / `TestHandleModels_MapsProviderNodeRowIDToPrefix` kini seed koneksi yang sesuai (tanpa itu, kredensial node dan alias ikut hilang). Suite penuh: 1416 pass.
+
 ### 🐛 Log fallback tidak menyebut akun/project yang gagal (Antigravity 403 `VALIDATION_REQUIRED`)
 
 - Gejala: `WRN [fallback] upstream failed provider=antigravity ... status=403 error=... "Verify your account to continue."` hanya menampilkan `conn=<uuid>`, sehingga tidak jelas project ID / email mana yang harus diverifikasi di `accounts.google.com`.

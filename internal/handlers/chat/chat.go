@@ -1,6 +1,12 @@
 package chat
 
 import (
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/translator"
+	"9router/proxy/internal/updater"
 	"bytes"
 	"context"
 	json "encoding/json/v2"
@@ -14,12 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/log"
-	"9router/proxy/internal/models"
-	"9router/proxy/internal/providers"
-	"9router/proxy/internal/translator"
-	"9router/proxy/internal/updater"
 )
 
 // HandleChatCompletions handles POST /v1/chat/completions (OpenAI format requests).
@@ -83,6 +83,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	h.handleSingleModel(ctx, w, body, modelInfo, reqBody.Stream, false)
 }
+
 // handleSingleModel resolves a single ModelInfo and forwards the request upstream.
 func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWriter, body []byte, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
@@ -210,6 +211,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	h.handleMessagesSingleModel(ctx, w, workingBody, modelInfo, reqBody.Stream, translateResponse)
 }
+
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
@@ -462,8 +464,11 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 			if conn.Provider == "" {
 				continue
 			}
-			// Only a credentialed connection can actually serve requests.
-			if !connectionHasCredential(conn) {
+			// Only an ACTIVE + credentialed connection can actually serve
+			// requests. A row with isActive=0 is a soft-disabled ghost: it
+			// must not publish models (upstream: connections filtered by
+			// isActive !== false) nor mark its aliases visible below.
+			if conn.IsActive == 0 || !connectionHasCredential(conn) {
 				continue
 			}
 			if activeProviders[conn.Provider] == nil {
@@ -538,8 +543,8 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 				})
 			}
 		}
-	} else if h.Repo == nil || len(activeConnections) == 0 {
-		// Fallback when DB has no connections or repo is nil: list static models
+	} else if h.Repo == nil {
+		// No repo (unit-test handler): list static models.
 		for alias, models := range providers.ProviderModels {
 			if canon := providers.ResolveAlias(alias); canon != alias && providers.GetProviderAlias(canon) != alias {
 				continue
@@ -568,6 +573,43 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 				})
 			}
 		}
+	} else {
+		allConns, allErr := h.Repo.GetProviderConnections("", false)
+		if allErr != nil || len(allConns) == 0 {
+			// Connections table completely empty (fresh DB): static dump so the
+			// picker is not blank before the first connection. A query error
+			// falls back to the dump too (old behavior: len==0 on error).
+			for alias, models := range providers.ProviderModels {
+				if canon := providers.ResolveAlias(alias); canon != alias && providers.GetProviderAlias(canon) != alias {
+					continue
+				}
+				for _, mID := range models {
+					fullID := alias + "/" + mID
+					if seen[fullID] {
+						continue
+					}
+					seen[fullID] = true
+
+					ctxLen, maxOut := providers.GetModelTokenLimits(mID)
+					caps := providers.GetCapabilitiesDetailForModel(alias, mID)
+					if caps.ContextWindows > 0 && ctxLen == 0 {
+						ctxLen = caps.ContextWindows
+					}
+					data = append(data, ModelInfoObject{
+						ID:                  fullID,
+						Object:              "model",
+						Created:             now,
+						OwnedBy:             alias,
+						Capabilities:        &caps,
+						ContextLength:       ctxLen,
+						ContextWindow:       ctxLen,
+						MaxCompletionTokens: maxOut,
+					})
+				}
+			}
+		}
+		// else: rows exist but none can serve (all inactive/credentialless) —
+		// publish nothing from the static catalog.
 	}
 
 	// 2. Model Aliases
@@ -624,20 +666,72 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 		}
 	}
 
-	// 4. Custom Models
+	// 4. Custom Models — parity upstream v1/models route.js customModelIds
+	// filter: a custom row only surfaces under a connected provider — one with
+	// an ACTIVE + credentialed connection row (section 1 above), under its
+	// registered display prefix, or under a node row that has a connection.
+	// Rows for untouched catalog entries ("ghost" customs) stay out.
+	connectedProviders := make(map[string]bool, len(activeAliases))
+	for alias := range activeAliases {
+		connectedProviders[alias] = true
+		if canon := providers.ResolveAlias(alias); canon != "" {
+			connectedProviders[canon] = true
+		}
+	}
 	if h.Repo != nil {
-		prefixMap, _ := h.Repo.GetProviderNodePrefixMap()
-		if customs, err := h.Repo.GetCustomModels(); err == nil {
-			for _, cm := range customs {
-				prefix := cm.ProviderAlias
-				if mapped, ok := prefixMap[cm.ProviderAlias]; ok && mapped != "" {
-					prefix = mapped
-				}
-				// Skip custom models belonging to explicitly deactivated provider connections
-				if disabledProviders[cm.ProviderAlias] || disabledProviders[prefix] {
+		if nodes, nerr := h.Repo.GetProviderNodes(); nerr == nil {
+			for _, n := range nodes {
+				if n == nil || n.ID == "" {
 					continue
 				}
-				fullModel := prefix + "/" + cm.ID
+				// A node row alone is only a template: its id counts as
+				// connected only when a connection row binds to it (upstream
+				// activeProviders holds connections, not node definitions).
+				if conns, cerr := h.Repo.GetProviderConnections(n.ID, true); cerr == nil && len(conns) > 0 {
+					connectedProviders[n.ID] = true
+				}
+			}
+		}
+	}
+	customVisibleAlias := func(providerAlias string) (string, bool) {
+		if connectedProviders[providerAlias] {
+			// Node row ids publish under their registered display prefix,
+			// never the internal openai-compatible-chat-* row id.
+			if prefixMap, perr := h.Repo.GetProviderNodePrefixMap(); perr == nil {
+				if mapped, ok := prefixMap[providerAlias]; ok && mapped != "" {
+					return mapped, true
+				}
+			}
+			return providerAlias, true
+		}
+		if prefixMap, perr := h.Repo.GetProviderNodePrefixMap(); perr == nil {
+			if mapped, ok := prefixMap[providerAlias]; ok && mapped != "" && connectedProviders[mapped] {
+				return mapped, true
+			}
+		}
+		if canon := providers.ResolveAlias(providerAlias); canon != "" && canon != providerAlias && connectedProviders[canon] {
+			return canon, true
+		}
+		if alias := providers.GetProviderAlias(providerAlias); alias != "" && alias != providerAlias && connectedProviders[alias] {
+			return alias, true
+		}
+		return "", false
+	}
+	if h.Repo != nil {
+		if customs, err := h.Repo.GetCustomModels(); err == nil {
+			for _, cm := range customs {
+				displayPrefix, ok := customVisibleAlias(cm.ProviderAlias)
+				if !ok {
+					continue
+				}
+				// Skip custom models belonging to explicitly deactivated provider connections
+				if disabledProviders[cm.ProviderAlias] || disabledProviders[displayPrefix] {
+					continue
+				}
+				if isDisabled(cm.ProviderAlias, cm.ID) || isDisabled(displayPrefix, cm.ID) {
+					continue
+				}
+				fullModel := displayPrefix + "/" + cm.ID
 				if seen[fullModel] {
 					continue
 				}
@@ -667,12 +761,12 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 					if cm.Caps["audio"] {
 						caps.AudioInput = true
 					}
-					providers.SetCustomModelCaps(prefix, cm.ID, caps)
-					if prefix != cm.ProviderAlias {
+					providers.SetCustomModelCaps(displayPrefix, cm.ID, caps)
+					if displayPrefix != cm.ProviderAlias {
 						providers.SetCustomModelCaps(cm.ProviderAlias, cm.ID, caps)
 					}
 				}
-				caps := providers.GetCapabilitiesDetailForModel(prefix, cm.ID)
+				caps := providers.GetCapabilitiesDetailForModel(displayPrefix, cm.ID)
 				if caps.ContextWindows > 0 && ctxLen == 0 {
 					ctxLen = caps.ContextWindows
 				}
@@ -680,7 +774,7 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 					ID:                  fullModel,
 					Object:              "model",
 					Created:             now,
-					OwnedBy:             prefix,
+					OwnedBy:             displayPrefix,
 					Capabilities:        &caps,
 					ContextLength:       ctxLen,
 					ContextWindow:       ctxLen,
