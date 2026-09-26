@@ -70,7 +70,13 @@ Result: Never stop coding, minimal cost + 20-40% token savings via RTK
 **1. Install (one line):**
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell, no admin needed)
+irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex
 ```
 
 🎉 Then start it (defaults: port `20130`, data `~/.9router` — no flags needed):
