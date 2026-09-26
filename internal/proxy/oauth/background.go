@@ -20,6 +20,9 @@ const (
 	backgroundInitialDelay    = 10 * time.Second
 	backgroundNormalDelay     = 1500 * time.Millisecond
 	backgroundSensitiveDelay  = 12 * time.Second
+	// defaultBackgroundExpiresIn is used when a token endpoint omits
+	// expiresIn, so the refreshed token is not stamped as already-expired.
+	defaultBackgroundExpiresIn = 3600
 )
 
 // sensitiveProviders mirrors upstream SENSITIVE_PROVIDERS: Google Cloud accounts
@@ -174,7 +177,20 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 	if existing == nil {
 		existing = make(map[string]any)
 	}
-	for k, v := range BuildConnectionUpdate(result) {
+	// A provider that omits expiresIn yields ExpiresIn=0; feeding that to
+	// BuildConnectionUpdate stamps expiresAt=now, so the next tick re-selects
+	// this connection forever. Fall back to a conservative window.
+	refreshed := result
+	if refreshed.ExpiresIn <= 0 {
+		refreshed = &TokenResult{
+			AccessToken:  result.AccessToken,
+			RefreshToken: result.RefreshToken,
+			ExpiresIn:    defaultBackgroundExpiresIn,
+			Scope:        result.Scope,
+			ProjectID:    result.ProjectID,
+		}
+	}
+	for k, v := range BuildConnectionUpdate(refreshed) {
 		existing[k] = v
 	}
 	if result.ProjectID != "" {

@@ -231,6 +231,7 @@ func kiroConvertMessages(messages []map[string]any, model string) ([]map[string]
 	}
 	return mergeKiroConsecutiveUsers(history), current, nil
 }
+
 // kiroUserContent flattens one user/tool message into text, Kiro image blocks
 // and tool-result blocks.
 func kiroUserContent(msg map[string]any) (string, []any, []any) {

@@ -68,7 +68,7 @@ func ProvideServer(p ServerParams) *http.Server {
 
 			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
-		oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
+			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 

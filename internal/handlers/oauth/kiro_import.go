@@ -1,8 +1,8 @@
 package oauth
 
 import (
-	"fmt"
 	json "encoding/json/v2"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -108,10 +108,10 @@ func (h *OAuthHandler) HandleKiroImport(w http.ResponseWriter, r *http.Request) 
 		psdBlob["region"] = region
 	}
 	dataMap := map[string]any{
-		"apiKey":       result.AccessToken,
-		"accessToken":  result.AccessToken,
-		"refreshToken": firstNonEmpty(result.RefreshToken, refreshToken),
-		"expiresAt":    time.Now().Add(time.Duration(expiresIn) * time.Second).UTC().Format(time.RFC3339),
+		"apiKey":               result.AccessToken,
+		"accessToken":          result.AccessToken,
+		"refreshToken":         firstNonEmpty(result.RefreshToken, refreshToken),
+		"expiresAt":            time.Now().Add(time.Duration(expiresIn) * time.Second).UTC().Format(time.RFC3339),
 		"providerSpecificData": psdBlob,
 	}
 	if email != "" {
@@ -164,10 +164,10 @@ func (h *OAuthHandler) HandleKiroImportCliProxy(w http.ResponseWriter, r *http.R
 		name += " (" + tokenData.Email + ")"
 	}
 	dataMap := map[string]any{
-		"apiKey":       tokenData.AccessToken,
-		"accessToken":  tokenData.AccessToken,
-		"refreshToken": tokenData.RefreshToken,
-		"expiresAt":    tokenData.ExpiresAt,
+		"apiKey":               tokenData.AccessToken,
+		"accessToken":          tokenData.AccessToken,
+		"refreshToken":         tokenData.RefreshToken,
+		"expiresAt":            tokenData.ExpiresAt,
 		"providerSpecificData": tokenData.ProviderSpecificData,
 	}
 	if tokenData.Email != "" {

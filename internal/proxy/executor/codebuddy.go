@@ -115,6 +115,7 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 
 	return json.Marshal(reqMap)
 }
+
 // sseToOpenAIJSON re-aggregates OpenAI chat-completions SSE chunks into a
 // single chat.completion JSON object. Returns (nil, false) when raw is not
 // SSE-shaped (e.g. an upstream error JSON that should pass through).

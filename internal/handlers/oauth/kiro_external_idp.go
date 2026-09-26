@@ -2,8 +2,8 @@ package oauth
 
 import (
 	"encoding/base64"
-	"fmt"
 	json "encoding/json/v2"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
