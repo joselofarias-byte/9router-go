@@ -13,8 +13,9 @@ Browser ───────────┘  ├─ /dashboard + Svelte SPA
 ```
 
 Open `http://localhost:20130` after starting an existing, initialized 9router data directory.
+> **Shared database with upstream 9router (Next.js):** 9router-go has no separate database — it opens the same `DATA_DIR/db/data.sqlite` file (`~/.9router/db/data.sqlite` by default) as the upstream Next.js app, reading/writing the same tables and JSON shapes. Point Go at an existing initialized 9router data directory and providers, connections, combos, settings, and usage carry over. Schema bootstrap and migrations are still owned by upstream (Go only creates the `upstream_leases` table); see [Database compatibility](#database-compatibility-and-bootstrap-limit) and [`DATABASE.md`](DATABASE.md). Avoid running the Go and Next.js processes as concurrent writers in production — WAL helps readers, but daily usage aggregates can overwrite each other.
 
-> **Version and compatibility baseline:** the Go release is **v1.9.1** (`VERSION`, `version.json`, and `internal/updater.CurrentVersion`). The local upstream checkout and Go manifest declare [`decolua/9router` v0.5.85](https://github.com/decolua/9router) as the synchronization baseline, while published upstream npm/Docker `latest` is v0.5.86. `CHANGELOG.md` records selected v0.5.86 parity work under Go v1.9.0 and explicitly deferred work; this is not a claim of complete endpoint, provider, or feature parity.
+> **Version and compatibility baseline:** the Go release is **v1.9.2** (`VERSION`, `version.json`, and `internal/updater.CurrentVersion`). The local upstream checkout and Go manifest declare [`decolua/9router` v0.5.85](https://github.com/decolua/9router) as the synchronization baseline, while published upstream npm/Docker `latest` is v0.5.86. `CHANGELOG.md` records selected v0.5.86 parity work under Go v1.9.0 and explicitly deferred work; this is not a claim of complete endpoint, provider, or feature parity.
 
 ## Features
 
