@@ -3,6 +3,38 @@
 
 ## [Unreleased]
 
+### 🐛 Dashboard logging, request details, and cached-token parity
+
+- Moved console-log APIs to the dashboard-authenticated `/api/translator/console-logs*` boundary; dashboard sessions and local CLI tokens work, while engine API keys cannot read operational logs or change global log level.
+- Removed the shipped hardcoded dashboard API-key fallback and made frontend error handling unwrap nested API error messages instead of displaying `[object Object]`.
+- Captured terminal usage from complete OpenAI/Claude SSE events, normalized Claude cache-inclusive prompt counts, and preserved cached read/create tokens through streaming and non-streaming translation.
+- Added compatibility reads for legacy and nested cached-token JSON shapes in usage stats, request details, and recent-request hydration.
+- Persisted sanitized failure/cancellation request details without duplicating successful usage records; Responses executor requests now persist actual token usage.
+
+### 🐛 Antigravity Google OAuth redirect
+
+- Matched the upstream Next.js Antigravity OAuth contract end-to-end: `redirect_uri=http://localhost:<dashboard-port>/callback`, the public `/callback` landing page, and `POST /api/oauth/antigravity/exchange` for the dashboard-authenticated token exchange.
+- Restored Antigravity's upstream Google scopes (`cclog` and `experimentsandconfigs`) and added loopback callback relay through `postMessage`, preserving automatic handoff for local/forwarded dashboard access.
+- Added authorize, redirect validation, token-exchange, frontend request, callback landing, and auth-boundary regression coverage; removed the obsolete `/api/oauth/antigravity/callback` contract.
+
+### 🐛 Media example request headers
+
+- Stopped masked API keys returned by `GET /api/keys` (for example, `sk-8b7…e34f`) from being copied into browser `Authorization` headers, which caused Chromium to reject requests with `String contains non ISO-8859-1 code point`.
+- Media example runners now require a usable full key, store newly created keys locally for the current dashboard session, and avoid sending masked/non-ASCII credentials.
+
+### 🐛 Antigravity search account failover
+
+- `POST /v1/search` with an Antigravity model now rotates through all active Antigravity accounts: a `403 VALIDATION_REQUIRED` ("Verify your account") locks only that account's search model and the next account is tried, matching upstream `markAccountUnavailable`/`checkFallbackError` failover.
+- Fixed the direct-client 403 retry in media requests masking the real upstream status: direct retry now only fires on transport errors, so account verification failures surface correctly instead of being hidden.
+
+### 🐛 Media providers audit (search/fetch/image/STT/TTS)
+
+- Failover: Xquik search, Antigravity image, Antigravity STT, and Nvidia TTS now rotate through all active accounts with per-account `ClassifyError` locks and success unlocks, matching the upstream `search.js`/`tts.js`/`imageGeneration.js` credential loops. Pinned `x-connection-id` is honored exactly once.
+- Correctness: fixed the Xquik registry `BaseURL` (host + path were wrong), clamped `max_results` to upstream `5..100`, stopped forcing a default `queryType`, added `answer:null` and `response_time_ms`/`upstream_latency_ms` to the Xquik envelope, and preserved original upstream error statuses instead of collapsing to 502.
+- Safety: request-scoped 4xx (400/405/409/422/…) no longer lock accounts (`ClassifyError` parity with upstream `checkFallbackError`); video creation no longer rotates on 5xx (billable-job parity with `CREATE_ROTATION_STATUSES`); multipart model rewrites are byte-exact so binary file bytes can't be corrupted.
+- Isolation: a pinned connection ID must belong to the requested provider — cross-provider credential use is now rejected in `GetBestConnection`.
+- TTS: Nvidia honors provider/connection base URL overrides; Edge-TTS rejects sub-1KiB error payloads as empty audio (upstream parity).
+- Frontend: the image Run body now matches the curl example (`background`, `image_detail`).
 ## [v1.9.1] - 2026-09-25
 
 ### 🐛 Dashboard: Custom Models Parity — Combo Picker Unwraps `{models}` Envelope

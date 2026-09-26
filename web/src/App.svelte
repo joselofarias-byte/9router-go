@@ -68,10 +68,11 @@
       selectedProviderId = providerId || null
       const path = providerId ? providerPath(providerId) : TAB_ROUTES.connections
       if (typeof window !== 'undefined' && window.location.pathname !== path) {
+        const snapshot = { tab, providerId: providerId ?? null }
         if (replace) {
-          window.history.replaceState({ tab, providerId }, '', path)
+          window.history.replaceState(snapshot, '', path)
         } else {
-          window.history.pushState({ tab, providerId }, '', path)
+          window.history.pushState(snapshot, '', path)
         }
       }
       return
@@ -79,10 +80,11 @@
     selectedProviderId = null
     const path = TAB_ROUTES[tab]
     if (typeof window !== 'undefined' && window.location.pathname !== path) {
+      const snapshot = { tab }
       if (replace) {
-        window.history.replaceState({ tab }, '', path)
+        window.history.replaceState(snapshot, '', path)
       } else {
-        window.history.pushState({ tab }, '', path)
+        window.history.pushState(snapshot, '', path)
       }
     }
   }
@@ -93,10 +95,11 @@
     selectedMedia = { kind, providerId }
     selectedProviderId = null
     if (typeof window !== 'undefined' && window.location.pathname !== path) {
+      const snapshot = { tab: activeTab, mediaKind: kind, mediaProviderId: providerId }
       if (replace) {
-        window.history.replaceState({ tab: activeTab, media: selectedMedia }, '', path)
+        window.history.replaceState(snapshot, '', path)
       } else {
-        window.history.pushState({ tab: activeTab, media: selectedMedia }, '', path)
+        window.history.pushState(snapshot, '', path)
       }
     }
   }

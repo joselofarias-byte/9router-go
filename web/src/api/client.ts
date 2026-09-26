@@ -310,12 +310,68 @@ export function isAuthenticated(): boolean {
   return false
 }
 
-// Helper to get auth header if stored in localStorage
+// Helper to get an auth header only when a key was explicitly stored.
+// Dashboard sessions authenticate with the HttpOnly cookie.
+export function isUsableAPIKey(value: string): boolean {
+  return /^[!-~]+$/.test(value.trim()) && value.trim().length > 0
+}
+
+export function getStoredAPIKey(): string {
+  if (typeof localStorage === 'undefined') return ''
+  const value = (localStorage.getItem('9router_key') || '').trim()
+  return isUsableAPIKey(value) ? value : ''
+}
+
 export function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem('9router_key') || 'sk-8b71f86e0a1f2fb5-nhz496-cfa1c800'
+  const token = getStoredAPIKey()
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+}
+
+export function formatApiError(value: unknown, fallback = 'Unknown error'): string {
+  if (typeof value === 'string' && value.trim()) return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const message = formatApiError(entry, '')
+      if (message) return message
+    }
+  } else if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    for (const field of ['message', 'error', 'detail', 'details', 'errors']) {
+      if (field in record) {
+        const message = formatApiError(record[field], '')
+        if (message) return message
+      }
+    }
+  }
+  if (value && typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      // Fall through to the caller-provided message.
+    }
+  }
+  return fallback
+}
+
+export async function responseErrorMessage(
+  response: Response,
+  fallback = `Request failed with status ${response.status}`,
+): Promise<string> {
+  let text = ''
+  try {
+    text = await response.text()
+  } catch {
+    return fallback
+  }
+  if (!text.trim()) return fallback
+  try {
+    return formatApiError(JSON.parse(text), fallback)
+  } catch {
+    return text
   }
 }
 
@@ -325,21 +381,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...(options.headers as Record<string, string> || {}),
   }
   const res = await fetch(path, { ...options, headers })
-  if (!res.ok) {
-    let errText = ''
-    try {
-      const text = await res.text()
-      try {
-        const errJson = JSON.parse(text)
-        errText = errJson.error?.message || errJson.error || errJson.message || JSON.stringify(errJson)
-      } catch {
-        errText = text
-      }
-    } catch {
-      errText = ''
-    }
-    throw new Error(errText || `Request failed with status ${res.status}`)
-  }
+  if (!res.ok) throw new Error(await responseErrorMessage(res))
   return res.json()
 }
 
@@ -561,11 +603,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ connectionId, model }),
     }),
-  getAntigravityAuthorizeUrl: () => request<{ url: string; redirectUrl: string; state: string }>('/api/oauth/antigravity/authorize'),
-  antigravityCallback: (code: string, redirectUri?: string) =>
-    request<{ success: boolean; error?: string }>('/api/oauth/antigravity/callback', {
+  getAntigravityAuthorizeUrl: (redirectUri: string) =>
+    request<{ url: string; redirectUrl: string; authUrl: string; state: string; redirectUri: string }>(
+      `/api/oauth/antigravity/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
+    ),
+  antigravityExchange: (code: string, redirectUri: string, state?: string) =>
+    request<{ success: boolean; error?: string }>('/api/oauth/antigravity/exchange', {
       method: 'POST',
-      body: JSON.stringify({ code, redirect_uri: redirectUri, redirectUri: redirectUri }),
+      body: JSON.stringify({ code, redirectUri, state }),
     }),
   getClineAuthorizeUrl: (provider: string, redirectUri?: string) =>
     request<{ url: string; authUrl: string; state: string; codeVerifier: string; codeChallenge: string; redirectUri: string }>(

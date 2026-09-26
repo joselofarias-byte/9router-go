@@ -1,12 +1,6 @@
 package handlers
 
 import (
-	json "encoding/json/v2"
-	"github.com/go-chi/chi/v5"
-	"net/http"
-	"net/http/pprof"
-	"os"
-	"strings"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
@@ -18,6 +12,12 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/web"
+	json "encoding/json/v2"
+	"github.com/go-chi/chi/v5"
+	"net/http"
+	"net/http/pprof"
+	"os"
+	"strings"
 )
 
 // Re-export TokenSaverConfig for root compatibility
@@ -121,15 +121,6 @@ func SetupRoutes(r interface {
 	r.HandleFunc("/api/headroom/proxy/*", headroomH.HandleHeadroomProxy)
 	// OAuth & Import Tokens Domain
 	mountOAuthRoutes(r, oauthH)
-	r.Get("/api/oauth/antigravity/callback", oauthH.HandleAntigravityCallback)
-	r.Post("/api/oauth/antigravity/callback", oauthH.HandleAntigravityCallback)
-
-	// Live Console Logs Domain (dashboard "Monitor Console Log")
-	r.Get("/translator/console-logs", HandleConsoleLogsGet)
-	r.Delete("/translator/console-logs", HandleConsoleLogsDelete)
-	r.Get("/translator/console-logs/stream", HandleConsoleLogsStream)
-	r.Get("/translator/console-logs/level", HandleConsoleLogsLevelGet)
-	r.Put("/translator/console-logs/level", HandleConsoleLogsLevelPut)
 
 	// Usage Real-time SSE Stream & Stats Domain (dashboard topology animation + recent requests)
 	r.Get("/usage/stream", HandleUsageStream(repo))
@@ -252,6 +243,19 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	mountOAuthRoutes(r, oauthH)
 }
 
+// SetupConsoleLogRoutes mounts operational log APIs behind a full dashboard
+// session or local CLI token. Client API keys are intentionally rejected.
+func SetupConsoleLogRoutes(r chi.Router, repo *db.Repo) {
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequireConsoleLogAuth(repo))
+		r.Get("/api/translator/console-logs", HandleConsoleLogsGet)
+		r.Delete("/api/translator/console-logs", HandleConsoleLogsDelete)
+		r.Get("/api/translator/console-logs/stream", HandleConsoleLogsStream)
+		r.Get("/api/translator/console-logs/level", HandleConsoleLogsLevelGet)
+		r.Put("/api/translator/console-logs/level", HandleConsoleLogsLevelPut)
+	})
+}
+
 func mountOAuthRoutes(r interface {
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
@@ -266,6 +270,7 @@ func mountOAuthRoutes(r interface {
 	r.Get("/api/oauth/freebuff/session", oauthH.HandleFreebuffSessionStatus)
 	r.Post("/api/oauth/freebuff/session/switch", oauthH.HandleFreebuffSessionSwitch)
 	r.Get("/api/oauth/antigravity/authorize", oauthH.HandleAntigravityAuthorize)
+	r.Post("/api/oauth/antigravity/exchange", oauthH.HandleAntigravityExchange)
 	r.Get("/api/oauth/cline/authorize", oauthH.HandleClineAuthorize)
 	r.Post("/api/oauth/cline/exchange", oauthH.HandleClineExchange)
 	r.Get("/api/oauth/pkce/authorize", oauthH.HandlePKCEAuthorize)
@@ -301,11 +306,9 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// Embedded Native Dashboard SPA
 	webH := web.Handler()
 	oauthH := oauth.NewOAuthHandler(repo)
-	// Public OAuth landing page & callbacks: providers redirect browsers here after login
-	// (/callback?code=... or /api/oauth/antigravity/callback?code=...). No API key — browsers carry none.
+	// Public OAuth landing page: providers redirect browsers here after login.
+	// Browsers carry neither the dashboard session nor the engine API key.
 	r.Get("/callback", oauthH.HandleCallbackPage)
-	r.Get("/api/oauth/antigravity/callback", oauthH.HandleAntigravityCallback)
-	r.Post("/api/oauth/antigravity/callback", oauthH.HandleAntigravityCallback)
 	r.Get("/", webH.ServeHTTP)
 	r.Get("/login", webH.ServeHTTP)
 	// Dashboard pages require the login session when requireLogin is on; the
@@ -393,4 +396,6 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 		r.Use(middleware.RequireDashboardAuth(repo))
 		SetupDashboardRoutes(r, repo)
 	})
+
+	SetupConsoleLogRoutes(r, repo)
 }

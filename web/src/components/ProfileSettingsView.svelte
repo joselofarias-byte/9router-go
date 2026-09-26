@@ -201,7 +201,7 @@
     try {
       const a = document.createElement('a')
       a.href = '/api/settings/database'
-      a.download = `9router-backup-${new Date().toISOString().slice(0, 10)}.sqlite`
+      a.download = `9router-backup-${new Date().toISOString().slice(0, 10)}.json`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -215,7 +215,7 @@
     const file = target.files?.[0]
     if (!file) return
 
-    if (!confirm(`Import database backup "${file.name}"? This will overwrite existing local data.`)) {
+    if (!confirm(`Import database backup "${file.name}"? This will overwrite existing server data.`)) {
       target.value = ''
       return
     }
@@ -253,7 +253,7 @@
             Settings & Profile
           </h1>
           <p class="font-body text-xs sm:text-sm text-text-muted">
-            System configuration, authentication credentials, and database state
+            System configuration, authentication credentials, and local data storage
           </p>
         </div>
       </div>
@@ -279,28 +279,34 @@
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <!-- SECTION 1: Local Machine Mode & Database -->
+    <!-- SECTION 1: Runtime Storage -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
         <div class="flex items-center gap-2">
           <Laptop class="w-4 h-4 text-brand-500" />
-          <h2 class="text-sm font-bold text-text-main">Local Mode & Database</h2>
+          <h2 class="text-sm font-bold text-text-main">Runtime Storage</h2>
         </div>
         <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-success/10 text-success border border-success/20">
-          Running on your machine
+          Server managed
         </span>
       </div>
 
       <div class="space-y-2 text-xs">
         <div class="p-3 rounded-xl bg-bg border border-border space-y-1">
           <div class="text-[10px] text-text-subtle uppercase font-mono tracking-wider font-semibold">
-            Database File Location
+            Default Database Location
           </div>
           <div class="font-mono text-xs text-text-main font-semibold">
             ~/.9router/db/data.sqlite
           </div>
           <div class="text-[11px] text-text-muted pt-1">
-            SQLite WAL Mode • SetMaxOpenConns(4) • Automatic schema migration
+            The Go server opens the configured SQLite database in WAL mode. DB_PATH or DATA_DIR may select a different location.
+          </div>
+          <div class="text-[11px] text-text-subtle pt-1">
+            The native server does not run upstream's versioned schema migration. A new empty database must be initialized with a compatible upstream schema before use.
+          </div>
+          <div class="text-[11px] text-text-subtle pt-1">
+            Backups are dashboard-data payloads, not a byte-for-byte copy of the live SQLite file.
           </div>
         </div>
 
@@ -317,7 +323,7 @@
 
           <input
             type="file"
-            accept=".sqlite,.db"
+            accept=".json"
             bind:this={fileInput}
             onchange={handleFileSelected}
             class="hidden"

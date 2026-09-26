@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/dbtest"
 )
 
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
@@ -23,6 +25,11 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	if err != nil {
 		os.Remove(tmpFile.Name())
 		t.Fatalf("OpenDatabase failed: %v", err)
+	}
+	if err := dbtest.CreateTables(database); err != nil {
+		database.Close()
+		os.Remove(tmpFile.Name())
+		t.Fatalf("CreateTables failed: %v", err)
 	}
 
 	cleanup := func() {
@@ -64,8 +71,7 @@ func TestSetupRoutes_OAuthEndpointsMounted(t *testing.T) {
 		{"GET", "/api/oauth/freebuff/session"},
 		{"POST", "/api/oauth/freebuff/session/switch"},
 		{"GET", "/api/oauth/antigravity/authorize"},
-		{"GET", "/api/oauth/antigravity/callback"},
-		{"POST", "/api/oauth/antigravity/callback"},
+		{"POST", "/api/oauth/antigravity/exchange"},
 	}
 
 	for _, ep := range endpoints {
@@ -191,5 +197,49 @@ func TestSetupServerRouter_SPARoutes(t *testing.T) {
 	// When no API keys exist in test DB, RequireApiKey allows or denies based on settings
 	if wAPI.Code == http.StatusNotFound {
 		t.Errorf("expected /api/settings to be handled by API handler, not 404")
+	}
+}
+
+func TestConsoleLogsRoutesUseDashboardSessionGate(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	anonymous := httptest.NewRequest(http.MethodGet, "/api/translator/console-logs", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, anonymous)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous console request status = %d", rec.Code)
+	}
+
+	var body map[string]map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body["error"]["message"] == "" {
+		t.Fatalf("missing nested error message: %s", rec.Body.String())
+	}
+	// A valid engine key must not unlock operational logs.
+	keyReq := httptest.NewRequest(http.MethodGet, "/api/translator/console-logs", nil)
+	keyReq.Header.Set("Authorization", "Bearer test-api-key")
+	if _, err := database.Exec(`INSERT INTO apiKeys (id, key, name, isActive, createdAt) VALUES ('console-test', 'test-api-key', 'test', 1, '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, keyReq)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("engine key console request status = %d", rec.Code)
+	}
+
+	// requireLogin=false matches upstream's permissive dashboard guard.
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": false}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/translator/console-logs", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open dashboard console request status = %d", rec.Code)
 	}
 }
