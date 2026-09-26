@@ -34,15 +34,17 @@ Detailed routing and provider behavior is documented in [`ARCHITECTURE.md`](ARCH
 
 Download the archive for your platform from [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest), then verify it against `SHA256SUMS.txt` from that release.
 
-Release artifacts:
+Release artifacts (click to download directly):
 
 | Platform | Architecture | Binary |
 | --- | --- | --- |
-| Linux | `amd64` | `9router-go-linux-amd64` |
-| Linux | `arm64` | `9router-go-linux-arm64` |
-| macOS | `amd64` | `9router-go-darwin-amd64` |
-| macOS | `arm64` | `9router-go-darwin-arm64` |
-| Windows | `amd64` | `9router-go-windows-amd64.exe` |
+| Linux | `amd64` | [`9router-go-linux-amd64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-linux-amd64) |
+| Linux | `arm64` | [`9router-go-linux-arm64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-linux-arm64) |
+| macOS | `amd64` (Intel) | [`9router-go-darwin-amd64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-darwin-amd64) |
+| macOS | `arm64` (Apple Silicon M1/M2/M3/…) | [`9router-go-darwin-arm64`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-darwin-arm64) |
+| Windows | `amd64` | [`9router-go-windows-amd64.exe`](https://github.com/luqman-v1/9router-go/releases/latest/download/9router-go-windows-amd64.exe) |
+
+> **Orang awam pilih yang mana?** Windows → file `.exe`; Mac keluaran 2020 ke atas (M1/M2/M3/M4) → `darwin-arm64`, Mac Intel lama → `darwin-amd64`; VPS/server Linux → `linux-amd64`, Raspberry Pi → `linux-arm64`. Lengkapnya tetap di [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest) (ada juga `SHA256SUMS.txt` buat verifikasi).
 
 ### Docker Compose
 
