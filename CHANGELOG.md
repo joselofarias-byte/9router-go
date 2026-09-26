@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v1.9.3] - 2026-09-26
+
 ### 🐛 Kiro tool calling tidak pernah sampai ke client (`arguments: {}` / tanpa `tool_calls`)
 
 - Gejala: `POST /v1/chat/completions` dengan `tools` di Kiro tidak pernah mengembalikan `tool_calls`. Model menulis pseudo-panggilan tool sebagai teks (`<invoke name="browser">…`) atau, setelah katalog dikirim, membalas kosong dengan `reasoning_content: "..."`. Provider lain (grok-cli, antigravity) tidak terpengaruh.
