@@ -111,7 +111,11 @@
     providerId === 'github' || providerId === 'kiro' || providerId === 'kimi' ||
     providerId === 'kimi-coding' || providerId === 'codebuddy-cn' || providerId === 'codebuddy-intl'
   )
-  let isNoAuth = $derived(selectedCatalogItem?.noAuth === true || selectedCatalogItem?.category === 'free')
+  // Upstream parity: only the explicit noAuth flag hides the Connections card
+  // ([id]/page.js isFreeNoAuth = !!FREE_PROVIDERS[id]?.noAuth). Category "free"
+  // is NOT equivalent — kiro/gemini-cli are free with noAuth:false and still
+  // need their Connect/OAuth + API Key buttons.
+  let isNoAuth = $derived(selectedCatalogItem?.noAuth === true)
   let hasRiskNotice = $derived(providerId === 'antigravity' || Boolean(selectedCatalogItem?.notice?.text?.includes('RISK_NOTICE')))
 
   // Free provider proxy & rotation state
@@ -287,6 +291,7 @@
   let deviceCode = $state('')
   let deviceSession: Record<string, unknown> = $state({})
   let deviceInterval = $state(5)
+  let devicePollTimer: ReturnType<typeof setInterval> | null = $state(null)
   // Kiro method selection (upstream KiroAuthModal/KiroOAuthWrapper parity):
   // builder-id | idc | api-key | import | import-cli-proxy | social-google | social-github
   let kiroMethod = $state<string | null>(null)
@@ -2935,6 +2940,7 @@
           <span class="material-symbols-outlined text-[18px]">login</span>
           Connect Kiro
         </button>
+      {:else if hasDualAuthModes}
         <button
           type="button"
           onclick={handleAddConnectionClick}
@@ -3498,7 +3504,7 @@
           </div>
         </div>
       {/if}
-
+      {#if providerId !== 'kiro' || kiroMethod || deviceUserCode}
       <div class="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50 mb-4">
         <span class="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
         <span class="text-sm">
@@ -3696,6 +3702,7 @@
           </button>
         </div>
       </div>
+      {/if}
     </div>
   </div>
 {/if}
