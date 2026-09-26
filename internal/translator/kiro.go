@@ -88,6 +88,17 @@ func OpenAIToKiro(body []byte, opts KiroTranslateOptions) ([]byte, error) {
 	if ctx, ok := current["userInputMessageContext"].(map[string]any); ok && len(ctx) > 0 {
 		userInput["userInputMessageContext"] = ctx
 	}
+	// Kiro has no top-level `tools` array: the catalogue travels on the last
+	// user turn. Without it the model invents tools in plain text instead of
+	// emitting toolUseEvent, and clients never get tool_calls.
+	if specs, _ := kiroNormalizeToolSpecs(in.Tools); len(specs) > 0 {
+		userCtx, _ := userInput["userInputMessageContext"].(map[string]any)
+		if userCtx == nil {
+			userCtx = map[string]any{}
+			userInput["userInputMessageContext"] = userCtx
+		}
+		userCtx["tools"] = specs
+	}
 
 	payload := map[string]any{
 		"conversationState": map[string]any{

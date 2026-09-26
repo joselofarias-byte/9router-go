@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### 🐛 Kiro tool calling tidak pernah sampai ke client (`arguments: {}` / tanpa `tool_calls`)
+
+- Gejala: `POST /v1/chat/completions` dengan `tools` di Kiro tidak pernah mengembalikan `tool_calls`. Model menulis pseudo-panggilan tool sebagai teks (`<invoke name="browser">…`) atau, setelah katalog dikirim, membalas kosong dengan `reasoning_content: "..."`. Provider lain (grok-cli, antigravity) tidak terpengaruh.
+- Akar 1 — **request**: Kiro tidak punya array `tools` OpenAI. Katalog tool harus ditempel di turn user terakhir sebagai `userInputMessage.userInputMessageContext.tools` (`{toolSpecification:{name,description,inputSchema:{json:…}}}`, upstream `normalizeKiroToolSpecs`). Translator Go hanya mengirim `toolResults`, sehingga model tidak pernah tahu tool apa yang ada.
+- Akar 2 — **response**: Kiro memecah satu tool call jadi beberapa frame `toolUseEvent` — frame pertama hanya `name`+`toolUseId`, frame berikutnya potongan JSON di `input` (`"{\"ci"`, `"ty\": \"Jak"`, …), ditutup frame `stop: true`. Kode lama membaca field `content` (yang tidak pernah dikirim) dan peduli `arguments: "{}"` setiap frame.
+- Perbaikan:
+  - `internal/translator/kiro_tools.go` (baru) — port `normalizeKiroToolSpecs` upstream: normalisasi tool OpenAI/Claude, sanitasi nama (`[^a-zA-Z0-9_-]` → `_`, dedup suffiks, batas 64 char), `inputSchema.json` dipaksa `type: object`, `additionalProperties` dibuang, `required` difilter ke properti yang ada.
+  - `internal/translator/kiro.go` — katalog tool ditempel ke `userInputMessageContext.tools` pada turn terakhir; `toolResults` tetap ikut.
+  - `internal/proxy/executor/stream.go` — `kiroToolCall` meny-buffer argumen per `toolUseId` (menerima `input` berupa string fragmen maupun objek, `content` lama jadi fallback), dan `tool_calls` baru dipancarkan setelah stream selesai dengan argumen utuh.
+- Verifikasi live e2e (tool `get_weather`, "weather in Jakarta"): `kr/auto` → `{"city":"Jakarta","unit":"celsius"}`, `kr/claude-sonnet-4.5` → `{"city":"Jakarta"}`, `gcli/grok-4.5` dan `ag/gemini-3.8-flash-high` tetap PASS. Bandingkan upstream (`:20128`, akun Kiro sama) menghasilkan `tool_calls` yang sama.
+- Tests: `TestOpenAIToKiro_AttachesToolSpecsToLastUserTurn`, `TestOpenAIToKiro_ToolResultsStillTravel`, `TestOpenAIToKiro_NoToolsNoContext`, `TestKiroNormalizeRootSchema`, `TestKiroUniqueToolName`, `TestForwardKiroRequest_ReassemblesFragmentedToolInput`. Suite: 1473 pass.
+
 ### 🐛 Kiro `403 The bearer token included in the request is invalid`
 
 - Gejala: `POST /api/models/test` / chat Kiro gagal 403 sementara token-nya sebenarnya valid — `GET ListAvailableModels` dengan token yang sama balas 200.
