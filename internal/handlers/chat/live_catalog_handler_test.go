@@ -4,7 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	json "encoding/json/v2"
 
 	"9router/proxy/internal/db"
 )
@@ -196,4 +200,77 @@ func TestHandleModels_GrokCLILiveCatalog(t *testing.T) {
 	if gotHeaders.Get("x-email") != "dev@example.com" {
 		t.Errorf("expected x-email header from providerSpecificData, got %q", gotHeaders.Get("x-email"))
 	}
+}
+
+// Concurrency guard: a cold cache must not fan out once per request. Ten
+// simultaneous /v1/models calls have to collapse into a single upstream fetch.
+func TestHandleModels_LiveCatalogCoalescesConcurrentRequests(t *testing.T) {
+	resetLiveCatalog(t)
+
+	var hits atomic.Int64
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-release // hold the first fetch so every caller piles up behind it
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":[{"modelId":"auto"}]}`))
+	}))
+	defer srv.Close()
+	kiroCatalogBaseURL = srv.URL + "/%s"
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-kiro-storm', 'kiro', 'oauth', 'Kiro Storm', 1, 1, '{"accessToken":"ya29.storm"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed kiro: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	h.Client = srv.Client()
+
+	const callers = 10
+	ids := make(chan []string, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			req := httptest.NewRequest("GET", "/v1/models", nil)
+			rec := httptest.NewRecorder()
+			h.HandleModels(rec, req)
+			ids <- modelsIDsFromBody(rec.Body.Bytes())
+		}()
+	}
+	// Let every goroutine reach the resolver before the single fetch completes.
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+
+	for i := 0; i < callers; i++ {
+		if got := <-ids; !strings.Contains(strings.Join(got, "\n"), "kr/auto") {
+			t.Fatalf("caller %d did not receive the live catalog: %v", i, got)
+		}
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("expected exactly 1 upstream fetch for %d concurrent callers, got %d", callers, n)
+	}
+}
+
+// modelsIDsFromBody decodes a /v1/models response body into model ids.
+func modelsIDsFromBody(body []byte) []string {
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		ids = append(ids, m.ID)
+	}
+	return ids
 }

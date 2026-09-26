@@ -15,6 +15,7 @@ import (
 	json "encoding/json/v2"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
@@ -82,6 +83,12 @@ var liveCatalogStore = struct {
 	entries map[string]liveCatalogEntry
 }{entries: make(map[string]liveCatalogEntry)}
 
+// liveCatalogFlight collapses concurrent discoveries for the same credential
+// into one upstream call. Without it, N clients hitting /v1/models while the
+// cache is cold would each fan out to the provider API (kiro, grok-cli, custom
+// node) before the first result populates the cache.
+var liveCatalogFlight singleflight.Group
+
 // resolveLiveCatalog returns the live catalog for a provider connection, or nil
 // when the provider has no live resolver or discovery failed. Callers fall back
 // to the static registry, exactly like upstream's `live?.models?.length` guard.
@@ -122,20 +129,32 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		return cached
 	}
 
-	discovered := fetch(ctx, accessToken)
-	refreshToken := liveCatalogRefreshToken(conn)
-	if len(discovered) == 0 && refreshToken != "" {
-		// Upstream refreshes the credential on 401/403 and retries once.
-		if refreshed, _, err := h.forceRefreshOAuthToken(conn.ID); err == nil && refreshed != "" {
-			discovered = fetch(ctx, refreshed)
-		} else if err != nil {
-			log.Warn("models", "live catalog token refresh failed", "provider", providerID, "conn", conn.ID, "error", err)
+	// One upstream call per credential even when many requests race a cold
+	// cache: the losers wait for the winner's result instead of each fanning
+	// out to the provider API.
+	result, err, _ := liveCatalogFlight.Do(cacheKey, func() (any, error) {
+		if cached, ok := liveCatalogCached(cacheKey); ok {
+			return cached, nil
 		}
-	}
-	if len(discovered) == 0 {
+		discovered := fetch(ctx, accessToken)
+		if len(discovered) == 0 && liveCatalogRefreshToken(conn) != "" {
+			// Upstream refreshes the credential on 401/403 and retries once.
+			if refreshed, _, rErr := h.forceRefreshOAuthToken(conn.ID); rErr == nil && refreshed != "" {
+				discovered = fetch(ctx, refreshed)
+			} else if rErr != nil {
+				log.Warn("models", "live catalog token refresh failed", "provider", providerID, "conn", conn.ID, "error", rErr)
+			}
+		}
+		if len(discovered) == 0 {
+			return nil, nil
+		}
+		liveCatalogStoreModels(cacheKey, discovered)
+		return discovered, nil
+	})
+	if err != nil || result == nil {
 		return nil
 	}
-	liveCatalogStoreModels(cacheKey, discovered)
+	discovered, _ := result.([]LiveModel)
 	return discovered
 }
 
