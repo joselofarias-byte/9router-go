@@ -287,7 +287,17 @@
   let deviceCode = $state('')
   let deviceSession: Record<string, unknown> = $state({})
   let deviceInterval = $state(5)
-  let devicePollTimer: ReturnType<typeof setInterval> | null = $state(null)
+  // Kiro method selection (upstream KiroAuthModal/KiroOAuthWrapper parity):
+  // builder-id | idc | api-key | import | import-cli-proxy | social-google | social-github
+  let kiroMethod = $state<string | null>(null)
+  let kiroIdcStartUrl = $state('')
+  let kiroIdcRegion = $state('us-east-1')
+  let kiroApiKey = $state('')
+  let kiroApiKeyRegion = $state('us-east-1')
+  let kiroRefreshToken = $state('')
+  let kiroCliProxyJson = $state('')
+  let kiroSocialAuthUrl = $state('')
+  let kiroSocialCallback = $state('')
   // OAuth auto-handoff: callback tab writes to storage + BroadcastChannel,
   // this modal restores the pending session and auto-submits.
   let autoSubmitted = $state(false)
@@ -1164,8 +1174,8 @@
       openAuthCodeOAuth()
     } else if (isCustomOAuth) {
       openCustomOAuth()
-    } else if (isDeviceOAuth) {
-      openDeviceOAuth()
+    } else if (providerId === 'kiro') {
+      openKiroOAuth()
     } else if (isSpecialOAuth) {
       openSpecialOAuth()
     } else if (isOAuth) {
@@ -1291,6 +1301,186 @@
       alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
+  function resetKiroMethod() {
+    kiroMethod = null
+    kiroIdcStartUrl = ''
+    kiroIdcRegion = 'us-east-1'
+    kiroApiKey = ''
+    kiroApiKeyRegion = 'us-east-1'
+    kiroRefreshToken = ''
+    kiroCliProxyJson = ''
+    kiroSocialAuthUrl = ''
+    kiroSocialCallback = ''
+  }
+
+  async function openKiroOAuth() {
+    oauthError = null
+    callbackInput = ''
+    copiedAuthUrl = false
+    stopDevicePoll()
+    resetKiroMethod()
+    showOAuthModal = true
+  }
+
+  async function startKiroDeviceFlow(authMethod: 'builder-id' | 'idc') {
+    oauthError = null
+    copiedAuthUrl = false
+    stopDevicePoll()
+    isConnecting = true
+    try {
+      const res = await api.deviceStart(
+        'kiro',
+        authMethod === 'idc'
+          ? { startUrl: kiroIdcStartUrl.trim(), region: kiroIdcRegion.trim() || 'us-east-1', authMethod: 'idc' }
+          : { authMethod: 'builder-id' }
+      )
+      oauthAuthUrl = res.verification_uri_complete || res.verification_uri || ''
+      deviceUserCode = res.user_code || ''
+      deviceCode = res.device_code || ''
+      deviceSession = res.session || {}
+      deviceInterval = res.interval && res.interval > 0 ? res.interval : 5
+      if (typeof window !== 'undefined' && oauthAuthUrl) {
+        window.open(oauthAuthUrl, '_blank')
+      }
+      pollDeviceOnce()
+      devicePollTimer = setInterval(pollDeviceOnce, deviceInterval * 1000)
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroApiKey() {
+    if (!kiroApiKey.trim()) {
+      oauthError = 'Masukkan API key Kiro/CodeWhisperer'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroApiKey(kiroApiKey.trim(), kiroApiKeyRegion.trim() || 'us-east-1')
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroImport() {
+    if (!kiroRefreshToken.trim()) {
+      oauthError = 'Masukkan refresh token dari Kiro IDE'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroImport(kiroRefreshToken.trim())
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroCliProxyImport() {
+    if (!kiroCliProxyJson.trim()) {
+      oauthError = 'Tempel JSON auth CLIProxyAPI'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroImportCliProxy(kiroCliProxyJson.trim())
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function startKiroAutoImport() {
+    oauthError = null
+    isConnecting = true
+    try {
+      const res = await api.kiroAutoImport()
+      if (res?.found && res?.refreshToken) {
+        kiroRefreshToken = res.refreshToken as string
+      } else {
+        oauthError = (res as { error?: string })?.error || 'Token tidak terdeteksi di host ini'
+      }
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function startKiroSocial(provider: 'google' | 'github') {
+    oauthError = null
+    kiroSocialAuthUrl = ''
+    kiroSocialCallback = ''
+    isConnecting = true
+    try {
+      const res = await api.kiroSocialAuthorize(provider)
+      kiroSocialAuthUrl = res.authUrl || res.url || ''
+      if (typeof window !== 'undefined' && kiroSocialAuthUrl) {
+        window.open(kiroSocialAuthUrl, '_blank', 'width=600,height=700')
+      }
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
+  async function submitKiroSocialCallback() {
+    const raw = kiroSocialCallback.trim()
+    if (!raw) {
+      oauthError = 'Tempel callback URL / code dari browser'
+      return
+    }
+    // Accept a full kiro:// callback URL or a bare code (upstream
+    // KiroSocialOAuthModal parity: code + state query params).
+    let code = raw
+    try {
+      const url = new URL(raw)
+      const errParam = url.searchParams.get('error')
+      if (errParam) {
+        oauthError = url.searchParams.get('error_description') || errParam
+        return
+      }
+      code = url.searchParams.get('code') || raw
+    } catch {
+      // Not a URL — treat the input as a bare code.
+    }
+    if (!code) {
+      oauthError = 'Code tidak ditemukan di callback URL'
+      return
+    }
+    oauthError = null
+    isConnecting = true
+    try {
+      await api.kiroSocialExchange(code)
+      showOAuthModal = false
+      resetKiroMethod()
+      onRefresh()
+    } catch (err) {
+      oauthError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isConnecting = false
+    }
+  }
+
 
   async function openDeviceOAuth() {
     oauthError = null
@@ -3183,6 +3373,114 @@
           <span class="material-symbols-outlined text-lg">close</span>
         </button>
       </div>
+      {#if providerId === 'kiro' && !kiroMethod && !deviceUserCode}
+        <p class="text-sm text-text-muted mb-3">Pilih metode autentikasi:</p>
+        <div class="space-y-2 mb-4">
+          <button type="button" onclick={() => { kiroMethod = 'builder-id'; startKiroDeviceFlow('builder-id') }} disabled={isConnecting} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors disabled:opacity-50 cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">shield</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">AWS Builder ID</h3><p class="text-xs text-text-muted">Disarankan. Akun AWS gratis, device-code flow.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'idc' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">business</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">AWS IAM Identity Center</h3><p class="text-xs text-text-muted">Enterprise dengan start URL organisasi.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'api-key' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">key</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">API Key</h3><p class="text-xs text-text-muted">Kunci headless Kiro/CodeWhisperer yang tahan lama.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'social-google'; startKiroSocial('google') }} disabled={isConnecting} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors disabled:opacity-50 cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">account_circle</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">Google Account</h3><p class="text-xs text-text-muted">Login Google, paste callback manual.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'social-github'; startKiroSocial('github') }} disabled={isConnecting} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors disabled:opacity-50 cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">code</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">GitHub Account</h3><p class="text-xs text-text-muted">Login GitHub, paste callback manual.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'import' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">file_upload</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">Import Token</h3><p class="text-xs text-text-muted">Tempel refresh token dari Kiro IDE.</p></div>
+            </div>
+          </button>
+          <button type="button" onclick={() => { kiroMethod = 'import-cli-proxy' }} class="w-full p-3 text-left border border-border rounded-lg hover:bg-sidebar transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-primary mt-0.5">data_object</span>
+              <div class="flex-1"><h3 class="font-semibold text-sm mb-0.5">Import CLIProxyAPI JSON</h3><p class="text-xs text-text-muted">Auth JSON external_idp (login Microsoft).</p></div>
+            </div>
+          </button>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'idc' && !deviceUserCode}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <div>
+            <p class="text-xs font-medium mb-1">IDC Start URL <span class="text-red-500">*</span></p>
+            <input bind:value={kiroIdcStartUrl} placeholder="https://your-org.awsapps.com/start" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          </div>
+          <div>
+            <p class="text-xs font-medium mb-1">AWS Region</p>
+            <input bind:value={kiroIdcRegion} placeholder="us-east-1" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          </div>
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Kembali</button>
+            <button type="button" onclick={() => startKiroDeviceFlow('idc')} disabled={isConnecting || !kiroIdcStartUrl.trim()} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Menghubungkan…' : 'Lanjut'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'api-key'}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <input bind:value={kiroApiKey} type="password" placeholder="Kiro / CodeWhisperer API key" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <input bind:value={kiroApiKeyRegion} placeholder="Region (default us-east-1)" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Kembali</button>
+            <button type="button" onclick={submitKiroApiKey} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Menyimpan…' : 'Simpan'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'import'}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <button type="button" onclick={startKiroAutoImport} disabled={isConnecting} class="w-full py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 border border-border disabled:opacity-50 cursor-pointer">{isConnecting ? 'Membaca…' : 'Auto-detect dari host ini'}</button>
+          <input bind:value={kiroRefreshToken} placeholder="Refresh token (aorAAAAAG…)" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Kembali</button>
+            <button type="button" onclick={submitKiroImport} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Mengimpor…' : 'Impor'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && kiroMethod === 'import-cli-proxy'}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          <textarea bind:value={kiroCliProxyJson} rows={4} placeholder="Tempel JSON auth CLIProxyAPI (external_idp)" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"></textarea>
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Kembali</button>
+            <button type="button" onclick={submitKiroCliProxyImport} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Mengimpor…' : 'Impor'}</button>
+          </div>
+        </div>
+      {/if}
+      {#if providerId === 'kiro' && (kiroMethod === 'social-google' || kiroMethod === 'social-github')}
+        <div class="space-y-3 p-3 border border-border rounded-md bg-sidebar/50 mb-4">
+          {#if kiroSocialAuthUrl}
+            <p class="text-xs text-text-muted">Buka URL ini, login, lalu tempel callback URL (kiro://…) di bawah:</p>
+            <div class="flex gap-2">
+              <input readonly value={kiroSocialAuthUrl} class="flex-1 px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-muted select-all font-mono" />
+              <button type="button" onclick={() => window.open(kiroSocialAuthUrl, '_blank')} class="px-3 py-1.5 text-xs font-semibold rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Open</button>
+            </div>
+          {/if}
+          <input bind:value={kiroSocialCallback} placeholder="kiro://kiro.kiroAgent/authenticate-success?code=…" class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono" />
+          <div class="flex gap-2">
+            <button type="button" onclick={() => { kiroMethod = null; kiroSocialAuthUrl = '' }} class="px-3 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:bg-surface-3 cursor-pointer">Kembali</button>
+            <button type="button" onclick={submitKiroSocialCallback} disabled={isConnecting} class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white disabled:opacity-50 cursor-pointer">{isConnecting ? 'Menukar…' : 'Tukar code'}</button>
+          </div>
+        </div>
+      {/if}
 
       <div class="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50 mb-4">
         <span class="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
