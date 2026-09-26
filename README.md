@@ -137,6 +137,8 @@ On each request they expand into a fallback chain of models the Fabric registry 
 
 Other projects can point an OpenAI-compatible client at this proxy and set the model to `free-best`. The names are also listed by `GET /v1/models`.
 
+When the pool is empty, or every candidate stops being free or connected before its hop, the proxy returns HTTP 503 with error code `free_route_unavailable`. It does not fall through to a paid provider. See [Free route for consumer projects](docs/FREE-ROUTE-CONSUMERS.es.md).
+
 ### Fusion
 
 Fusion runs multiple models as a panel in parallel:

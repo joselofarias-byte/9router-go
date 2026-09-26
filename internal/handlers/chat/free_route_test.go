@@ -1,11 +1,16 @@
 package chat
 
 import (
+	"database/sql"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"9router/proxy/internal/controlplane/registry"
@@ -82,6 +87,9 @@ func TestResolveModel_FreeBestUsesDiscoveredFreeModels(t *testing.T) {
 		if info.Strategy != "fallback" {
 			t.Fatalf("strategy for %s = %q", name, info.Strategy)
 		}
+		if !info.VirtualFree {
+			t.Fatalf("%s dynamic pool was not marked virtual free", name)
+		}
 		got := map[string]bool{}
 		for _, entry := range info.ComboModels {
 			got[entry] = true
@@ -121,6 +129,9 @@ func TestResolveModel_ExplicitFreeComboWins(t *testing.T) {
 	if len(info.ComboModels) != 1 || info.ComboModels[0] != "deepseek/deepseek-chat" {
 		t.Fatalf("explicit combo was replaced by the dynamic pool: %#v", info.ComboModels)
 	}
+	if info.VirtualFree {
+		t.Fatal("explicit combo was marked as the virtual free pool")
+	}
 }
 
 func TestResolveModel_FreeBestDoesNotFallThroughToPaidProvider(t *testing.T) {
@@ -132,11 +143,11 @@ func TestResolveModel_FreeBestDoesNotFallThroughToPaidProvider(t *testing.T) {
 
 	h := NewChatHandler(db.NewRepo(database))
 	info, err := h.resolveModel("free-best")
-	if err == nil {
-		t.Fatalf("expected error when no free models are discovered, got %+v", info)
+	if !errors.Is(err, ErrFreeRouteUnavailable) {
+		t.Fatalf("err = %v, want free_route_unavailable", err)
 	}
-	if info != nil && info.Provider == "deepseek" {
-		t.Fatalf("free-best fell through to paid provider %+v", info)
+	if info != nil {
+		t.Fatalf("free-best fell through to %+v", info)
 	}
 }
 
@@ -192,8 +203,8 @@ func TestResolveModel_PaidAndUnclassifiedPoolFailsClosed(t *testing.T) {
 	h := NewChatHandler(db.NewRepo(database))
 	for _, name := range []string{"free", "free-best", "FREE", " Free-Best "} {
 		info, err := h.resolveModel(name)
-		if err == nil || info != nil {
-			t.Fatalf("%s resolved to %+v, want fail-closed error", name, info)
+		if !errors.Is(err, ErrFreeRouteUnavailable) || info != nil {
+			t.Fatalf("%s resolved to %+v err=%v, want free_route_unavailable", name, info, err)
 		}
 	}
 }
@@ -431,6 +442,273 @@ func TestFreeRouteEntries_RejectsPaidInactiveAndDisconnected(t *testing.T) {
 	})
 	if len(got) != 1 || got[0] != "groq/llama-free" {
 		t.Fatalf("entries = %#v, want only the current free upstream", got)
+	}
+}
+
+func TestFreeEntryStillEligible_DropsPaidInactiveAndDisconnected(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+	h := NewChatHandler(db.NewRepo(database))
+
+	if !h.freeEntryStillEligible("groq/llama-3.1-8b-instant") || !h.freeEntryStillEligible("deepseek/deepseek-reasoner-free") {
+		t.Fatal("seeded free entries were not eligible")
+	}
+	if h.freeEntryStillEligible("deepseek/deepseek-chat") || h.freeEntryStillEligible("cline/cline-free-model") {
+		t.Fatal("paid or disconnected model was eligible")
+	}
+
+	state := registry.GetActiveState()
+	state.ProviderModels["deepseek"]["deepseek-reasoner-free"].PricingMode = "paid"
+	if h.freeEntryStillEligible("deepseek/deepseek-reasoner-free") {
+		t.Fatal("paid model stayed eligible")
+	}
+	state.ProviderModels["deepseek"]["deepseek-reasoner-free"].PricingMode = "free_tier"
+
+	state.Providers["groq"].IsActive = false
+	if h.freeEntryStillEligible("groq/llama-3.1-8b-instant") {
+		t.Fatal("inactive provider stayed eligible")
+	}
+	state.Providers["groq"].IsActive = true
+
+	state.ProviderModels["groq"]["llama-3.1-8b:free"].IsActive = false
+	if h.freeEntryStillEligible("groq/llama-3.1-8b-instant") {
+		t.Fatal("inactive model stayed eligible")
+	}
+	state.ProviderModels["groq"]["llama-3.1-8b:free"].IsActive = true
+
+	if _, err := database.Exec(`UPDATE providerConnections SET isActive = 0 WHERE id = 'conn-2'`); err != nil {
+		t.Fatalf("deactivate groq: %v", err)
+	}
+	if h.freeEntryStillEligible("groq/llama-3.1-8b-instant") {
+		t.Fatal("disconnected provider stayed eligible")
+	}
+}
+
+func TestHandleChatCompletions_EmptyFreePoolReturnsUnavailable(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		http.Error(w, "paid upstream", http.StatusOK)
+	}))
+	defer srv.Close()
+	pointConnectionAt(t, database, "conn-1", "sk-test-deepseek-key", srv.URL)
+	pointConnectionAt(t, database, "conn-2", "gsk-test-groq-key", srv.URL)
+
+	h := NewChatHandler(db.NewRepo(database))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"free-best","messages":[{"role":"user","content":"hola"}]}`))
+	h.HandleChatCompletions(rec, req)
+
+	assertFreeRouteUnavailable(t, rec)
+	if hits.Load() != 0 {
+		t.Fatalf("empty free pool called upstream %d times", hits.Load())
+	}
+}
+
+func TestHandleMessages_EmptyFreePoolReturnsUnavailable(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	pointConnectionAt(t, database, "conn-1", "sk-test-deepseek-key", srv.URL)
+
+	h := NewChatHandler(db.NewRepo(database))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"free","max_tokens":8,"messages":[{"role":"user","content":"hola"}]}`))
+	h.HandleMessages(rec, req)
+
+	assertFreeRouteUnavailable(t, rec)
+	if hits.Load() != 0 {
+		t.Fatalf("messages free route called upstream %d times", hits.Load())
+	}
+}
+
+func TestHandleComboFallback_SkipsCandidateThatBecamePaid(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var groqHits, deepseekHits atomic.Int32
+	groqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groqHits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("groq body: %v", err)
+		}
+		if req["model"] != "llama-3.1-8b-instant" {
+			t.Errorf("groq model = %v", req["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"ok","choices":[{"message":{"role":"assistant","content":"gratis"}}]}`))
+	}))
+	defer groqSrv.Close()
+	deepseekSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deepseekHits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		http.Error(w, "should not be called", http.StatusPaymentRequired)
+	}))
+	defer deepseekSrv.Close()
+	pointConnectionAt(t, database, "conn-2", "gsk-test-groq-key", groqSrv.URL)
+	pointConnectionAt(t, database, "conn-1", "sk-test-deepseek-key", deepseekSrv.URL)
+
+	seedFreeRouteRegistry(t)
+	h := NewChatHandler(db.NewRepo(database))
+	info, err := h.resolveModel("free-best")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !info.VirtualFree {
+		t.Fatal("expected virtual free pool")
+	}
+
+	registry.GetActiveState().ProviderModels["deepseek"]["deepseek-reasoner-free"].PricingMode = "paid"
+
+	rec := httptest.NewRecorder()
+	body := []byte(`{"model":"free-best","messages":[{"role":"user","content":"hola"}]}`)
+	h.handleComboFallback(t.Context(), rec, body, info.ComboModels, info.Strategy, false, false, "free-best", 0, true)
+
+	if deepseekHits.Load() != 0 {
+		t.Fatalf("paid hop was attempted %d times", deepseekHits.Load())
+	}
+	if groqHits.Load() != 1 {
+		t.Fatalf("free hop hits = %d, status %d body %s", groqHits.Load(), rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleComboFallback_AllHopsBecameIneligibleFailsClosed(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	pointConnectionAt(t, database, "conn-1", "sk-test-deepseek-key", srv.URL)
+	pointConnectionAt(t, database, "conn-2", "gsk-test-groq-key", srv.URL)
+
+	seedFreeRouteRegistry(t)
+	h := NewChatHandler(db.NewRepo(database))
+	info, err := h.resolveModel("FREE")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	state := registry.GetActiveState()
+	state.ProviderModels["groq"]["llama-3.1-8b:free"].PricingMode = "paid"
+	state.ProviderModels["deepseek"]["deepseek-reasoner-free"].IsActive = false
+
+	rec := httptest.NewRecorder()
+	body := []byte(`{"model":"free","messages":[{"role":"user","content":"hola"}]}`)
+	h.handleComboFallback(t.Context(), rec, body, info.ComboModels, info.Strategy, false, false, "free", 0, info.VirtualFree)
+
+	assertFreeRouteUnavailable(t, rec)
+	if hits.Load() != 0 {
+		t.Fatalf("ineligible hops called upstream %d times", hits.Load())
+	}
+}
+
+func TestHandleChatCompletions_ExplicitFreeComboKeepsPaidModel(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+
+	var groqHits, deepseekHits atomic.Int32
+	groqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groqHits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer groqSrv.Close()
+	deepseekSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deepseekHits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(body, &req)
+		if req["model"] != "deepseek-chat" {
+			t.Errorf("explicit combo model = %v", req["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"paid","choices":[{"message":{"role":"assistant","content":"combo"}}]}`))
+	}))
+	defer deepseekSrv.Close()
+	pointConnectionAt(t, database, "conn-2", "gsk-test-groq-key", groqSrv.URL)
+	pointConnectionAt(t, database, "conn-1", "sk-test-deepseek-key", deepseekSrv.URL)
+
+	models, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"user-free-paid", "free", "fallback", string(models), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z"); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"free","messages":[{"role":"user","content":"hola"}]}`))
+	h.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if deepseekHits.Load() != 1 || groqHits.Load() != 0 {
+		t.Fatalf("deepseek hits=%d groq hits=%d; explicit paid combo was rewritten", deepseekHits.Load(), groqHits.Load())
+	}
+}
+
+func pointConnectionAt(t *testing.T, database *sql.DB, id, apiKey, baseURL string) {
+	t.Helper()
+	data, err := json.Marshal(map[string]string{"apiKey": apiKey, "baseUrl": baseURL})
+	if err != nil {
+		t.Fatalf("marshal connection: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE providerConnections SET data = ? WHERE id = ?`, string(data), id); err != nil {
+		t.Fatalf("point connection %s: %v", id, err)
+	}
+}
+
+func assertFreeRouteUnavailable(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body %s", err, rec.Body.String())
+	}
+	if resp.Error.Code != FreeRouteUnavailableCode {
+		t.Fatalf("code = %q, want %s", resp.Error.Code, FreeRouteUnavailableCode)
+	}
+	if resp.Error.Type != "server_error" || resp.Error.Message == "" {
+		t.Fatalf("error = %+v", resp.Error)
+	}
+	if strings.Contains(rec.Body.String(), "sk-") || strings.Contains(rec.Body.String(), "gsk-") {
+		t.Fatalf("response leaked a credential: %s", rec.Body.String())
 	}
 }
 

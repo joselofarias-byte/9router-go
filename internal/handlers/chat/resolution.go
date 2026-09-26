@@ -2,6 +2,7 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,12 +12,54 @@ import (
 	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
 )
+
+// FreeRouteUnavailableCode is the OpenAI-style error code clients match when
+// the virtual free / free-best pool has no eligible model. The request fails
+// closed: it is never sent to a paid provider under that name.
+const FreeRouteUnavailableCode = "free_route_unavailable"
+
+const freeRouteUnavailableMessage = "free route unavailable: no eligible free or free-tier models with an active local connection"
+
+// ErrFreeRouteUnavailable is the sentinel for an empty or stale virtual free pool.
+// errors.Is matches it, including errors wrapped with a detail suffix.
+var ErrFreeRouteUnavailable = errors.New(FreeRouteUnavailableCode)
+
+func freeRouteUnavailable(detail string) error {
+	if detail == "" {
+		return ErrFreeRouteUnavailable
+	}
+	return fmt.Errorf("%w: %s", ErrFreeRouteUnavailable, detail)
+}
+
+// writeFreeRouteUnavailable writes the stable OpenAI-style 503 body.
+// The message is fixed so a client never receives connection secrets.
+func writeFreeRouteUnavailable(w http.ResponseWriter) {
+	handlerutil.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"error": map[string]any{
+			"message": freeRouteUnavailableMessage,
+			"type":    "server_error",
+			"code":    FreeRouteUnavailableCode,
+		},
+	})
+}
+
+// WriteResolveError maps a resolveModel failure to an OpenAI-style JSON error.
+// An unavailable virtual free pool is HTTP 503 with code free_route_unavailable.
+// Every other resolve failure stays HTTP 400.
+func WriteResolveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrFreeRouteUnavailable) {
+		writeFreeRouteUnavailable(w)
+		return
+	}
+	handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+}
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
 // Pass a TokenSaverConfig to enable token saver features, or nil for all-off defaults.
@@ -178,7 +221,7 @@ func canonicalVirtualName(modelStr string) string {
 func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("free route: no discovered free or free-tier models with an active local connection")
+		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
 	}
 
 	// Second gate. SelectCandidates already drops non-free rows; this re-reads
@@ -187,7 +230,7 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	state := registry.GetActiveState()
 	models := freeRouteEntries(state, candidates)
 	if len(models) == 0 {
-		return nil, fmt.Errorf("free route: no discovered free or free-tier models with an active local connection")
+		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
 	}
 
 	var first *ModelInfo
@@ -203,11 +246,65 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 		}
 	}
 	if first == nil {
-		return nil, fmt.Errorf("free route: failed to resolve free candidates")
+		return nil, freeRouteUnavailable("failed to resolve free candidates")
 	}
 	first.ComboModels = resolved
 	first.Strategy = "fallback"
+	first.VirtualFree = true
 	return first, nil
+}
+
+// freeEntryStillEligible re-reads Fabric pricing and the active local account
+// for one dynamic-pool entry. A sync failure or a paid, inactive, or
+// disconnected model is not eligible.
+func (h *ChatHandler) freeEntryStillEligible(entry string) bool {
+	if h == nil || h.Repo == nil || entry == "" {
+		return false
+	}
+	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
+	for _, current := range freeRouteEntries(registry.GetActiveState(), candidates) {
+		if current == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowVirtualFreeHop reports whether this fallback hop may run.
+// Explicit user combos pass virtualFree false and are never filtered, so a
+// caller-defined free or free-best combo can still include paid models.
+func (h *ChatHandler) AllowVirtualFreeHop(virtualFree bool, entry string) bool {
+	if !virtualFree {
+		return true
+	}
+	if h.freeEntryStillEligible(entry) {
+		return true
+	}
+	log.Warn("combo", "skip free hop no longer eligible", "entry", entry)
+	return false
+}
+
+// SelectVirtualFreeEntry returns the first dynamic-pool entry that is still
+// free and connected. Single-target endpoints use it before they forward.
+func (h *ChatHandler) SelectVirtualFreeEntry(info *ModelInfo) (*ModelInfo, error) {
+	if info == nil || !info.VirtualFree {
+		return info, nil
+	}
+	for _, entry := range info.ComboModels {
+		if !h.freeEntryStillEligible(entry) {
+			log.Warn("combo", "skip free hop no longer eligible", "entry", entry)
+			continue
+		}
+		picked := h.resolveModelEntry(entry)
+		if picked == nil {
+			continue
+		}
+		picked.VirtualFree = true
+		picked.Strategy = info.Strategy
+		picked.ComboModels = info.ComboModels
+		return picked, nil
+	}
+	return nil, freeRouteUnavailable("no eligible free or free-tier models with an active local connection")
 }
 
 // freeRouteEntries returns provider/upstream pairs that are still free and
