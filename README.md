@@ -230,7 +230,7 @@ GET  /api/version               Version metadata
 
 ### Database compatibility
 
-Go reads/writes the upstream 9router table/JSON shapes but does **not** create the schema, seed keys, or run migrations — only the Go-only `upstream_leases` table. Start with an existing initialized 9router database; a fresh empty file is not a supported bootstrap path. Full contract in [`DATABASE.md`](DATABASE.md), routing internals in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Go reads/writes the upstream 9router table/JSON shapes and bootstraps the core schema on startup (creates the 11 tables when absent, backfills missing columns, seeds an empty settings row) — a fresh `DATA_DIR` just works, no upstream install needed. Existing databases are never modified beyond additive backfills. Full contract in [`DATABASE.md`](DATABASE.md), routing internals in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 </details>
 

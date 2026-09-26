@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### 🗄️ Fresh `.9router` self-bootstraps — no upstream install needed
+
+- `internal/db/schema.go` (`EnsureCoreSchema`, wired in `ProvideDatabase`): startup creates the 11 upstream core tables/indexes when absent (verbatim `schema.js` `TABLES`), backfills missing columns on legacy databases (same strip-`PRIMARY KEY`/`UNIQUE` guard as upstream `syncSchemaFromTables`), backfills Go-only `providerConnections.lastUsedAt`/`consecutiveUseCount`, and seeds `_meta.schemaVersion='1'` + empty settings row — all idempotent, existing data untouched.
+- Fresh-`DATA_DIR` live smoke: login (`123456`) → `GET /api/settings` → `PUT /api/settings` → connections `[]` → API key created; all previously `no such table`, now working.
+- Tests: `TestEnsureCoreSchema` (tables+indexes, seeds, fresh-install flow, idempotency, legacy backfill). Docs: `DATABASE.md`, `ARCHITECTURE.md`, `README.md` updated; `ROADMAP.md` §1 criterion 1 done; `TECHNICAL_DEBT.md` DB-01/DB-04 resolved.
+
 
 ### 🐛 `POST /api/models/test` 401 meski sudah login
 
