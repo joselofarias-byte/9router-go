@@ -5,13 +5,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash
 #
 # Env overrides: VERSION (e.g. v1.9.2, default: latest), BINDIR (default:
-# /usr/local/bin, falls back to ~/.local/bin), PORT (default: 20130).
+# /usr/local/bin, falls back to ~/.local/bin).
 set -euo pipefail
 
 REPO="${REPO:-luqman-v1/9router-go}"
 VERSION="${VERSION:-latest}"
 BINDIR="${BINDIR:-/usr/local/bin}"
-PORT="${PORT:-20130}"
 
 info()  { printf '\033[1;32m[9router-go]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[9router-go]\033[0m %s\n' "$*" >&2; }
@@ -54,8 +53,6 @@ trap - EXIT
 info "installed to $BINDIR/9router-go"
 "$BINDIR/9router-go" version || true
 echo
-info "next steps:"
-echo "  1. Start it (uses your existing 9router data if you have one):"
-echo "       PORT=$PORT DATA_DIR=\"\$HOME/.9router\" 9router-go"
-echo "  2. Open the dashboard:  http://localhost:$PORT"
-echo "  3. Point your AI tool at http://localhost:$PORT/v1 with a key from Settings → API Keys"
+info "start it with:"
+echo "       9router-go"
+echo "Dashboard: http://localhost:20130 (defaults: port 20130, data ~/.9router)"

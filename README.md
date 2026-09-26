@@ -73,10 +73,11 @@ Result: Never stop coding, minimal cost + 20-40% token savings via RTK
 curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash
 ```
 
-🎉 Then start it — dashboard opens at `http://localhost:20130`:
+🎉 Then start it (defaults: port `20130`, data `~/.9router` — no flags needed):
 
 ```bash
-PORT=20130 DATA_DIR="$HOME/.9router" 9router-go
+9router-go
+# dashboard: http://localhost:20130
 ```
 
 > Already use upstream 9Router? Point Go at the same data dir — it opens the **same `DATA_DIR/db/data.sqlite`**: providers, connections, combos, and usage carry over. Details in [`DATABASE.md`](DATABASE.md).
@@ -144,12 +145,21 @@ make build       # embeds VERSION into the Go binary
 
 ### Run
 
-The server reads `.env` and environment variables (`PORT`, `DATA_DIR`/`DB_PATH` — no `--port` flags):
+Defaults are enough for most people — plain `9router-go` listens on port `20130` with data in `~/.9router`:
 
 ```bash
-PORT=20130 DATA_DIR="$HOME/.9router" ./9router-go
+9router-go
 curl http://localhost:20130/health
 ./9router-go version
+```
+
+Only override when you need something different (`PORT`, `DATA_DIR`/`DB_PATH` — there are no `--port` flags):
+
+```bash
+PORT=20129 ./9router-go                        # different port
+DATA_DIR=/srv/9router ./9router-go              # different data dir
+DB_PATH=/srv/9router/data.sqlite ./9router-go   # explicit SQLite file
+HOST=127.0.0.1 ./9router-go                     # localhost only, behind a reverse proxy
 ```
 
 First dashboard login uses the compatibility password until you set your own (remote fresh installs must change it or set `INITIAL_PASSWORD`).
