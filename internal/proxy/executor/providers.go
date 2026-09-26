@@ -325,6 +325,15 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		params["model"] = model
 	}
 	params["stream"] = true
+	// Upstream caps generation via params.max_tokens (openaiToCommandCodeRequest
+	// parity: body.max_tokens ?? body.max_output_tokens ?? DEFAULT_MAX_TOKENS).
+	// Without it a "hi" ping can burn the budget on chain-of-thought and the
+	// gateway answers with a bare error event instead of text.
+	if _, ok := params["max_tokens"]; !ok {
+		if _, ok := params["max_output_tokens"]; !ok {
+			params["max_tokens"] = 1024
+		}
+	}
 
 	// CommandCode messages require content as array of blocks (never raw string)
 	if rawMsgs, ok := m["messages"].([]any); ok {
