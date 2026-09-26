@@ -367,7 +367,7 @@ func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request
 
 // HandleModels responds with the list of available model identifiers.
 func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
-	data := h.buildModelsList()
+	data := h.buildModelsList(r.Context())
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   data,
@@ -546,7 +546,7 @@ func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Otherwise treat as provider/model ID lookup
-	data := h.buildModelsList()
+	data := h.buildModelsList(r.Context())
 	for _, m := range data {
 		if m.ID == suffix {
 			handlerutil.WriteJSON(w, http.StatusOK, m)

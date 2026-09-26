@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### ✨ `GET /v1/models` — live catalog + bentuk respons identik upstream
+
+- `internal/handlers/chat/live_catalog.go` (baru): port `LIVE_MODEL_RESOLVERS` upstream — **kiro** (`GET https://q.<region>.amazonaws.com/ListAvailableModels` + fingerprint UA Kiro IDE, tiap model dipecah jadi varian `-thinking`/`-agentic`/`-thinking-agentic`, `auto` tanpa varian agentic), **grok-cli** (`GET <base>/v1/models` dengan header `x-grok-cli`), dan **node custom** (`fetchCompatibleModelIds`: `GET <baseUrl>/models`). Cache proses 5 menit per kredensial; 401/403 memicu refresh token sekali lalu retry; kegagalan jatuh ke katalog statis, tidak pernah mengosongkan provider.
+- Resolver hanya dipakai kalau `enabledModels` tidak dikunci di connection, sama seperti upstream; katalog live menggantikan statis, custom model & alias tetap digabung.
+- Bentuk respons disamakan upstream: `capabilities` untuk kiro memakai blok live `{thinking, agentic}` apa adanya; combo memakai bentuk `ComboCapabilities` terpisah (tanpa `thinkingEffortSupported`, `tools` = AND antar daun, `contextWindow` = daun tersempit, `maxOutput` = daun terlebar — aturan `aggregateComboCapabilities`); `context_length`/`max_completion_tokens` pada combo dihilang (dan `omitzero` dipakai karena `encoding/json/v2` tidak membuang angka nol dengan `omitempty`); kualifier `outputAlias/` hanya dibuang dari id registry/alias, bukan dari id custom (itulah sebabnya `openrouter/openrouter/free` tetap dobel di upstream).
+- `internal/providers/catalog_sync.go`: file katalog models.dev yang ditulis upstream kini bisa dibaca (format `v2`, `etag`, `syncedAt` epoch-milidetik), dan `GetCatalogLimits` dipakai lebih dulu sebelum tebakan substring — batas token ikut katalog, bukan tebakan.
+- Verifikasi silang vs instance upstream (:20128, DB sama): **714 model upstream vs 713 9router-go, 713 id identik, 0 selisih key entry maupun key `capabilities`**. Breakdown: `clinepass` 469/469, `kr` 34/34, `ag` 20/20, `cbai` 15/15, `openrouter` 7/7, `nvidia` 4/4, `Id` 3/3, `gcli` 1/1, `tr` 153/154, combo 7/7.
+- Sisa: (a) `tr/typesafe/jev-1.13` hanya ada di sisi upstream — `GET <baseUrl>/models` node tokenrouter sekarang mengembalikan kosong, jadi itu sisa cache upstream; (b) **nilai** `context_length`/`max_completion_tokens` masih beda pada 627 id karena tabel `MODEL_CAPABILITIES`/`PATTERN_CAPABILITIES` upstream belum di-port (katalog models.dev hanya mencakup 23 provider) — daftar model dan bentuk respons sudah identik, angkanya belum.
+- Tests: `live_catalog_test.go` (expand varian kiro, `kiroDisplayName`, parser katalog grok-cli 5 kasus, region dari profileArn) + `live_catalog_handler_test.go` (live kiro menggantikan statis, `enabledModels` melewati live fetch, kegagalan jatuh ke statis, live grok-cli + header).
+
 ### 🐛 `GET /v1/models` — port penuh `buildModelsList` upstream Next.js (fix issue #1)
 
 - Gejala: `/v1/models` membanjiri katalog — `ghost customs` di `kv.customModels` untuk provider yang tak terhubung ikut terkirim, alias key dipublikasikan sebagai model sendiri, `enabledModels` diabaikan, dan model media/embedding ikut muncul. Di DB asli user: 640 model, `clinepass/` dobel dengan `cp/`, 4 node mati tetap menampakkan 21 model.

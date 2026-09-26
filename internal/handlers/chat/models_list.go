@@ -1,12 +1,14 @@
 package chat
 
 import (
+	"context"
 	"regexp"
 	"strings"
 
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 )
@@ -15,12 +17,17 @@ import (
 // key set mirrors upstream exactly: id, object, owned_by, capabilities and
 // (for LLM entries) context_length / max_completion_tokens.
 type ModelInfoObject struct {
-	ID                  string                        `json:"id"`
-	Object              string                        `json:"object"`
-	OwnedBy             string                        `json:"owned_by"`
-	Capabilities        *providers.CapabilitiesDetail `json:"capabilities,omitempty"`
-	ContextLength       int                           `json:"context_length,omitempty"`
-	MaxCompletionTokens int                           `json:"max_completion_tokens,omitempty"`
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+	// Capabilities is a per-model CapabilitiesDetail, or a ComboCapabilities
+	// for combo entries — upstream publishes those two shapes with different
+	// key sets, so the field cannot be one concrete type.
+	Capabilities any `json:"capabilities,omitempty"`
+	// encoding/json/v2 keeps zero numbers under `omitempty`; `omitzero` is what
+	// actually drops them, and upstream omits both keys on combo entries.
+	ContextLength       int `json:"context_length,omitzero"`
+	MaxCompletionTokens int `json:"max_completion_tokens,omitzero"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -86,21 +93,35 @@ func isLLMModelEntry(outputAlias, staticAlias, providerID, modelID string, fromC
 	}
 	for _, key := range []string{outputAlias, staticAlias, providerID} {
 		if kind := providers.GetProviderModelKind(key, modelID); kind != "" {
-			return kind == "llm"
+			return isLLMServiceKind(kind)
 		}
 	}
 	return isLLMModelID(modelID)
 }
 
+// nonLLMServiceKinds mirrors upstream MODEL_TYPE_TO_KIND: only these six kinds
+// leave the llm list. A kind outside this set (e.g. the `systemone` marker
+// some registry entries carry) is treated as an LLM, exactly like
+// modelKind() → `MODEL_TYPE_TO_KIND[k] || LLM_KIND`.
+var nonLLMServiceKinds = map[string]bool{
+	"image":       true,
+	"tts":         true,
+	"embedding":   true,
+	"stt":         true,
+	"imagetotext": true,
+	"video":       true,
+}
+
+func isLLMServiceKind(kind string) bool {
+	return !nonLLMServiceKinds[strings.ToLower(strings.TrimSpace(kind))]
+}
+
 // isLLMCustomModel mirrors upstream modelKind() for a kv.customModels row: the
-// row's own `type` decides, and an unknown/absent type is an LLM.
+// row's own `type` decides, and — per MODEL_TYPE_TO_KIND — only image, tts,
+// embedding, stt, imageToText and video leave the LLM list. Anything else
+// (including unknown types like "systemone") is an LLM.
 func isLLMCustomModel(modelType string) bool {
-	switch strings.ToLower(strings.TrimSpace(modelType)) {
-	case "", "llm", "chat":
-		return true
-	default:
-		return false
-	}
+	return isLLMServiceKind(modelType)
 }
 
 // connectionModelData is the subset of the connection data blob upstream reads
@@ -180,7 +201,7 @@ func (h *ChatHandler) disabledModelIndex() map[string]map[string]bool {
 // buildModelsList mirrors upstream buildModelsList(["llm"]):
 // combos first, then one model set per active connection, with the static
 // catalog dump only when the connections table itself is empty.
-func (h *ChatHandler) buildModelsList() []ModelInfoObject {
+func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
 	var data []ModelInfoObject
 	seen := make(map[string]bool)
 	disabled := h.disabledModelIndex()
@@ -233,7 +254,7 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 
 	for _, provID := range order {
 		conn := firstPerProvider[provID]
-		data = h.appendConnectionModels(data, seen, conn, provID, customs, aliases, isDisabled)
+		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, isDisabled)
 	}
 
 	return finalizeModels(data)
@@ -243,6 +264,7 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 // buildModelsList: enabledModels override, else the static catalog, merged with
 // custom models and alias targets registered for that same provider.
 func (h *ChatHandler) appendConnectionModels(
+	ctx context.Context,
 	data []ModelInfoObject,
 	seen map[string]bool,
 	conn *models.ProviderConnection,
@@ -269,6 +291,19 @@ func (h *ChatHandler) appendConnectionModels(
 	if len(ids) == 0 {
 		ids = connData.EnabledModels
 	}
+	// Upstream: a live catalog replaces the static one only when the operator
+	// has not pinned enabledModels on the connection.
+	liveByID := make(map[string]LiveModel)
+	if len(ids) == 0 {
+		var sharedData shared.ConnectionData
+		if conn.Data != "" {
+			_ = json.Unmarshal([]byte(conn.Data), &sharedData)
+		}
+		for _, live := range h.resolveLiveCatalog(ctx, conn, &sharedData, providerID) {
+			liveByID[live.ID] = live
+			ids = append(ids, live.ID)
+		}
+	}
 	if len(ids) == 0 && !isCompatibleProviderID(providerID) {
 		ids = providers.GetProviderModels(staticAlias)
 		if len(ids) == 0 {
@@ -279,8 +314,15 @@ func (h *ChatHandler) appendConnectionModels(
 	merged := make([]string, 0, len(ids))
 	seenID := make(map[string]bool, len(ids))
 	typedCustom := make(map[string]bool, len(ids))
+	// Upstream strips the outputAlias/staticAlias/providerId qualifier only from
+	// registry + enabledModels ids and from alias targets; a custom row's id is
+	// used verbatim — that is why `openrouter/openrouter/free` stays
+	// double-prefixed upstream.
 	add := func(raw string, fromCustom bool) {
-		modelID := strings.TrimSpace(stripModelPrefix(raw, outputAlias, staticAlias, providerID))
+		modelID := strings.TrimSpace(raw)
+		if !fromCustom {
+			modelID = stripModelPrefix(modelID, outputAlias, staticAlias, providerID)
+		}
 		if modelID == "" || seenID[modelID] {
 			return
 		}
@@ -339,6 +381,31 @@ func (h *ChatHandler) appendConnectionModels(
 		}
 		if maxOut == 0 {
 			maxOut = caps.MaxOutput
+		}
+		// A live resolver may publish its own capability block (kiro does:
+		// {thinking, agentic}). Upstream then uses that block verbatim and
+		// fills the window from the static fallback, so a kiro model reports
+		// context_length from the table default rather than the live payload.
+		if live, ok := liveByID[modelID]; ok && live.Capabilities != nil {
+			data = append(data, ModelInfoObject{
+				ID:                  fullID,
+				Object:              "model",
+				OwnedBy:             outputAlias,
+				Capabilities:        live.Capabilities,
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
+			})
+			continue
+		}
+		// Live catalogs (grok-cli) publish limits the static table may not
+		// know; use them when it has nothing to say.
+		if live, ok := liveByID[modelID]; ok {
+			if ctxLen == 0 {
+				ctxLen = live.ContextLength
+			}
+			if maxOut == 0 {
+				maxOut = live.MaxOutput
+			}
 		}
 		data = append(data, ModelInfoObject{
 			ID:                  fullID,
@@ -498,9 +565,11 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 	return data
 }
 
-// aggregateComboCapabilities merges the capabilities of every leaf model so a
-// combo advertises the union of what its members support (upstream).
-func (h *ChatHandler) aggregateComboCapabilities(comboName string) (*providers.CapabilitiesDetail, bool) {
+// aggregateComboCapabilities folds the leaf capabilities with upstream's
+// aggregateComboCapabilities rules (`some` for most booleans, `every` for
+// tools, first-leaf thinking fields, narrowest contextWindow, widest
+// maxOutput) and returns the combo-specific shape.
+func (h *ChatHandler) aggregateComboCapabilities(comboName string) (*providers.ComboCapabilities, bool) {
 	combo, err := h.Repo.GetComboByName(comboName)
 	if err != nil || combo == nil || combo.Models == "" {
 		return nil, false
@@ -514,19 +583,16 @@ func (h *ChatHandler) aggregateComboCapabilities(comboName string) (*providers.C
 		flattened = leaves
 	}
 
-	merged := providers.CapabilitiesDetail{}
-	found := false
+	caps := make([]providers.CapabilitiesDetail, 0, len(flattened))
 	for _, leaf := range flattened {
-		info := h.resolveModelEntry(leaf)
 		providerID, modelID := "", leaf
-		if info != nil {
+		if info := h.resolveModelEntry(leaf); info != nil {
 			providerID, modelID = info.Provider, info.Model
 		}
-		caps := providers.GetCapabilitiesDetailForModel(providerID, modelID)
-		merged = providers.MergeCapabilitiesDetail(merged, caps)
-		found = true
+		caps = append(caps, providers.GetCapabilitiesDetailForModel(providerID, modelID))
 	}
-	if !found {
+	merged, ok := providers.AggregateComboCapabilities(caps)
+	if !ok {
 		return nil, false
 	}
 	return &merged, true
