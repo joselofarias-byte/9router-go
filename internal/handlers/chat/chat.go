@@ -11,9 +11,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
-
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -376,6 +376,31 @@ type ModelInfoObject struct {
 	MaxCompletionTokens int                           `json:"max_completion_tokens,omitempty"`
 }
 
+// connectionHasCredential reports whether a provider connection carries auth
+// material that can actually serve requests (apiKey, accessToken, authToken, or
+// refreshToken; refreshToken alone is accepted because the token pipeline
+// refreshes it on demand). Exported for dashboard consistency checks.
+func ConnectionHasCredential(conn *models.ProviderConnection) bool {
+	if conn == nil || conn.Data == "" {
+		return false
+	}
+	var data struct {
+		APIKey       string `json:"apiKey"`
+		AccessToken  string `json:"accessToken"`
+		AuthToken    string `json:"authToken"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	if err := json.Unmarshal([]byte(conn.Data), &data); err != nil {
+		return false
+	}
+	return data.APIKey != "" || data.AccessToken != "" || data.AuthToken != "" || data.RefreshToken != ""
+}
+
+// connectionHasCredential is the package-local alias used by the models list.
+func connectionHasCredential(conn *models.ProviderConnection) bool {
+	return ConnectionHasCredential(conn)
+}
+
 func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 	var data []ModelInfoObject
 	seen := make(map[string]bool)
@@ -402,10 +427,46 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 		}
 	}
 
+	// Collect disabled models from the same `disabledModels` KV scope the
+	// dashboard writes to (unchecked models must stay out of /v1/models).
+	disabledByProvider := make(map[string]map[string]bool)
+	if disabledKV, err := h.Repo.GetKVScope("disabledModels"); err == nil {
+		for prov, raw := range disabledKV {
+			var ids []string
+			if perr := json.Unmarshal([]byte(raw), &ids); perr != nil {
+				continue
+			}
+			set := make(map[string]bool, len(ids))
+			for _, id := range ids {
+				if id = strings.TrimSpace(id); id != "" {
+					set[id] = true
+				}
+			}
+			if len(set) > 0 {
+				disabledByProvider[prov] = set
+				if canon := providers.ResolveAlias(prov); canon != "" {
+					if _, ok := disabledByProvider[canon]; !ok {
+						disabledByProvider[canon] = set
+					}
+				}
+			}
+		}
+	}
+	isDisabled := func(provider, modelID string) bool {
+		return disabledByProvider[provider][modelID]
+	}
+
 	if len(activeConnections) > 0 {
 		activeProviders := make(map[string]*models.ProviderConnection)
 		for _, conn := range activeConnections {
-			if conn.Provider != "" && activeProviders[conn.Provider] == nil {
+			if conn.Provider == "" {
+				continue
+			}
+			// Only a credentialed connection can actually serve requests.
+			if !connectionHasCredential(conn) {
+				continue
+			}
+			if activeProviders[conn.Provider] == nil {
 				activeProviders[conn.Provider] = conn
 			}
 		}
@@ -447,6 +508,9 @@ func (h *ChatHandler) buildModelsList() []ModelInfoObject {
 				}
 			}
 			for _, mID := range modelList {
+				if isDisabled(outputAlias, mID) || isDisabled(provID, mID) {
+					continue
+				}
 				fullID := outputAlias + "/" + mID
 				if seen[fullID] {
 					continue
@@ -1131,7 +1195,17 @@ func (h *ChatHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 			} `json:"error"`
 			Message string `json:"message"`
 		}
-		if json.Unmarshal([]byte(errMsg), &errObj) == nil {
+		trimmed := errMsg
+		if len(trimmed) > 500 {
+			head, tail := trimmed[:200], trimmed[len(trimmed)-200:]
+			trimmed = head + "\n...[truncated " + strconv.Itoa(len(errMsg)-400) + " bytes]...\n" + tail
+		}
+		// Non-JSON upstream bodies (proxied error pages, empty SSE) otherwise
+		// surface as a bare "response bukan JSON" with no diagnostic tail.
+		var probe any
+		if json.Unmarshal([]byte(errMsg), &probe) != nil {
+			errMsg = trimmed
+		} else if json.Unmarshal([]byte(errMsg), &errObj) == nil {
 			if errObj.Error.Message != "" {
 				errMsg = errObj.Error.Message
 			} else if errObj.Message != "" {

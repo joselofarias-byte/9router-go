@@ -68,6 +68,38 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 	// Force stream — CodeBuddy rejects non-stream (HTTP 400, code 11101)
 	reqMap["stream"] = true
 
+	// CodeBuddy rejects plain OpenAI shape (11101 invalid request): needs a
+	// leading system prompt + user content as typed blocks, not a bare string
+	// (upstream codebuddy-intl.js transformRequest parity).
+	var msgs []any
+	if arr, ok := reqMap["messages"].([]any); ok {
+		msgs = arr
+	}
+	shaped := []any{map[string]any{"role": "system", "content": "You are CodeBuddy Code."}}
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		if role == "system" || role == "developer" {
+			continue
+		}
+		if role == "user" {
+			if s, ok := m["content"].(string); ok {
+				cp := map[string]any{}
+				for k, v := range m {
+					cp[k] = v
+				}
+				cp["content"] = []any{map[string]any{"type": "text", "text": s}}
+				shaped = append(shaped, cp)
+				continue
+			}
+		}
+		shaped = append(shaped, m)
+	}
+	reqMap["messages"] = shaped
+
 	// Handle reasoning_effort / reasoning_summary
 	if eff, ok := reqMap["reasoning_effort"].(string); ok {
 		switch eff {
@@ -83,7 +115,6 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 
 	return json.Marshal(reqMap)
 }
-
 // sseToOpenAIJSON re-aggregates OpenAI chat-completions SSE chunks into a
 // single chat.completion JSON object. Returns (nil, false) when raw is not
 // SSE-shaped (e.g. an upstream error JSON that should pass through).
