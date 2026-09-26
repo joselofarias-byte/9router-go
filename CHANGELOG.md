@@ -1,5 +1,6 @@
 # Changelog
 
+## [Unreleased]
 
 ### 🐛 `POST /api/models/test` 401 meski sudah login
 
@@ -50,6 +51,26 @@
 - Isolation: a pinned connection ID must belong to the requested provider — cross-provider credential use is now rejected in `GetBestConnection`.
 - TTS: Nvidia honors provider/connection base URL overrides; Edge-TTS rejects sub-1KiB error payloads as empty audio (upstream parity).
 - Frontend: the image Run body now matches the curl example (`background`, `image_detail`).
+
+## [v1.9.2] - 2026-09-26
+
+### 🐛 Dashboard console errors: version 401 spam, manifest/SW 404, missing icons, auth redirect
+
+- `GET /version`, `/api/version`, `/api/version/status`, and `/api/version/check` are now public (upstream `PUBLIC_API_PATHS` parity): the Sidebar polls on every page including `/login` before any session exists. `POST update/shutdown/auto-update` stay admin-only (upstream `ALWAYS_PROTECTED`).
+- `GET /sw.js`, `/manifest.webmanifest`, and `/manifest.json` routed to the embedded SPA handler; PWA shell files existed in `web/dist` but chi had no route.
+- Added missing provider icons `opencode-zen.png` and `ollama-search.png`.
+- Frontend 401 handling: `onUnauthorized` clears stale local session and redirects to login; `App` stops polling when logged out.
+- `POST /api/models/test` moved to `RequireDashboardAuth` (cookie session, CLI token, and API key accepted) — dashboard got `401 invalid_api_key` despite being logged in.
+- Dev workflow: `make web-dev` (Vite :5173 + HMR, no binary rebuild); dev proxy keeps `/debug` (traces/pprof) alongside `/admin` (health reset).
+
+### 🐛 Media providers audit (search/fetch/image/STT/TTS) + Antigravity failover
+
+- Antigravity/Xquik search, Antigravity image/STT, and Nvidia TTS now rotate all active accounts with per-account `ClassifyError` locks and success unlocks; pinned `x-connection-id` honored once.
+- Fixed Xquik registry `BaseURL`, clamped `max_results 5..100`, optional `queryType`, `answer`/timing envelope fields, upstream error statuses preserved.
+- Request-scoped 4xx no longer lock accounts; combo video skips 5xx rotation; multipart model rewrite byte-exact; pinned connections provider-scoped.
+- `GET /api/keys` returns full secrets to dashboard sessions (upstream parity); masked values stay for API-key callers.
+- Live-verified: OpenRouter embeddings `:20128` vs `:20129` return byte-identical 3072-dim vectors.
+
 ## [v1.9.1] - 2026-09-25
 
 ### 🐛 Dashboard: Custom Models Parity — Combo Picker Unwraps `{models}` Envelope
