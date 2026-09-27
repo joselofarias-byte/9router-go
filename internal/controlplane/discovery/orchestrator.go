@@ -1,0 +1,224 @@
+package discovery
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"9router/proxy/internal/controlplane/registry"
+	"9router/proxy/internal/log"
+)
+
+type Orchestrator struct {
+	db       *sql.DB
+	adapters []Adapter
+}
+
+func NewOrchestrator(db *sql.DB, adapters []Adapter) *Orchestrator {
+	return &Orchestrator{
+		db:       db,
+		adapters: adapters,
+	}
+}
+
+func (o *Orchestrator) Start(ctx context.Context) {
+	go func() {
+		// Wait 30s before first run
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+		}
+
+		o.RunSync(ctx)
+
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				o.RunSync(ctx)
+			}
+		}
+	}()
+}
+
+func (o *Orchestrator) RunSync(ctx context.Context) {
+	log.Info("orchestrator", "starting discovery sync pass")
+
+	// Create a new proposed registry state copying existing state manually
+	currentState := registry.GetActiveState()
+
+	newState := &registry.RegistryState{
+		Providers:      make(map[string]*registry.Provider),
+		Models:         make(map[string]*registry.Model),
+		ProviderModels: make(map[string]map[string]*registry.ProviderModel),
+		Accounts:       make(map[string]*registry.Account),
+	}
+
+	if currentState != nil {
+		for k, v := range currentState.Providers {
+			cp := *v
+			newState.Providers[k] = &cp
+		}
+		for k, v := range currentState.Models {
+			cp := *v
+			newState.Models[k] = &cp
+		}
+		for k, vMap := range currentState.ProviderModels {
+			newState.ProviderModels[k] = make(map[string]*registry.ProviderModel)
+			for subK, v := range vMap {
+				cp := *v
+				newState.ProviderModels[k][subK] = &cp
+			}
+		}
+	}
+
+	// Synchronize Accounts from DB metadata
+	if o.db != nil {
+		rows, err := o.db.Query("SELECT id, provider, isActive, createdAt, updatedAt FROM providerConnections")
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id, provider, createdAt, updatedAt string
+				var isActive int
+				if err := rows.Scan(&id, &provider, &isActive, &createdAt, &updatedAt); err == nil {
+					// Safe import: strictly IDs and metadata, NEVER credentials.
+					acc := &registry.Account{
+						ID:         id,
+						ProviderID: provider,
+						IsActive:   isActive == 1,
+					}
+					if t, e := time.Parse(time.RFC3339, createdAt); e == nil {
+						acc.CreatedAt = t
+					}
+					if t, e := time.Parse(time.RFC3339, updatedAt); e == nil {
+						acc.UpdatedAt = t
+					}
+					newState.Accounts[id] = acc
+				}
+			}
+		} else {
+			log.Warn("orchestrator", "failed to sync accounts from db", "err", err)
+			// fallback to current state if DB query fails
+			if currentState != nil {
+				for k, v := range currentState.Accounts {
+					cp := *v
+					newState.Accounts[k] = &cp
+				}
+			}
+		}
+	} else if currentState != nil {
+		for k, v := range currentState.Accounts {
+			cp := *v
+			newState.Accounts[k] = &cp
+		}
+	}
+
+	totalDiscovered := 0
+	reconciled := false
+	for _, adapter := range o.adapters {
+		candidates, err := adapter.Discover(ctx)
+		if err != nil {
+			log.Warn("orchestrator", "adapter sync failed", "adapter", adapter.SourceID(), "err", err)
+			continue
+		}
+
+		discoveredThisRun := make(map[string]bool, len(candidates))
+		totalDiscovered += len(candidates)
+		for _, c := range candidates {
+			if c.ProviderID == "" || c.ModelID == "" {
+				continue
+			}
+			discoveredThisRun[c.ProviderID+"|"+c.ModelID] = true
+
+			if _, exists := newState.Providers[c.ProviderID]; !exists {
+				newState.Providers[c.ProviderID] = &registry.Provider{
+					ID:        c.ProviderID,
+					Name:      c.ProviderID,
+					IsActive:  true,
+					CreatedAt: time.Now().UTC(),
+					UpdatedAt: time.Now().UTC(),
+				}
+			}
+
+			if _, exists := newState.Models[c.ModelID]; !exists {
+				newState.Models[c.ModelID] = &registry.Model{
+					ID:        c.ModelID,
+					Name:      c.ModelID,
+					CreatedAt: time.Now().UTC(),
+					UpdatedAt: time.Now().UTC(),
+				}
+			}
+
+			if _, ok := newState.ProviderModels[c.ProviderID]; !ok {
+				newState.ProviderModels[c.ProviderID] = make(map[string]*registry.ProviderModel)
+			}
+
+			pm, exists := newState.ProviderModels[c.ProviderID][c.ModelID]
+			if !exists {
+				pm = &registry.ProviderModel{
+					ProviderID: c.ProviderID,
+					ModelID:    c.ModelID,
+					CreatedAt:  time.Now().UTC(),
+				}
+				newState.ProviderModels[c.ProviderID][c.ModelID] = pm
+			}
+			pm.UpstreamModel = c.UpstreamModel
+			pm.PricingMode = c.PricingMode
+			pm.Capabilities = c.Capabilities
+			pm.CostMetadata = c.CostMetadata
+			pm.Source = adapter.SourceID()
+			pm.IsActive = true
+			pm.UpdatedAt = time.Now().UTC()
+		}
+
+		for providerID, models := range newState.ProviderModels {
+			for modelID, pm := range models {
+				if pm == nil || pm.Source != adapter.SourceID() {
+					continue
+				}
+				if discoveredThisRun[providerID+"|"+modelID] {
+					continue
+				}
+				if pm.IsActive {
+					pm.IsActive = false
+					pm.UpdatedAt = time.Now().UTC()
+					reconciled = true
+					log.Info("orchestrator", "deactivated stale route", "adapter", adapter.SourceID(), "provider", providerID, "model", modelID)
+				}
+			}
+		}
+	}
+
+	accountsChanged := currentState == nil || len(newState.Accounts) != len(currentState.Accounts)
+	if !accountsChanged && currentState != nil {
+		for id, acc := range newState.Accounts {
+			prev, ok := currentState.Accounts[id]
+			if !ok || prev == nil || acc == nil || prev.IsActive != acc.IsActive || prev.ProviderID != acc.ProviderID {
+				accountsChanged = true
+				break
+			}
+		}
+	}
+
+	if totalDiscovered > 0 || reconciled || accountsChanged {
+		snap, err := registry.CreateSnapshot(o.db, newState, "discovery_sync")
+		if err != nil {
+			log.Warn("orchestrator", "failed to create snapshot", "err", err)
+			return
+		}
+
+		err = registry.ActivateSnapshot(o.db, snap.Version)
+		if err != nil {
+			log.Warn("orchestrator", "failed to activate snapshot", "err", err)
+			return
+		}
+		log.Info("orchestrator", "sync complete, new snapshot activated", "version", snap.Version, "candidates", totalDiscovered)
+	} else {
+		log.Info("orchestrator", "sync complete, no new candidates found")
+	}
+}
