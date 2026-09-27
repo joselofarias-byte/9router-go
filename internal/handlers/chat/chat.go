@@ -390,6 +390,10 @@ func (h *ChatHandler) HandleModelsInfo(w http.ResponseWriter, r *http.Request) {
 
 	modelInfo, err := h.resolveModel(modelID)
 	if err != nil {
+		if errors.Is(err, ErrFreeRouteUnavailable) {
+			WriteResolveError(w, err)
+			return
+		}
 		handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("model not found: %s", modelID))
 		return
 	}
