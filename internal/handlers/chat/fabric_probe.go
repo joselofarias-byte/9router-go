@@ -60,7 +60,11 @@ func (p *FabricProber) Probe(ctx context.Context, providerID, modelID, accountID
 
 	rec := httptest.NewRecorder()
 	start := time.Now()
-	fwdErr := p.h.tryForwardWithConnection(ctx, rec, providerID, modelID, accountID, connData, probeRequestBody(modelID), false, true, "/v1/chat/completions")
+	fwdErr := p.h.tryForwardWithConnection(forwardRequestParams{
+		Ctx: ctx, W: rec, Provider: providerID, Model: modelID,
+		ConnectionID: accountID, ConnData: connData, Body: probeRequestBody(modelID),
+		IsStream: false, TranslateResponse: true, Endpoint: "/v1/chat/completions",
+	})
 	result.LatencyMs = int(time.Since(start).Milliseconds())
 	result.TTFTMs = result.LatencyMs
 
