@@ -60,7 +60,7 @@ func GetProviderRiskProfile(provider string) ProviderRiskProfile {
 		}
 
 	case "codex", "claude", "github", "kiro", "grok-cli", "grok-web", "gemini-cli",
-		"qoder", "codebuddy-cn", "opencode-go", "clinepass", WorkBuddySessionProvider:
+		"qoder", "codebuddy-cn", "opencode-go", "clinepass":
 		return ProviderRiskProfile{
 			AccessMode:   AccessProductSurface,
 			AccountRisk:  AccountRiskMedium,
