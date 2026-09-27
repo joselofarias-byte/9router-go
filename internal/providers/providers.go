@@ -121,6 +121,21 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"orcarouter": {
+		BaseURL:    "https://orcarouter.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"unorouter": {
+		BaseURL:    "https://api.unorouter.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kira": {
+		BaseURL:    "https://kiraai.vn/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"agnes": {
 		BaseURL:    "https://apihub.agnes-ai.com/v1/chat/completions",
 		AuthHeader: "Authorization",
