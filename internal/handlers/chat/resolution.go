@@ -286,35 +286,29 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
 	}
 
-	// 3. Check if it's a combo name
+	// 3. Check if it's an explicit combo name. An explicit free/free-best
+	// combo always wins over the built-in Fabric route, including when the
+	// combo is malformed: a broken user definition must not silently turn into
+	// a different dynamic route.
 	if h.Repo != nil {
 		combo, err := h.Repo.GetComboByName(modelStr)
-		if err == nil && combo != nil && combo.Models != "" {
-			var modelStrings []string
-			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
-				// Flatten nested combos into concrete leaves so rotation covers
-				// every reachable model (a nested combo entry used to collapse to
-				// its first leaf, so combo-wombo -> free-tier never rotated).
-				flattened, flatErr := h.flattenComboModels(modelStrings)
-				if flatErr != nil {
-					return nil, flatErr
-				}
-				if len(flattened) > 0 {
-					firstInfo := h.resolveModelEntry(flattened[0])
-					if firstInfo == nil {
-						firstInfo, _ = h.resolveModel(flattened[0])
-					}
-					if firstInfo != nil {
-						firstInfo.ComboModels = flattened
-						strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
-						firstInfo.Strategy = strat
-						firstInfo.StickyLimit = sticky
-						firstInfo.JudgeModel = judge
-						return firstInfo, nil
-					}
-				}
+		if err == nil && combo != nil {
+			info, comboErr := h.resolveExplicitCombo(combo)
+			if comboErr != nil {
+				return nil, comboErr
 			}
+			return info, nil
 		}
+	}
+
+	// 3.25 Built-in fail-closed free route. This must run before the generic
+	// provider fallback below, otherwise an unknown "free-best" could be sent
+	// to a configured paid provider as if it were an ordinary model name.
+	if isVirtualFreeRoute(modelStr) {
+		if info, overrideErr, ok := h.concreteVirtualOverride(modelStr); ok {
+			return info, overrideErr
+		}
+		return h.resolveDynamicFreeBest()
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
