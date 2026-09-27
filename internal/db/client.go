@@ -72,6 +72,9 @@ PRAGMA busy_timeout = 5000;
 func InitGlobalDatabase(path string) error {
 	dbOnce.Do(func() {
 		dbInstance, initErr = OpenDatabase(path)
+		if initErr == nil {
+			initErr = RunMigrations(dbInstance)
+		}
 	})
 	return initErr
 }
