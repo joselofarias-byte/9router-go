@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration/fabric-free-local-20260927]
   pull_request:
     branches: [main]
 
