@@ -16,6 +16,7 @@ import (
 var AppModule = fx.Options(
 	ConfigModule,
 	DatabaseModule,
+	FabricModule,
 	HandlersModule,
 	ServerModule,
 )
