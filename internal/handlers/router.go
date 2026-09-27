@@ -129,6 +129,13 @@ func SetupRoutes(r interface {
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
+
+	// Fabric control-plane observability. These routes are mounted inside the
+	// authenticated API group by SetupServerRouter.
+	r.Get("/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/admin/explain-route", chatH.HandleAdminExplainRoute)
+	r.Get("/admin/fabric/status", chatH.HandleFabricStatus)
+	r.Post("/admin/fabric/probe", chatH.HandleFabricProbe)
 }
 
 // SetupDashboardRoutes mounts the dashboard REST API. It is wrapped in
