@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -61,6 +62,23 @@ func isVirtualFreeRoute(model string) bool {
 
 func canonicalVirtualName(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
+}
+
+type virtualFreeContextKey struct{}
+
+func withVirtualFree(ctx context.Context, enabled bool) context.Context {
+	if !enabled {
+		return ctx
+	}
+	return context.WithValue(ctx, virtualFreeContextKey{}, true)
+}
+
+func virtualFreeFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(virtualFreeContextKey{}).(bool)
+	return enabled
 }
 
 // resolveDynamicFreeBest creates a transient fallback chain from the live
