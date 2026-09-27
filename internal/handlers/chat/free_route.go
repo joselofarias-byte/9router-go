@@ -81,6 +81,26 @@ func virtualFreeFromContext(ctx context.Context) bool {
 	return enabled
 }
 
+func appendVirtualFreeModels(data []ModelInfoObject) []ModelInfoObject {
+	hasFree := false
+	hasFreeBest := false
+	for _, model := range data {
+		switch strings.ToLower(strings.TrimSpace(model.ID)) {
+		case pools.Free:
+			hasFree = true
+		case pools.FreeBest:
+			hasFreeBest = true
+		}
+	}
+	if !hasFree {
+		data = append(data, ModelInfoObject{ID: pools.Free, Object: "model", OwnedBy: "fabric"})
+	}
+	if !hasFreeBest {
+		data = append(data, ModelInfoObject{ID: pools.FreeBest, Object: "model", OwnedBy: "fabric"})
+	}
+	return data
+}
+
 // resolveDynamicFreeBest creates a transient fallback chain from the live
 // registry. No candidate means fail closed: the caller must not continue into
 // the generic openai/anthropic/deepseek fallback.
