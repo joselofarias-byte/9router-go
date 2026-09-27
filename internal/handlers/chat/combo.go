@@ -604,16 +604,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			return
 		}
 
-		// The dynamic free pool is revalidated immediately before each hop.
-		// If every entry disappeared, became paid, inactive, or disconnected,
-		// fail closed instead of surfacing a generic error or reaching a paid route.
-		if virtualFree && !sawEligibleFreeHop {
-			if !cw.IsCommitted() {
-				writeFreeRouteUnavailable(cw)
-			}
-			return
-		}
-
 		// All entries failed. Retry once only if a bounded wait is available;
 		// otherwise fall through to the error response below.
 		if lastErr == nil || ctx.Err() != nil || attempt == 1 {
@@ -807,6 +797,16 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
+		}
+
+		// The dynamic free pool is revalidated immediately before each hop.
+		// If every entry disappeared, became paid, inactive, or disconnected,
+		// fail closed instead of surfacing a generic error or reaching a paid route.
+		if virtualFree && !sawEligibleFreeHop {
+			if !cw.IsCommitted() {
+				writeFreeRouteUnavailable(cw)
+			}
+			return
 		}
 
 		// All entries failed. Retry once only if a bounded wait is available;
