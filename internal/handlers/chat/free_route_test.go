@@ -110,6 +110,40 @@ func TestResolveModel_FreeBestUsesDiscoveredFreeModels(t *testing.T) {
 	}
 }
 
+func TestFreeRouteEntries_AllowsVirtualNoAuthProvider(t *testing.T) {
+	state := &registry.RegistryState{
+		Providers: map[string]*registry.Provider{
+			"llamacpp": {ID: "llamacpp", IsActive: true},
+		},
+		ProviderModels: map[string]map[string]*registry.ProviderModel{
+			"llamacpp": {
+				"qwen-local": {
+					ProviderID:    "llamacpp",
+					ModelID:       "qwen-local",
+					UpstreamModel: "qwen-local",
+					PricingMode:   "free",
+					IsActive:      true,
+				},
+			},
+		},
+		Accounts: map[string]*registry.Account{},
+	}
+
+	valid := routing.RouteNode{
+		ProviderID: "llamacpp", ModelID: "qwen-local",
+		AccountID: routing.VirtualNoAuthAccountID("llamacpp"),
+	}
+	if got := freeRouteEntries(state, []routing.RouteNode{valid}); len(got) != 1 || got[0] != "llamacpp/qwen-local" {
+		t.Fatalf("virtual no-auth route = %#v", got)
+	}
+
+	invalid := valid
+	invalid.AccountID = "noauth:someone-else"
+	if got := freeRouteEntries(state, []routing.RouteNode{invalid}); len(got) != 0 {
+		t.Fatalf("forged virtual no-auth identity was accepted: %#v", got)
+	}
+}
+
 func TestResolveModel_ExplicitFreeComboWins(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
