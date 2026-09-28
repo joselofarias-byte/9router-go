@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"time"
 
+	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/controlplane/verification"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
@@ -51,7 +52,13 @@ func (p *FabricProber) Probe(ctx context.Context, providerID, modelID, accountID
 		AccountID:  accountID,
 	}
 
-	_, connData, err := p.h.getBestConnection(providerID, accountID, nil, modelID)
+	connectionID := accountID
+	if routing.IsVirtualNoAuthAccount(providerID, accountID) {
+		// The control plane needs a stable synthetic ID for trust/scoring, but
+		// the data plane must resolve its normal virtual no-auth connection.
+		connectionID = ""
+	}
+	_, connData, err := p.h.getBestConnection(providerID, connectionID, nil, modelID)
 	if err != nil {
 		result.ErrorCategory = providers.ErrPermanent
 		result.ErrorMessage = err.Error()
@@ -62,7 +69,7 @@ func (p *FabricProber) Probe(ctx context.Context, providerID, modelID, accountID
 	start := time.Now()
 	fwdErr := p.h.tryForwardWithConnection(forwardRequestParams{
 		Ctx: ctx, W: rec, Provider: providerID, Model: modelID,
-		ConnectionID: accountID, ConnData: connData, Body: probeRequestBody(modelID),
+		ConnectionID: connectionID, ConnData: connData, Body: probeRequestBody(modelID),
 		IsStream: false, TranslateResponse: true, Endpoint: "/v1/chat/completions",
 	})
 	result.LatencyMs = int(time.Since(start).Milliseconds())
