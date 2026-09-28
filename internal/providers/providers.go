@@ -115,6 +115,23 @@ func WithHeader(headers map[string]string, key, value string) map[string]string 
 	return res
 }
 
+// llamaCppChatURL resolves the local llama.cpp OpenAI-compatible chat endpoint.
+// LLAMACPP_BASE_URL may be either the server root, /v1, or the chat endpoint.
+func llamaCppChatURL() string {
+	base := strings.TrimSpace(os.Getenv("LLAMACPP_BASE_URL"))
+	if base == "" {
+		base = "http://127.0.0.1:8080"
+	}
+	base = strings.TrimRight(base, "/")
+	for _, suffix := range []string{"/v1/chat/completions", "/chat/completions", "/v1/models", "/models", "/v1"} {
+		if strings.HasSuffix(base, suffix) {
+			base = strings.TrimSuffix(base, suffix)
+			break
+		}
+	}
+	return strings.TrimRight(base, "/") + "/v1/chat/completions"
+}
+
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
 	"openai": {
@@ -512,6 +529,13 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "http://localhost:11434/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+	},
+	"llamacpp": {
+		BaseURL:       llamaCppChatURL(),
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		DefaultAPIKey: "no-key",
+		NoAuth:        true,
 	},
 	"minimax-cn": {
 		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
