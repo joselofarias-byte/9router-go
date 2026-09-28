@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, integration/fabric-free-local-20260927]
+    branches: [main, integration/fabric-free-local-20260927, agent/llamacpp-local-20260928]
   pull_request:
     branches: [main, sync/upstream-2026-09-15]
 
@@ -40,3 +40,17 @@ jobs:
 
       - name: Build
         run: go build -ldflags="-s -w" -o /tmp/9router-go ./cmd/9router-go/
+
+      - name: Build HONOR 200 ARM64 binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o /tmp/9router-go-linux-arm64 ./cmd/9router-go/
+          sha256sum /tmp/9router-go-linux-arm64 > /tmp/9router-go-linux-arm64.sha256
+
+      - name: Upload HONOR 200 ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 9router-go-linux-arm64-pr23
+          path: |
+            /tmp/9router-go-linux-arm64
+            /tmp/9router-go-linux-arm64.sha256
+          if-no-files-found: error
