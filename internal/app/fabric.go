@@ -34,6 +34,7 @@ func StartFabric(lc fx.Lifecycle, conn *sql.DB) {
 
 			adapters := []discovery.Adapter{
 				discovery.NewModelsDevAdapter(nil),
+				discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
 				discovery.NewClineFreeAdapter(nil),
 				discovery.NewKiraAdapter(nil, os.Getenv("KIRA_BASE_URL")),
 				discovery.NewKiroStaticAdapter(),
