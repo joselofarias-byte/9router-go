@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -10,7 +11,7 @@ func TestKnownProviders_HasExpectedEntries(t *testing.T) {
 		"openai", "anthropic", "deepseek", "groq", "nvidia", "openrouter",
 		"cerebras", "together", "fireworks", "opencode", "gemini", "github",
 		"mistral", "perplexity", "xai", "cohere", "ollama", "siliconflow",
-		"cloudflare-ai", "mimo-free",
+		"cloudflare-ai", "mimo-free", "llamacpp",
 	}
 	for _, p := range wantProviders {
 		cfg, ok := KnownProviders[p]
@@ -52,6 +53,19 @@ func TestKnownProviders_NoAuthOverridesScheme(t *testing.T) {
 	}
 }
 
+func TestKnownProviders_LlamaCppIsLocalNoAuthOpenAICompat(t *testing.T) {
+	cfg := KnownProviders["llamacpp"]
+	if !cfg.NoAuth {
+		t.Fatal("llamacpp expected NoAuth=true")
+	}
+	if cfg.DefaultAPIKey == "" {
+		t.Fatal("llamacpp expected a non-secret fallback token for the shared executor")
+	}
+	if !strings.HasSuffix(cfg.BaseURL, "/v1/chat/completions") {
+		t.Fatalf("llamacpp BaseURL = %q", cfg.BaseURL)
+	}
+}
+
 func TestKnownProviders_StaticHeaders(t *testing.T) {
 	cfg := KnownProviders["opencode"]
 	if cfg.StaticHeaders["x-opencode-client"] != "desktop" {
@@ -74,6 +88,7 @@ func TestProviderAliasMap_Bidirectional(t *testing.T) {
 		"gh":   "github",
 		"pplx": "perplexity",
 		"mmf":  "mimo-free",
+		"lcpp": "llamacpp",
 	}
 	for alias, canonical := range cases {
 		got, ok := ProviderAliasMap[alias]
