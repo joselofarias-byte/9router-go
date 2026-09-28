@@ -38,6 +38,7 @@ func (p *ProviderConfig) IsGeminiOpenAICompat() bool { return p.Format == "gemin
 // It is the same set upstream wires into PROVIDER_MODELS_CONFIG
 // (src/app/api/providers/[id]/models/route.js, v0.5.91).
 var modelsListURL = map[string]string{
+	"apinex":      "https://api.apinex.bond/v1/models",
 	"tokenharbor": "https://tokenharbor.ai/v1/models",
 	"dahl":        "https://inference.dahl.global/v1/models",
 	"atria":       "https://api.atria-asi.ai/v1/models",
@@ -118,6 +119,26 @@ func WithHeader(headers map[string]string, key, value string) map[string]string 
 var KnownProviders = map[string]ProviderConfig{
 	"openai": {
 		BaseURL:    "https://api.openai.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"orcarouter": {
+		BaseURL:    "https://orcarouter.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"apinex": {
+		BaseURL:    "https://api.apinex.bond/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"unorouter": {
+		BaseURL:    "https://api.unorouter.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kira": {
+		BaseURL:    "https://kiraai.vn/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},

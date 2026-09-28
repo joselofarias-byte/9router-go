@@ -232,7 +232,7 @@ func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
 			}
 		}
 		data = h.appendLooseCustomModels(data, seen, disabled)
-		return finalizeModels(data)
+		return appendVirtualFreeModels(finalizeModels(data))
 	}
 
 	// 3. One connection per provider, isActive !== false (upstream filters on
@@ -257,7 +257,7 @@ func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
 		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, isDisabled)
 	}
 
-	return finalizeModels(data)
+	return appendVirtualFreeModels(finalizeModels(data))
 }
 
 // appendConnectionModels reproduces the per-connection branch of upstream

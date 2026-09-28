@@ -432,6 +432,7 @@ func keysString(m map[string]bool) string {
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
 	cw := newCommittedResponseWriter(w)
+	virtualFree := virtualFreeFromContext(ctx)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
 	// Connections that failed with a retryable status this request; remaining
@@ -472,7 +473,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			excludeIDs = nil
 		}
 
+		sawEligibleFreeHop := false
 		for _, entry := range models {
+			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+				continue
+			}
+			sawEligibleFreeHop = true
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
@@ -588,6 +594,16 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			}
 		}
 
+		// The dynamic free pool is revalidated immediately before each hop.
+		// If every entry disappeared, became paid, inactive, or disconnected,
+		// fail closed instead of surfacing a generic error or reaching a paid route.
+		if virtualFree && !sawEligibleFreeHop {
+			if !cw.IsCommitted() {
+				writeFreeRouteUnavailable(cw)
+			}
+			return
+		}
+
 		// All entries failed. Retry once only if a bounded wait is available;
 		// otherwise fall through to the error response below.
 		if lastErr == nil || ctx.Err() != nil || attempt == 1 {
@@ -636,6 +652,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int) {
 	cw := newCommittedResponseWriter(w)
+	virtualFree := virtualFreeFromContext(ctx)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
 
@@ -671,7 +688,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			excludeIDs = nil
 		}
 
+		sawEligibleFreeHop := false
 		for _, entry := range models {
+			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+				continue
+			}
+			sawEligibleFreeHop = true
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
@@ -775,6 +797,16 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
+		}
+
+		// The dynamic free pool is revalidated immediately before each hop.
+		// If every entry disappeared, became paid, inactive, or disconnected,
+		// fail closed instead of surfacing a generic error or reaching a paid route.
+		if virtualFree && !sawEligibleFreeHop {
+			if !cw.IsCommitted() {
+				writeFreeRouteUnavailable(cw)
+			}
+			return
 		}
 
 		// All entries failed. Retry once only if a bounded wait is available;
