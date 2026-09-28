@@ -19,7 +19,7 @@ import (
 
 const FreeRouteUnavailableCode = "free_route_unavailable"
 
-const freeRouteUnavailableMessage = "free route unavailable: no eligible free or free-tier models with an active local connection"
+const freeRouteUnavailableMessage = "free route unavailable: no eligible free or free-tier models with a usable local route"
 
 var ErrFreeRouteUnavailable = errors.New(FreeRouteUnavailableCode)
 
@@ -225,7 +225,13 @@ func eligibleFreeProviderModel(state *registry.RegistryState, candidate routing.
 		return nil, false
 	}
 	account := state.Accounts[candidate.AccountID]
-	if account == nil || !account.IsActive || account.ProviderID != candidate.ProviderID {
+	accountOK := account != nil && account.IsActive && account.ProviderID == candidate.ProviderID
+	if !accountOK {
+		cfg, known := providers.KnownProviders[candidate.ProviderID]
+		accountOK = known && cfg.NoAuth &&
+			routing.IsVirtualNoAuthAccount(candidate.ProviderID, candidate.AccountID)
+	}
+	if !accountOK {
 		return nil, false
 	}
 	pm := providerModelByID(state.ProviderModels[candidate.ProviderID], candidate.ModelID)
