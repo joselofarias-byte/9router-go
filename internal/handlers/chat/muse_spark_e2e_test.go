@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -11,7 +12,17 @@ import (
 	"9router/proxy/internal/proxy/executor"
 )
 
+// These tests contact the real OpenCode service. Keep normal CI deterministic
+// and run them only when an operator explicitly requests a live entitlement check.
+func requireOpenCodeLive(t *testing.T) {
+	t.Helper()
+	if os.Getenv("OPENCODE_LIVE") != "1" {
+		t.Skip("set OPENCODE_LIVE=1 to run real OpenCode requests")
+	}
+}
+
 func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
+	requireOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -65,6 +76,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
+	requireOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -109,6 +121,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
+	requireOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -161,6 +174,7 @@ func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
+	requireOpenCodeLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
