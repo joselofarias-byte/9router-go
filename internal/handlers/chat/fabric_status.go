@@ -8,6 +8,7 @@ import (
 	"9router/proxy/internal/controlplane/routing"
 	cpsync "9router/proxy/internal/controlplane/sync"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 )
 
 type fabricCandidateStatus struct {
@@ -110,6 +111,9 @@ func (h *ChatHandler) HandleFabricStatus(w http.ResponseWriter, r *http.Request)
 const trustLevelQuarantined = "quarantined"
 
 func hasActiveAccount(state *registry.RegistryState, providerID string) bool {
+	if cfg, ok := providers.KnownProviders[providerID]; ok && cfg.NoAuth {
+		return true
+	}
 	for _, acc := range state.Accounts {
 		if acc != nil && acc.ProviderID == providerID && acc.IsActive {
 			return true
