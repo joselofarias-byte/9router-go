@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/controlplane/trust"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
@@ -36,6 +38,15 @@ func TestResolveFabricPool_AllUnavailable(t *testing.T) {
 }
 
 func TestResolveFabricPool_DynamicBest(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	for _, conn := range []struct{ id, provider string }{{"c1", "cline"}, {"o1", "orcarouter"}} {
+		if _, err := database.Exec(`INSERT INTO providerConnections
+			(id, provider, authType, name, priority, isActive, data, createdAt, updatedAt)
+			VALUES (?, ?, 'apikey', 'Fabric test', 1, 1, '{}', '2026-09-27T00:00:00Z', '2026-09-27T00:00:00Z')`, conn.id, conn.provider); err != nil {
+			t.Fatalf("seed connection: %v", err)
+		}
+	}
 	resetFabricState(t)
 	state := registry.GetActiveState()
 	state.Providers["cline"] = &registry.Provider{ID: "cline", IsActive: true}
@@ -53,7 +64,11 @@ func TestResolveFabricPool_DynamicBest(t *testing.T) {
 	globalTrustManager.RecordObservation("cline", "slow", "c1", true, "")
 	globalTrustManager.RecordLatency("cline", "slow", "c1", 4000)
 
-	info := hResolve(t, "free-best")
+	h := NewChatHandler(db.NewRepo(database))
+	info, err := h.resolveModel("free-best")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if info.Provider != "orcarouter" || info.Model != "fast" {
 		t.Fatalf("expected orcarouter/fast first, got %s/%s combo=%v", info.Provider, info.Model, info.ComboModels)
 	}
@@ -65,14 +80,24 @@ func TestResolveFabricPool_DynamicBest(t *testing.T) {
 	}
 }
 
-func hResolve(t *testing.T, name string) *ModelInfo {
-	t.Helper()
-	h := &ChatHandler{}
-	info, err := h.resolveModel(name)
-	if err != nil {
-		t.Fatal(err)
+// A discovered account alone must never authorize a request without the
+// connection repository used by the data plane.
+func TestResolveFabricPool_MissingRepositoryFailsClosed(t *testing.T) {
+	resetFabricState(t)
+	state := registry.GetActiveState()
+	state.Providers["cline"] = &registry.Provider{ID: "cline", IsActive: true}
+	state.ProviderModels["cline"] = map[string]*registry.ProviderModel{
+		"free-model": {ProviderID: "cline", ModelID: "free-model", PricingMode: "free", IsActive: true},
 	}
-	return info
+	state.Accounts["c1"] = &registry.Account{ID: "c1", ProviderID: "cline", IsActive: true}
+	for _, name := range []string{"free", "free-best", "fabric-free"} {
+		t.Run(name, func(t *testing.T) {
+			h := &ChatHandler{}
+			if info, err := h.resolveModel(name); info != nil || !errors.Is(err, ErrFreeRouteUnavailable) {
+				t.Fatalf("expected fail-closed without repository, got %+v, %v", info, err)
+			}
+		})
+	}
 }
 
 func TestConcurrentRoutingAndSnapshotUpdates(t *testing.T) {

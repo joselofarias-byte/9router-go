@@ -340,7 +340,7 @@ func TestHandleModels_ExplicitFreeNameKeepsVirtualSibling(t *testing.T) {
 	defer cleanup()
 	models, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		"user-free", "Free", "fallback", string(models), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z"); err != nil {
+		"user-free", "Free", "llm", string(models), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z"); err != nil {
 		t.Fatalf("seed combo: %v", err)
 	}
 
@@ -360,7 +360,7 @@ func TestHandleModels_ExplicitFreeNameKeepsVirtualSibling(t *testing.T) {
 	for _, m := range resp.Data {
 		found[m.ID] = m.OwnedBy
 	}
-	if found["Free"] != "system" {
+	if found["Free"] != "combo" {
 		t.Fatalf("explicit Free combo missing: %#v", found)
 	}
 	if _, dup := found["free"]; dup {
