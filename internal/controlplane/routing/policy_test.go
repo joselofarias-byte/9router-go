@@ -66,3 +66,31 @@ func TestEngine_SelectCandidates(t *testing.T) {
 		t.Errorf("Expected p2 to be first due to free-first bonus, got %s", resFirst[0].ProviderID)
 	}
 }
+
+
+func TestEngine_NoAuthProviderGetsVirtualCandidateWithoutStoredAccount(t *testing.T) {
+	registry.InitRegistry(nil)
+	state := registry.GetActiveState()
+	state.Providers["llamacpp"] = &registry.Provider{ID: "llamacpp", IsActive: true}
+	state.ProviderModels["llamacpp"] = map[string]*registry.ProviderModel{
+		"qwen-local": {
+			ProviderID:    "llamacpp",
+			ModelID:       "qwen-local",
+			UpstreamModel: "qwen-local",
+			PricingMode:   "free",
+			IsActive:      true,
+		},
+	}
+
+	engine := &Engine{TrustManager: trust.NewManager()}
+	got := engine.SelectCandidates("free-best", PolicyFreeOnly)
+	if len(got) != 1 {
+		t.Fatalf("expected one no-auth candidate, got %+v", got)
+	}
+	if got[0].ProviderID != "llamacpp" || got[0].AccountID != VirtualNoAuthAccountID("llamacpp") {
+		t.Fatalf("unexpected no-auth candidate: %+v", got[0])
+	}
+	if !IsVirtualNoAuthAccount("llamacpp", got[0].AccountID) {
+		t.Fatalf("candidate did not carry a valid virtual no-auth identity: %+v", got[0])
+	}
+}
