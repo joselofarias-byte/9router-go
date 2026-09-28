@@ -38,6 +38,7 @@ func (p *ProviderConfig) IsGeminiOpenAICompat() bool { return p.Format == "gemin
 // It is the same set upstream wires into PROVIDER_MODELS_CONFIG
 // (src/app/api/providers/[id]/models/route.js, v0.5.91).
 var modelsListURL = map[string]string{
+	"apinex":      "https://api.apinex.bond/v1/models",
 	"tokenharbor": "https://tokenharbor.ai/v1/models",
 	"dahl":        "https://inference.dahl.global/v1/models",
 	"atria":       "https://api.atria-asi.ai/v1/models",
@@ -123,6 +124,11 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 	"orcarouter": {
 		BaseURL:    "https://orcarouter.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"apinex": {
+		BaseURL:    "https://api.apinex.bond/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},

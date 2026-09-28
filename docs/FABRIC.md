@@ -31,6 +31,7 @@ Discovery adapters
   Kira public catalog (always on)
   Kiro static free set (always on; routable only with a Kiro account)
   UnoRouter :free suffix (opt-in: UNOROUTER_API_KEY)
+  APInex free/ catalog (opt-in: APINEX_API_KEY; optional APINEX_BASE_URL)
   OrcaRouter (opt-in: ORCAROUTER_BASE_URL + ORCAROUTER_API_KEY)
         |
         v

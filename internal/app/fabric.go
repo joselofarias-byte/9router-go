@@ -43,6 +43,10 @@ func StartFabric(lc fx.Lifecycle, conn *sql.DB) {
 				adapters = append(adapters, discovery.NewUnoRouterAdapter(nil, apiKey))
 			}
 
+			if apiKey := os.Getenv("APINEX_API_KEY"); apiKey != "" {
+				adapters = append(adapters, discovery.NewAPInexAdapter(nil, os.Getenv("APINEX_BASE_URL"), apiKey))
+			}
+
 			if baseURL, apiKey := os.Getenv("ORCAROUTER_BASE_URL"), os.Getenv("ORCAROUTER_API_KEY"); baseURL != "" && apiKey != "" {
 				adapters = append(adapters, discovery.NewOrcaRouterAdapter(nil, baseURL, apiKey))
 			}
