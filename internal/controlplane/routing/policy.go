@@ -20,6 +20,20 @@ const (
 	PolicyTrusted   Policy = "trusted-only"
 )
 
+const virtualNoAuthAccountPrefix = "noauth:"
+
+// VirtualNoAuthAccountID gives credential-free providers a stable routing
+// identity for trust/scoring without creating a fake database credential row.
+func VirtualNoAuthAccountID(providerID string) string {
+	return virtualNoAuthAccountPrefix + providerID
+}
+
+// IsVirtualNoAuthAccount validates the synthetic identity used only by
+// KnownProviders entries explicitly marked NoAuth.
+func IsVirtualNoAuthAccount(providerID, accountID string) bool {
+	return providerID != "" && accountID == VirtualNoAuthAccountID(providerID)
+}
+
 type RouteNode struct {
 	ProviderID    string
 	ModelID       string
@@ -87,22 +101,18 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 
 			riskProfile := providers.GetProviderRiskProfile(provID)
 
-			for _, acc := range state.Accounts {
-				if acc == nil || acc.ProviderID != provID || !acc.IsActive {
-					continue
+			appendCandidate := func(accountID string) {
+				if blocked, _ := e.TrustManager.IsUnavailable(provID, pm.ModelID, accountID); blocked {
+					return
 				}
 
-				if blocked, _ := e.TrustManager.IsUnavailable(provID, pm.ModelID, acc.ID); blocked {
-					continue
-				}
-
-				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, acc.ID)
+				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, accountID)
 				if policy == PolicyTrusted && trustLvl != trust.TrustTrusted && trustLvl != trust.TrustVerified {
-					continue
+					return
 				}
 
 				successRate := trust.NeutralSuccessRate
-				if sr, hasData := e.TrustManager.SuccessRate(provID, pm.ModelID, acc.ID); hasData {
+				if sr, hasData := e.TrustManager.SuccessRate(provID, pm.ModelID, accountID); hasData {
 					successRate = sr
 				}
 
@@ -112,14 +122,14 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					AccountRiskPenalty: riskProfile.ScorePenalty,
 					SuccessRate:        successRate,
 				}
-				if avgMs, hasLatency := e.TrustManager.LatencyStats(provID, pm.ModelID, acc.ID); hasLatency {
+				if avgMs, hasLatency := e.TrustManager.LatencyStats(provID, pm.ModelID, accountID); hasLatency {
 					factors.TTFTMs = avgMs
 					factors.LatencyMs = avgMs
 				}
 
 				score := scoring.Calculate(factors)
 				if !score.IsRoutable {
-					continue
+					return
 				}
 				if policy == PolicyFreeFirst && isFree {
 					score.Total += 1000.0
@@ -129,9 +139,26 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					ProviderID:    provID,
 					ModelID:       pm.ModelID,
 					UpstreamModel: pm.UpstreamModel,
-					AccountID:     acc.ID,
+					AccountID:     accountID,
 					Score:         score,
 				})
+			}
+
+			hasActiveAccount := false
+			for _, acc := range state.Accounts {
+				if acc == nil || acc.ProviderID != provID || !acc.IsActive {
+					continue
+				}
+				hasActiveAccount = true
+				appendCandidate(acc.ID)
+			}
+
+			// Credential-free providers (local llama.cpp, public endpoints)
+			// must be routable without a fake providerConnections row.
+			if !hasActiveAccount {
+				if cfg, known := providers.KnownProviders[provID]; known && cfg.NoAuth {
+					appendCandidate(VirtualNoAuthAccountID(provID))
+				}
 			}
 		}
 	}
