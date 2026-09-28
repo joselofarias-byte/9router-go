@@ -1,8 +1,13 @@
 package executor
 
 import (
+	"errors"
+	"net/http"
+	"os/exec"
 	"strings"
 	"testing"
+
+	"9router/proxy/internal/proxy"
 )
 
 func TestWorkBuddyPromptFromBody(t *testing.T) {
@@ -87,5 +92,52 @@ func TestRegisterAllIncludesWorkBuddySession(t *testing.T) {
 	RegisterAll()
 	if Get("workbuddy-session") == nil {
 		t.Fatal("workbuddy-session executor is not registered")
+	}
+}
+
+func TestWorkBuddySessionFailureIsSafeAndRoutable(t *testing.T) {
+	const secret = "session-token-private-123"
+	tests := []struct {
+		name   string
+		err    error
+		output string
+		status int
+		code   string
+	}{
+		{"quota", errors.New("exit status 1"), "quota exceeded; token=" + secret, http.StatusTooManyRequests, "workbuddy_quota"},
+		{"expired", errors.New("exit status 1"), "session expired; token=" + secret, http.StatusUnauthorized, "workbuddy_session_expired"},
+		{"missing", exec.ErrNotFound, secret, http.StatusServiceUnavailable, "workbuddy_cli_missing"},
+		{"unknown", errors.New("exit status 1"), secret, http.StatusBadGateway, "workbuddy_cli_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := workBuddySessionFailure(tt.err, tt.output)
+			var upstream *proxy.UpstreamError
+			if !errors.As(got, &upstream) || upstream.StatusCode != tt.status {
+				t.Fatalf("status: got %v, want %d", got, tt.status)
+			}
+			if !strings.Contains(string(upstream.Body), tt.code) {
+				t.Fatalf("body %q missing code %s", upstream.Body, tt.code)
+			}
+			if strings.Contains(got.Error(), secret) || strings.Contains(string(upstream.Body), secret) {
+				t.Fatal("session secret leaked through error")
+			}
+		})
+	}
+}
+
+func TestParseWorkBuddyErrorDoesNotReturnCLIText(t *testing.T) {
+	const secret = "session-token-private-123"
+	_, err := parseWorkBuddyCLIOutput([]byte(`[{"type":"result","is_error":true,"result":"session expired ` + secret + `"}]`))
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unsafe parser error: %v", err)
+	}
+	var resultErr *workBuddyResultError
+	if !errors.As(err, &resultErr) {
+		t.Fatalf("missing classified result error: %v", err)
+	}
+	got := workBuddySessionFailure(err, resultErr.detail).(*proxy.UpstreamError)
+	if got.StatusCode != http.StatusUnauthorized || strings.Contains(got.Error(), secret) {
+		t.Fatalf("unsafe session failure: %v", got)
 	}
 }

@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -53,6 +55,10 @@ type workBuddyCLIResult struct {
 	CacheReadInputTokens   int
 	Credit                 float64
 }
+
+type workBuddyResultError struct{ detail string }
+
+func (*workBuddyResultError) Error() string { return "CodeBuddy result error" }
 
 // ForwardWorkBuddySession invokes the official CodeBuddy CLI using its saved
 // browser-authenticated session. The first implementation is intentionally
@@ -102,19 +108,19 @@ func ForwardWorkBuddySession(w http.ResponseWriter, req *Request) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 2048 {
-			msg = msg[len(msg)-2048:]
+		if req.Ctx.Err() != nil {
+			return req.Ctx.Err()
 		}
-		if msg == "" {
-			msg = "CodeBuddy CLI failed; verify that the CLI is installed and logged in via the International Site"
-		}
-		return fmt.Errorf("workbuddy-session CLI: %w: %s", err, msg)
+		return workBuddySessionFailure(err, stderr.String())
 	}
 
 	parsed, err := parseWorkBuddyCLIOutput(stdout.Bytes())
 	if err != nil {
-		return fmt.Errorf("workbuddy-session parse: %w", err)
+		var resultErr *workBuddyResultError
+		if errors.As(err, &resultErr) {
+			return workBuddySessionFailure(err, resultErr.detail)
+		}
+		return workBuddySessionFailure(err, "")
 	}
 	if parsed.Model == "" {
 		parsed.Model = model
@@ -327,7 +333,7 @@ func parseWorkBuddyCLIOutput(raw []byte) (*workBuddyCLIResult, error) {
 				result.SessionID = event.SessionID
 			}
 			if event.IsError || event.Subtype == "error" {
-				return nil, fmt.Errorf("CodeBuddy result error: %s", strings.TrimSpace(event.Result))
+				return nil, &workBuddyResultError{detail: event.Result}
 			}
 			if event.Result != "" {
 				result.Text = event.Result
@@ -339,4 +345,23 @@ func parseWorkBuddyCLIOutput(raw []byte) (*workBuddyCLIResult, error) {
 		return nil, fmt.Errorf("CodeBuddy output contained no successful result")
 	}
 	return result, nil
+}
+
+// The CLI can print session tokens, paths or parts of the request on failure.
+// Use its output only to choose a bounded status; never return it to clients or logs.
+func workBuddySessionFailure(err error, output string) error {
+	status := http.StatusBadGateway
+	code := "workbuddy_cli_error"
+	message := "CodeBuddy CLI request failed"
+	lower := strings.ToLower(output)
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		status, code, message = http.StatusServiceUnavailable, "workbuddy_cli_missing", "CodeBuddy CLI is not installed"
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "credits exhausted") || strings.Contains(lower, "insufficient credits"):
+		status, code, message = http.StatusTooManyRequests, "workbuddy_quota", "CodeBuddy session quota or rate limit reached"
+	case strings.Contains(lower, "login") || strings.Contains(lower, "sign in") || strings.Contains(lower, "session expired") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "authentication"):
+		status, code, message = http.StatusUnauthorized, "workbuddy_session_expired", "CodeBuddy session requires login"
+	}
+	body, _ := json.Marshal(map[string]any{"error": map[string]any{"message": message, "type": "upstream_error", "code": code}})
+	return &proxy.UpstreamError{StatusCode: status, Body: body}
 }
