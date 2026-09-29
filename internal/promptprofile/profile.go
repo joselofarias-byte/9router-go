@@ -171,6 +171,74 @@ func Inject(body []byte, prompt string) ([]byte, bool, error) {
 	return out, err == nil, err
 }
 
+// InjectCodex preserves the first system/developer instruction that the
+// existing Codex adapter promotes into Responses API instructions, then
+// appends the selected profile to that same instruction. This avoids losing
+// either the caller's instruction or the profile during Chat-to-Responses
+// conversion.
+func InjectCodex(body []byte, prompt string) ([]byte, bool, error) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return body, false, nil
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false, err
+	}
+
+	_, hasInput := req["input"]
+	_, hasInstructions := req["instructions"]
+	if hasInput || hasInstructions {
+		existing, _ := req["instructions"].(string)
+		next := appendUnique(existing, prompt)
+		if next == existing {
+			return body, false, nil
+		}
+		req["instructions"] = next
+		out, err := json.Marshal(req)
+		return out, err == nil, err
+	}
+
+	messages, ok := req["messages"].([]any)
+	if !ok {
+		return body, false, nil
+	}
+
+	clone := make([]any, len(messages))
+	copy(clone, messages)
+	for i, raw := range clone {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" && role != "developer" {
+			continue
+		}
+		content, ok := msg["content"].(string)
+		if !ok {
+			continue
+		}
+		next := appendUnique(content, prompt)
+		if next == content {
+			return body, false, nil
+		}
+		msg["content"] = next
+		clone[i] = msg
+		req["messages"] = clone
+		out, err := json.Marshal(req)
+		return out, err == nil, err
+	}
+
+	// No simple instruction-bearing message exists. A developer message becomes
+	// Responses instructions in buildResponsesBody.
+	dev := map[string]any{"role": "developer", "content": prompt}
+	req["messages"] = append([]any{dev}, clone...)
+	out, err := json.Marshal(req)
+	return out, err == nil, err
+}
+
 func appendUnique(existing, prompt string) string {
 	existing = strings.TrimSpace(existing)
 	if existing == "" {

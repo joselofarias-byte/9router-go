@@ -84,3 +84,20 @@ func TestInjectExtendsExistingDeveloperAndIsIdempotent(t *testing.T) {
 		t.Fatal("idempotent inject changed body")
 	}
 }
+
+func TestInjectCodexPreservesFirstSystemInstruction(t *testing.T) {
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"system","content":"caller system"},{"role":"user","content":"hello"}]}`)
+	out, changed, err := InjectCodex(body, "agentic")
+	if err != nil || !changed {
+		t.Fatalf("inject failed: changed=%v err=%v", changed, err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	msgs := got["messages"].([]any)
+	first := msgs[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != "caller system\n\nagentic" {
+		t.Fatalf("first instruction=%v", first)
+	}
+}

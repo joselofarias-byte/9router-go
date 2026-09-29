@@ -164,7 +164,11 @@ func (h *ChatHandler) tryForwardWithConnection(
 			return fmt.Errorf("unknown prompt profile %q", profileName)
 		}
 		if profile.Supports(provider) {
-			next, changed, injectErr := promptprofile.Inject(pipedBody, profile.Instructions)
+			inject := promptprofile.Inject
+			if provider == "codex" {
+				inject = promptprofile.InjectCodex
+			}
+			next, changed, injectErr := inject(pipedBody, profile.Instructions)
 			if injectErr != nil {
 				return fmt.Errorf("inject prompt profile %s: %w", profile.Name, injectErr)
 			}

@@ -39,7 +39,7 @@ The v1 profile is provider-scoped. It currently applies only when the resolved p
 
 - OpenAI Chat Completions: add or extend a `developer` message. Existing caller system/developer content is preserved.
 - Responses-format bodies: add or extend top-level `instructions`.
-- Codex: the existing Chat-Completions-to-Responses adapter converts the injected developer message into Responses `instructions`.
+- Codex: preserve the caller's first system/developer instruction, append the profile to it, then let the existing Chat-Completions-to-Responses adapter promote the combined text into Responses `instructions`.
 
 No arbitrary instruction text is accepted from the header; the header selects only a fixed built-in profile.
 
