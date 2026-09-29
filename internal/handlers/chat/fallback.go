@@ -462,6 +462,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	}
 
 	latencyMs := time.Since(start).Milliseconds()
+	recordVirtualFreeTraffic(ctx, provider, model, connectionID, fwdErr, int(latencyMs))
 
 	// Lightweight request trace for /debug/traces (provider/model latency).
 	completed := fwdErr == nil
