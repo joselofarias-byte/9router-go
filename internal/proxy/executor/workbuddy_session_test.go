@@ -63,6 +63,7 @@ func TestWorkBuddyPromptRejectsUnsupportedMessageShapes(t *testing.T) {
 		"unknown content part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"input_audio","input_audio":"bytes"}]}]}`,
 		"malformed content part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},"unexpected"]}]}`,
 		"malformed text part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"text","text":42}]}]}`,
+		"malformed type part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":42,"text":"unexpected"}]}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
