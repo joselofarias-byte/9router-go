@@ -71,6 +71,7 @@ The session executor is intentionally conservative:
 
 - it shells out with `exec.CommandContext`; no user-controlled shell command is constructed;
 - requests are serialized one at a time to avoid hammering a quota-limited personal session;
+- a quota/rate-limit result pauses further CLI invocations for one minute in the current router process; requests during that pause receive a safe 429 so configured fallback routes can continue;
 - Auto Memory and CodeBuddy background tasks are disabled for each routed request;
 - each invocation uses one turn and disables session persistence;
 - the working directory defaults to the user's home directory and can be overridden with `WORKBUDDY_SESSION_CWD`;

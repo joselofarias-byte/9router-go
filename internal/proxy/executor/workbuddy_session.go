@@ -20,8 +20,13 @@ import (
 // this surface separate from codebuddy-intl so API-key and product-session
 // credentials never get conflated.
 var workBuddySessionSemaphore = make(chan struct{}, 1)
+// A Free CLI session has no providerConnections row, so the database model-lock
+// path cannot prevent repeated CLI invocations after its shared quota runs out.
+// Access is serialized by workBuddySessionSemaphore.
+var workBuddySessionQuotaUntil time.Time
 
 const workBuddyLeanSystemPrompt = "You are a general-purpose assistant. Answer the user directly. Do not use tools."
+const workBuddySessionQuotaCooldown = time.Minute
 
 type workBuddyCLIEvent struct {
 	Type         string `json:"type"`
@@ -72,10 +77,12 @@ func ForwardWorkBuddySession(w http.ResponseWriter, req *Request) error {
 	case <-req.Ctx.Done():
 		return req.Ctx.Err()
 	}
-
 	model, prompt, err := workBuddyPromptFromBody(req.Body)
 	if err != nil {
 		return fmt.Errorf("workbuddy-session request: %w", err)
+	}
+	if time.Now().Before(workBuddySessionQuotaUntil) {
+		return workBuddySessionFailure(nil, "quota exceeded")
 	}
 
 	bin := strings.TrimSpace(os.Getenv("WORKBUDDY_CODEBUDDY_PATH"))
@@ -111,16 +118,16 @@ func ForwardWorkBuddySession(w http.ResponseWriter, req *Request) error {
 		if req.Ctx.Err() != nil {
 			return req.Ctx.Err()
 		}
-		return workBuddySessionFailure(err, stderr.String())
+		return workBuddySessionRunFailure(err, stderr.String())
 	}
 
 	parsed, err := parseWorkBuddyCLIOutput(stdout.Bytes())
 	if err != nil {
 		var resultErr *workBuddyResultError
 		if errors.As(err, &resultErr) {
-			return workBuddySessionFailure(err, resultErr.detail)
+			return workBuddySessionRunFailure(err, resultErr.detail)
 		}
-		return workBuddySessionFailure(err, "")
+		return workBuddySessionRunFailure(err, "")
 	}
 	if parsed.Model == "" {
 		parsed.Model = model
@@ -349,6 +356,14 @@ func parseWorkBuddyCLIOutput(raw []byte) (*workBuddyCLIResult, error) {
 
 // The CLI can print session tokens, paths or parts of the request on failure.
 // Use its output only to choose a bounded status; never return it to clients or logs.
+func workBuddySessionRunFailure(err error, output string) error {
+	failure := workBuddySessionFailure(err, output)
+	if upstream, ok := failure.(*proxy.UpstreamError); ok && upstream.StatusCode == http.StatusTooManyRequests {
+		workBuddySessionQuotaUntil = time.Now().Add(workBuddySessionQuotaCooldown)
+	}
+	return failure
+}
+
 func workBuddySessionFailure(err error, output string) error {
 	status := http.StatusBadGateway
 	code := "workbuddy_cli_error"

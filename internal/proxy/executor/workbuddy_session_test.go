@@ -1,11 +1,17 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/proxy"
 )
@@ -139,5 +145,38 @@ func TestParseWorkBuddyErrorDoesNotReturnCLIText(t *testing.T) {
 	got := workBuddySessionFailure(err, resultErr.detail).(*proxy.UpstreamError)
 	if got.StatusCode != http.StatusUnauthorized || strings.Contains(got.Error(), secret) {
 		t.Fatalf("unsafe session failure: %v", got)
+	}
+}
+
+func TestWorkBuddyQuotaCooldownSkipsCLIAndExpires(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock CLI uses a POSIX shell")
+	}
+	workBuddySessionQuotaUntil = time.Time{}
+	defer func() { workBuddySessionQuotaUntil = time.Time{} }()
+
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "invocations")
+	cli := filepath.Join(dir, "codebuddy-mock")
+	script := "#!/bin/sh\nprintf x >> \"$WORKBUDDY_TEST_COUNTER\"\nprintf 'quota exceeded\\n' >&2\nexit 1\n"
+	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WORKBUDDY_CODEBUDDY_PATH", cli)
+	t.Setenv("WORKBUDDY_TEST_COUNTER", counter)
+	req := &Request{Ctx: context.Background(), Body: []byte(`{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"hi"}]}`)}
+	for i, wantCalls := range []int{1, 1, 2} {
+		if i == 2 {
+			workBuddySessionQuotaUntil = time.Now().Add(-time.Second)
+		}
+		err := ForwardWorkBuddySession(httptest.NewRecorder(), req)
+		var upstream *proxy.UpstreamError
+		if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("request %d: expected safe 429, got %v", i, err)
+		}
+		calls, readErr := os.ReadFile(counter)
+		if readErr != nil || len(calls) != wantCalls {
+			t.Fatalf("request %d: CLI calls=%d, want %d (read error: %v)", i, len(calls), wantCalls, readErr)
+		}
 	}
 }
