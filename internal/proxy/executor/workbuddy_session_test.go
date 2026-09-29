@@ -53,6 +53,26 @@ func TestWorkBuddyPromptRejectsToolsAndImages(t *testing.T) {
 	}
 }
 
+func TestWorkBuddyPromptRejectsUnsupportedMessageShapes(t *testing.T) {
+	const model = "gpt-5.6-luna"
+	cases := map[string]string{
+		"malformed tools": `{"model":"` + model + `","tools":{"type":"function"},"messages":[{"role":"user","content":"hi"}]}`,
+		"malformed message": `{"model":"` + model + `","messages":[{"role":"user","content":"hi"},"unexpected"]}`,
+		"unsupported role": `{"model":"` + model + `","messages":[{"role":"user","content":"hi"},{"role":"function","content":"tool result"}]}`,
+		"malformed tool calls": `{"model":"` + model + `","messages":[{"role":"assistant","content":"hi","tool_calls":{"id":"call-1"}}]}`,
+		"unknown content part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"input_audio","input_audio":"bytes"}]}]}`,
+		"malformed content part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},"unexpected"]}]}`,
+		"malformed text part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"text","text":42}]}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := workBuddyPromptFromBody([]byte(body)); err == nil {
+				t.Fatal("unsupported content was silently omitted")
+			}
+		})
+	}
+}
+
 func TestParseWorkBuddyCLIOutputPreservesCredit(t *testing.T) {
 	raw := []byte(`[
 		{
