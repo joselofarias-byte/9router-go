@@ -201,6 +201,12 @@ func TestHandleChatCompletions_FreeBestRoutesToLlamaCppWithoutCredentialRow(t *t
 	if hits.Load() != 1 {
 		t.Fatalf("llama.cpp hits = %d, want 1", hits.Load())
 	}
+	if got := rec.Header().Get(HeaderRouteProvider); got != "llamacpp" {
+		t.Fatalf("route provider header = %q, want llamacpp", got)
+	}
+	if got := rec.Header().Get(HeaderRouteModel); got != "qwen-local" {
+		t.Fatalf("route model header = %q, want qwen-local", got)
+	}
 	if !strings.Contains(rec.Body.String(), `"local"`) {
 		t.Fatalf("unexpected local response: %s", rec.Body.String())
 	}
@@ -688,6 +694,12 @@ func TestHandleComboFallback_SkipsCandidateThatBecamePaid(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(HeaderRouteProvider); got != "groq" {
+		t.Fatalf("route provider header = %q, want groq", got)
+	}
+	if got := rec.Header().Get(HeaderRouteModel); got != "llama-3.1-8b-instant" {
+		t.Fatalf("route model header = %q, want llama-3.1-8b-instant", got)
 	}
 }
 

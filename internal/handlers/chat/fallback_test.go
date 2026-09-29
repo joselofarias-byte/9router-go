@@ -118,6 +118,12 @@ func TestTryForwardWithConnection_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
+	if got := rec.Header().Get(HeaderRouteProvider); got != "deepseek" {
+		t.Errorf("route provider header = %q, want deepseek", got)
+	}
+	if got := rec.Header().Get(HeaderRouteModel); got != "deepseek-chat" {
+		t.Errorf("route model header = %q, want deepseek-chat", got)
+	}
 }
 
 func TestTryForwardWithConnection_NoAPIKey(t *testing.T) {

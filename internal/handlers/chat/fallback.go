@@ -27,6 +27,24 @@ import (
 // StatusClientClosedRequest is the canonical HTTP status for client connection aborts (nginx 499).
 const StatusClientClosedRequest = 499
 
+// Route response headers expose the concrete upstream selected by aliases,
+// combos, and virtual Fabric pools. They intentionally omit the connection ID
+// and all credential-bearing data. A later fallback attempt overwrites them
+// before the response is committed, so a successful response identifies the
+// provider/model that actually served it.
+const (
+	HeaderRouteProvider = "X-9Router-Provider"
+	HeaderRouteModel    = "X-9Router-Model"
+)
+
+func setRouteResponseHeaders(w http.ResponseWriter, provider, model string) {
+	if w == nil {
+		return
+	}
+	w.Header().Set(HeaderRouteProvider, provider)
+	w.Header().Set(HeaderRouteModel, model)
+}
+
 // handleAccountFallback attempts to forward a request with automatic account fallback.
 func (h *ChatHandler) handleAccountFallback(
 	ctx context.Context,
@@ -358,6 +376,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	metrics := &streamMetrics{}
 	var fwdErr error
 
+	setRouteResponseHeaders(w, provider, model)
 	usagetracker.GetTracker().TrackPending(model, provider, connectionID, true, false)
 	defer func() {
 		hasErr := fwdErr != nil

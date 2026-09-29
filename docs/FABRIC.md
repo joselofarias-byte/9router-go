@@ -6,6 +6,12 @@ This fork is not a generic copy of `luqman-v1/9router-go`. It keeps the upstream
 
 `fabric-free`, `free-best`, and `free` are public names for one logical pool.
 
+Successful chat responses expose the concrete route chosen from that pool in
+`X-9Router-Provider` and `X-9Router-Model`. The headers never contain a
+connection ID, account identity, token, or API key. When fallback advances to
+another candidate before committing the response, the later candidate replaces
+the earlier header values.
+
 | Name | Role |
 |------|------|
 | `fabric-free` | Canonical pool ID used by the control plane, admin APIs, and docs. |
