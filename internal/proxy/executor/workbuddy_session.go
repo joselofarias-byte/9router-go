@@ -296,7 +296,10 @@ func workBuddyContentText(content any) (string, error) {
 			if !ok {
 				return "", fmt.Errorf("unsupported message content part")
 			}
-			typeName, _ := part["type"].(string)
+			typeName, ok := part["type"].(string)
+			if !ok && part["type"] != nil {
+				return "", fmt.Errorf("unsupported message content part")
+			}
 			switch typeName {
 			case "text", "input_text", "output_text", "":
 				text, ok := part["text"].(string)
