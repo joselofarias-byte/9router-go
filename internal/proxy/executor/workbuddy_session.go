@@ -225,8 +225,11 @@ func workBuddyPromptFromBody(body []byte) (string, string, error) {
 		return "", "", fmt.Errorf("missing model")
 	}
 
-	if tools, ok := reqMap["tools"].([]any); ok && len(tools) > 0 {
-		return "", "", fmt.Errorf("tools are not supported by the WorkBuddy Free session adapter yet")
+	if rawTools, present := reqMap["tools"]; present && rawTools != nil {
+		tools, ok := rawTools.([]any)
+		if !ok || len(tools) > 0 {
+			return "", "", fmt.Errorf("tools are not supported by the WorkBuddy Free session adapter yet")
+		}
 	}
 	if toolChoice, ok := reqMap["tool_choice"]; ok && toolChoice != nil {
 		if s, isString := toolChoice.(string); !isString || (s != "" && s != "none") {
@@ -243,15 +246,25 @@ func workBuddyPromptFromBody(body []byte) (string, string, error) {
 	for _, raw := range messages {
 		msg, ok := raw.(map[string]any)
 		if !ok {
-			continue
+			return "", "", fmt.Errorf("unsupported message shape")
 		}
-		role, _ := msg["role"].(string)
+		role, ok := msg["role"].(string)
+		if !ok && msg["role"] != nil {
+			return "", "", fmt.Errorf("unsupported message role")
+		}
 		role = strings.TrimSpace(role)
-		if role == "tool" {
+		switch role {
+		case "", "system", "developer", "user", "assistant":
+		case "tool":
 			return "", "", fmt.Errorf("tool messages are not supported by the WorkBuddy Free session adapter yet")
+		default:
+			return "", "", fmt.Errorf("unsupported message role")
 		}
-		if tc, ok := msg["tool_calls"].([]any); ok && len(tc) > 0 {
-			return "", "", fmt.Errorf("tool-call history is not supported by the WorkBuddy Free session adapter yet")
+		if rawCalls, present := msg["tool_calls"]; present && rawCalls != nil {
+			calls, ok := rawCalls.([]any)
+			if !ok || len(calls) > 0 {
+				return "", "", fmt.Errorf("tool-call history is not supported by the WorkBuddy Free session adapter yet")
+			}
 		}
 		text, err := workBuddyContentText(msg["content"])
 		if err != nil {
@@ -281,18 +294,24 @@ func workBuddyContentText(content any) (string, error) {
 		for _, rawPart := range v {
 			part, ok := rawPart.(map[string]any)
 			if !ok {
-				continue
+				return "", fmt.Errorf("unsupported message content part")
 			}
 			typeName, _ := part["type"].(string)
 			switch typeName {
 			case "text", "input_text", "output_text", "":
-				if text, ok := part["text"].(string); ok && text != "" {
+				text, ok := part["text"].(string)
+				if !ok {
+					return "", fmt.Errorf("unsupported message text part")
+				}
+				if text != "" {
 					parts = append(parts, text)
 				}
 			case "image_url", "image", "input_image":
 				return "", fmt.Errorf("image content is not supported by the WorkBuddy Free session adapter yet")
 			case "tool_use", "tool_result", "tool_call":
 				return "", fmt.Errorf("tool content is not supported by the WorkBuddy Free session adapter yet")
+			default:
+				return "", fmt.Errorf("unsupported message content part")
 			}
 		}
 		return strings.Join(parts, "\n"), nil
