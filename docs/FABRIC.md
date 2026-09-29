@@ -23,6 +23,7 @@ They are **not** two implementations. Both expand live against the current regis
 1. Keep only `PricingMode` `free` or `free_tier`.
 2. Require an active provider, model, and account.
 3. Drop quarantined, quota-exhausted, and expired-session nodes.
+   Live free-pool traffic updates this availability state, including quota errors from no-auth local backends; request-scoped 4xx and client cancellations are ignored.
 4. Score remaining nodes with trust, observed success rate, recent latency, free bonus, and account-risk penalty.
 5. Return an ordered combo-style fallback list. The existing data-plane combo path then fails over.
 
