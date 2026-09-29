@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, integration/fabric-free-local-20260927]
   pull_request:
-    branches: [main, sync/upstream-2026-09-15, integration/fabric-free-local-20260927]
+    branches: [main, sync/upstream-2026-09-15]
 
 permissions:
   contents: read
