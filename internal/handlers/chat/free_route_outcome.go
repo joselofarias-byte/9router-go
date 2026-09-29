@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"9router/proxy/internal/controlplane/pools"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/providers"
@@ -45,7 +46,7 @@ func recordVirtualFreeTraffic(ctx context.Context, provider, wireModel, connecti
 		return
 	}
 	for _, model := range state.ProviderModels[provider] {
-		if model == nil || !model.IsActive || model.ProviderID != provider {
+		if model == nil || !model.IsActive || model.ProviderID != provider || !pools.IsFreePricing(model) {
 			continue
 		}
 		upstreamModel := model.UpstreamModel

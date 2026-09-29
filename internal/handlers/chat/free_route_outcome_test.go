@@ -72,6 +72,10 @@ func TestVirtualFreeTrafficMapsWireModelAndIgnoresRequestError(t *testing.T) {
 			ProviderID: "groq", ModelID: "catalog-free", UpstreamModel: "actual-wire-model",
 			PricingMode: "free", IsActive: true,
 		},
+		"catalog-paid": {
+			ProviderID: "groq", ModelID: "catalog-paid", UpstreamModel: "actual-wire-model",
+			PricingMode: "paid", IsActive: true,
+		},
 	}
 	ctx := withVirtualFree(context.Background(), true)
 	recordVirtualFreeTraffic(ctx, "groq", "actual-wire-model", "conn-1",
@@ -81,6 +85,9 @@ func TestVirtualFreeTrafficMapsWireModelAndIgnoresRequestError(t *testing.T) {
 	}
 	if blocked, _ := globalTrustManager.IsUnavailable("groq", "actual-wire-model", "conn-1"); blocked {
 		t.Fatal("created trust state under the wire model")
+	}
+	if blocked, _ := globalTrustManager.IsUnavailable("groq", "catalog-paid", "conn-1"); blocked {
+		t.Fatal("free traffic altered a paid catalog entry sharing the wire model")
 	}
 	recordVirtualFreeTraffic(ctx, "groq", "actual-wire-model", "conn-2",
 		&upstreamError{StatusCode: http.StatusBadRequest, Body: []byte(`{"error":{"message":"bad request"}}`)}, 4)
