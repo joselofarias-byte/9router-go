@@ -2,6 +2,7 @@ package chat
 
 import (
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/promptprofile"
 	"context"
 	json "encoding/json/v2"
 	"errors"
@@ -157,6 +158,26 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 
 	pipedBody := h.applyTokenSavers(body)
+	if profileName := promptprofile.FromContext(ctx); profileName != "" {
+		profile, ok := promptprofile.Lookup(profileName)
+		if !ok {
+			return fmt.Errorf("unknown prompt profile %q", profileName)
+		}
+		if profile.Supports(provider) {
+			inject := promptprofile.Inject
+			if provider == "codex" {
+				inject = promptprofile.InjectCodex
+			}
+			next, changed, injectErr := inject(pipedBody, profile.Instructions)
+			if injectErr != nil {
+				return fmt.Errorf("inject prompt profile %s: %w", profile.Name, injectErr)
+			}
+			if changed {
+				pipedBody = next
+				log.Debug("prompt_profile", "injected", "profile", profile.Name, "provider", provider, "model", model)
+			}
+		}
+	}
 	// Sanitize tool schemas for all OpenAI-compatible providers (opencode, gemini-openai, etc.)
 	// Fixes misplaced `required` inside `properties` and missing `items` for arrays.
 	if sanitized, err := translator.SanitizeOpenAITools(pipedBody); err == nil && sanitized != nil && string(sanitized) != string(pipedBody) {

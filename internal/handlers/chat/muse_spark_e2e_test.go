@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -11,7 +12,15 @@ import (
 	"9router/proxy/internal/proxy/executor"
 )
 
+func requireMuseSparkLive(t *testing.T) {
+	t.Helper()
+	if os.Getenv("OPENCODE_LIVE_E2E") != "1" {
+		t.Skip("live OpenCode/Muse Spark test; set OPENCODE_LIVE_E2E=1 to enable")
+	}
+}
+
 func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
+	requireMuseSparkLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -65,6 +74,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
+	requireMuseSparkLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -109,6 +119,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
+	requireMuseSparkLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -161,6 +172,7 @@ func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
+	requireMuseSparkLive(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

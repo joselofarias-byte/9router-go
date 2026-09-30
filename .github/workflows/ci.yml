@@ -20,6 +20,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Prompt profile benchmark shell syntax
+        run: bash -n scripts/prompt-profile-bench.sh
+
       - name: Test
         run: go test ./... -v
 
