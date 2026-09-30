@@ -49,6 +49,7 @@ func RegisterAll() {
 	Register("kimi", func() Executor { return ForwardOpenAI })
 	Register("clinepass", func() Executor { return ForwardOpenAI })
 	Register("ollama-local", func() Executor { return ForwardOpenAI })
+	Register("llamacpp", func() Executor { return ForwardOpenAI })
 	Register("minimax-cn", func() Executor { return ForwardOpenAI })
 	Register("kimi-coding", func() Executor { return ForwardOpenAI })
 	Register("claude", func() Executor { return ForwardOpenAI })
