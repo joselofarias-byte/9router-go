@@ -19,6 +19,20 @@ const (
 	PolicyTrusted   Policy = "trusted-only"
 )
 
+const virtualNoAuthAccountPrefix = "noauth:"
+
+// VirtualNoAuthAccountID gives credential-free providers a stable routing
+// identity for scoring without creating a fake database credential row.
+func VirtualNoAuthAccountID(providerID string) string {
+	return virtualNoAuthAccountPrefix + providerID
+}
+
+// IsVirtualNoAuthAccount validates the synthetic identity used only by
+// KnownProviders entries explicitly marked NoAuth.
+func IsVirtualNoAuthAccount(providerID, accountID string) bool {
+	return providerID != "" && accountID == VirtualNoAuthAccountID(providerID)
+}
+
 // IsFreePricing reports whether Fabric currently classifies a model as free.
 // The comparison is exact: discovery writes "free" and "free_tier", and any
 // other spelling stays out of the free pool.
@@ -87,19 +101,11 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 
 			riskProfile := providers.GetProviderRiskProfile(provID)
 
-			// Find accounts for this provider
-			for _, acc := range state.Accounts {
-				if acc == nil {
-					continue
-				}
-				if acc.ProviderID != provID || !acc.IsActive {
-					continue
-				}
-
-				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, acc.ID)
+			appendCandidate := func(accountID string) {
+				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, accountID)
 
 				if policy == PolicyTrusted && trustLvl != trust.TrustTrusted && trustLvl != trust.TrustVerified {
-					continue
+					return
 				}
 
 				factors := scoring.Factors{
@@ -111,7 +117,7 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 
 				score := scoring.Calculate(factors)
 				if !score.IsRoutable {
-					continue
+					return
 				}
 
 				// If FreeFirst, strongly boost free models so they float to the top.
@@ -124,9 +130,26 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					ProviderID:    provID,
 					ModelID:       pm.ModelID,
 					UpstreamModel: pm.UpstreamModel,
-					AccountID:     acc.ID,
+					AccountID:     accountID,
 					Score:         score,
 				})
+			}
+
+			hasActiveAccount := false
+			for _, acc := range state.Accounts {
+				if acc == nil || acc.ProviderID != provID || !acc.IsActive {
+					continue
+				}
+				hasActiveAccount = true
+				appendCandidate(acc.ID)
+			}
+
+			// Credential-free providers such as local llama.cpp are routable
+			// without inventing a providerConnections row.
+			if !hasActiveAccount {
+				if cfg, known := providers.KnownProviders[provID]; known && cfg.NoAuth {
+					appendCandidate(VirtualNoAuthAccountID(provID))
+				}
 			}
 		}
 	}
