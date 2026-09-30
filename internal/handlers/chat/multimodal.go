@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,6 +61,12 @@ func (h *ChatHandler) resolveSingleModel(body []byte) (*ModelInfo, *modelsProvid
 	if err != nil {
 		return nil, nil, err
 	}
+	if modelInfo.VirtualFree {
+		modelInfo, err = h.SelectVirtualFreeEntry(modelInfo)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
 	return h.buildProviderCtx(modelInfo)
 }
@@ -86,6 +93,16 @@ func (h *ChatHandler) buildProviderCtx(modelInfo *ModelInfo) (*ModelInfo, *model
 		modelInfo:   modelInfo,
 	}
 	return modelInfo, ctx, nil
+}
+
+// writeModelPrepError maps resolve and connection setup failures.
+// An unavailable virtual free pool keeps the stable 503 code.
+func writeModelPrepError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrFreeRouteUnavailable) {
+		writeFreeRouteUnavailable(w)
+		return
+	}
+	handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
 }
 
 // statusForModelErr maps a resolve/connection error to an HTTP status.
@@ -144,7 +161,7 @@ func (h *ChatHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 
 	_, ctx, err := h.resolveSingleModel(body)
 	if err != nil {
-		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		writeModelPrepError(w, err)
 		return
 	}
 	h.forwardMultimodal(w, r, ctx, "/images/generations", body)
@@ -161,7 +178,7 @@ func (h *ChatHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request) 
 
 	_, ctx, err := h.resolveSingleModel(body)
 	if err != nil {
-		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		writeModelPrepError(w, err)
 		return
 	}
 	h.forwardMultimodal(w, r, ctx, "/audio/speech", body)
@@ -183,12 +200,19 @@ func (h *ChatHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.R
 	defer r.Body.Close()
 	modelInfo, err := h.resolveModel(model)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		WriteResolveError(w, err)
 		return
+	}
+	if modelInfo.VirtualFree {
+		modelInfo, err = h.SelectVirtualFreeEntry(modelInfo)
+		if err != nil {
+			WriteResolveError(w, err)
+			return
+		}
 	}
 	_, ctx, err := h.buildProviderCtx(modelInfo)
 	if err != nil {
-		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		writeModelPrepError(w, err)
 		return
 	}
 
@@ -235,7 +259,7 @@ func (h *ChatHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Requ
 
 	_, ctx, err := h.resolveSingleModel(body)
 	if err != nil {
-		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		writeModelPrepError(w, err)
 		return
 	}
 	h.forwardMultimodal(w, r, ctx, "/videos/generations", body)
@@ -253,7 +277,7 @@ func (h *ChatHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) {
 
 	_, ctx, err := h.resolveSingleModel(body)
 	if err != nil {
-		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		writeModelPrepError(w, err)
 		return
 	}
 	h.forwardMultimodal(w, r, ctx, "/videos/edits", body)
@@ -271,7 +295,7 @@ func (h *ChatHandler) HandleVideoExtensions(w http.ResponseWriter, r *http.Reque
 
 	_, ctx, err := h.resolveSingleModel(body)
 	if err != nil {
-		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		writeModelPrepError(w, err)
 		return
 	}
 	h.forwardMultimodal(w, r, ctx, "/videos/extensions", body)

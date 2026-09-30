@@ -30,6 +30,11 @@ func (a *UnoRouterAdapter) SourceID() string {
 	return "unorouter"
 }
 
+// ScopedProviderIDs returns the provider whose catalog this adapter owns.
+func (a *UnoRouterAdapter) ScopedProviderIDs() []string {
+	return []string{"unorouter"}
+}
+
 func (a *UnoRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UnoRouterCatalogURL, nil)
 	if err != nil {
@@ -37,7 +42,7 @@ func (a *UnoRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 	}
 
 	if a.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer " + a.apiKey)
+		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
 
 	resp, err := a.client.Do(req)

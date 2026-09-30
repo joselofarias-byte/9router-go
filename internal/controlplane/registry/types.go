@@ -27,9 +27,10 @@ type ProviderModel struct {
 	ProviderID    string    `json:"providerId"`
 	ModelID       string    `json:"modelId"`
 	UpstreamModel string    `json:"upstreamModel"`
-	PricingMode   string    `json:"pricingMode"` // "free", "free_tier", "paid", "unknown"
-	CostMetadata  string    `json:"costMetadata"` // JSON blob for cost tracking
-	Capabilities  string    `json:"capabilities"` // JSON blob of boolean capabilities
+	PricingMode   string    `json:"pricingMode"`        // "free", "free_tier", "paid", "unknown"
+	CostMetadata  string    `json:"costMetadata"`       // JSON blob for cost tracking
+	Capabilities  string    `json:"capabilities"`       // JSON blob of boolean capabilities
+	SourceID      string    `json:"sourceId,omitempty"` // discovery adapter that last set PricingMode
 	IsActive      bool      `json:"isActive"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
@@ -37,22 +38,22 @@ type ProviderModel struct {
 
 // Account represents a provider account (credentials).
 type Account struct {
-	ID         string    `json:"id"`
-	ProviderID string    `json:"providerId"`
+	ID         string `json:"id"`
+	ProviderID string `json:"providerId"`
 	// Note: AuthData is intentionally omitted from the Registry schema to prevent
 	// plaintext credential exposure in registry JSON snapshots. Data Plane
 	// handles credential injection securely from the underlying DB rows.
-	IsActive   bool      `json:"isActive"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	IsActive  bool      `json:"isActive"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // RegistryState represents the entire active registry state in memory.
 type RegistryState struct {
-	Providers      map[string]*Provider           `json:"providers"`
-	Models         map[string]*Model              `json:"models"`
+	Providers      map[string]*Provider                 `json:"providers"`
+	Models         map[string]*Model                    `json:"models"`
 	ProviderModels map[string]map[string]*ProviderModel `json:"providerModels"`
-	Accounts       map[string]*Account            `json:"accounts"`
+	Accounts       map[string]*Account                  `json:"accounts"`
 }
 
 // Snapshot represents a versioned snapshot of the registry state.
@@ -61,7 +62,7 @@ type Snapshot struct {
 	CreatedAt time.Time `json:"createdAt"`
 	Reason    string    `json:"reason"`
 	Checksum  string    `json:"checksum"`
-	Status    string    `json:"status"` // "candidate", "active", "last_known_good"
+	Status    string    `json:"status"`  // "candidate", "active", "last_known_good"
 	Payload   string    `json:"payload"` // Serialized RegistryState
 }
 

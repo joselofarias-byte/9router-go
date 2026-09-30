@@ -18,6 +18,10 @@ type ModelInfo struct {
 	ComboModels  []string // non-empty when resolved from a combo; each entry is "provider/model"
 	Strategy     string   // combo routing strategy: "fallback", "round-robin", "sticky", "fusion"
 	StickyLimit  int      // sticky round-robin: consecutive requests per model before rotating (default 1)
+	// VirtualFree is set only for the built-in free / free-best pool.
+	// Fallback hops re-check that each entry is still free and connected.
+	// An explicit user alias or combo leaves this false, even when its name is free.
+	VirtualFree bool
 }
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/controlplane/registry"
+	cpsync "9router/proxy/internal/controlplane/sync"
 	"9router/proxy/internal/log"
 )
 
@@ -119,23 +120,35 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 	}
 
 	totalDiscovered := 0
+	deactivated := 0
 	for _, adapter := range o.adapters {
 		candidates, err := adapter.Discover(ctx)
 		if err != nil {
+			// Keep the previous classification when a source cannot be read.
+			// A successful empty catalog is different and deactivates below.
 			log.Warn("orchestrator", "adapter sync failed", "adapter", adapter.SourceID(), "err", err)
 			continue
 		}
 
 		totalDiscovered += len(candidates)
+		seen := make(map[string]map[string]bool)
+		now := time.Now().UTC()
 		for _, c := range candidates {
+			if c.ProviderID == "" || c.ModelID == "" {
+				continue
+			}
+			if c.SourceID == "" {
+				c.SourceID = adapter.SourceID()
+			}
+
 			// Upsert Provider
 			if _, exists := newState.Providers[c.ProviderID]; !exists {
 				newState.Providers[c.ProviderID] = &registry.Provider{
 					ID:        c.ProviderID,
 					Name:      c.ProviderID,
 					IsActive:  true,
-					CreatedAt: time.Now().UTC(),
-					UpdatedAt: time.Now().UTC(),
+					CreatedAt: now,
+					UpdatedAt: now,
 				}
 			}
 
@@ -144,34 +157,35 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 				newState.Models[c.ModelID] = &registry.Model{
 					ID:        c.ModelID,
 					Name:      c.ModelID,
-					CreatedAt: time.Now().UTC(),
-					UpdatedAt: time.Now().UTC(),
+					CreatedAt: now,
+					UpdatedAt: now,
 				}
 			}
 
-			// Upsert ProviderModel
 			if _, ok := newState.ProviderModels[c.ProviderID]; !ok {
 				newState.ProviderModels[c.ProviderID] = make(map[string]*registry.ProviderModel)
 			}
+			if _, ok := seen[c.ProviderID]; !ok {
+				seen[c.ProviderID] = make(map[string]bool)
+			}
+			seen[c.ProviderID][c.ModelID] = true
 
 			pm, exists := newState.ProviderModels[c.ProviderID][c.ModelID]
 			if !exists {
 				pm = &registry.ProviderModel{
-					ProviderID:    c.ProviderID,
-					ModelID:       c.ModelID,
-					UpstreamModel: c.UpstreamModel,
-					PricingMode:   c.PricingMode,
-					Capabilities:  c.Capabilities,
-					IsActive:      true,
-					CreatedAt:     time.Now().UTC(),
+					ProviderID: c.ProviderID,
+					ModelID:    c.ModelID,
+					CreatedAt:  now,
 				}
 				newState.ProviderModels[c.ProviderID][c.ModelID] = pm
 			}
-			pm.UpdatedAt = time.Now().UTC()
+			applyDiscoveredModel(pm, c, now)
 		}
+
+		deactivated += deactivateUnseenModels(newState, adapter, seen)
 	}
 
-	if totalDiscovered > 0 {
+	if totalDiscovered > 0 || deactivated > 0 {
 		snap, err := registry.CreateSnapshot(o.db, newState, "discovery_sync")
 		if err != nil {
 			log.Warn("orchestrator", "failed to create snapshot", "err", err)
@@ -183,8 +197,89 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 			log.Warn("orchestrator", "failed to activate snapshot", "err", err)
 			return
 		}
-		log.Info("orchestrator", "sync complete, new snapshot activated", "version", snap.Version, "candidates", totalDiscovered)
+		// The snapshot's account copy can be older than the latest connection
+		// sync. Re-read providerConnections so a disconnected provider cannot
+		// stay in the free pool via the generation fast path.
+		if o.db != nil {
+			if err := cpsync.RefreshAccountsAfterSnapshot(o.db); err != nil {
+				log.Warn("orchestrator", "account resync after snapshot failed", "err", err)
+			}
+		}
+		log.Info("orchestrator", "sync complete, new snapshot activated", "version", snap.Version, "candidates", totalDiscovered, "deactivated", deactivated)
 	} else {
 		log.Info("orchestrator", "sync complete, no new candidates found")
 	}
+}
+
+// applyDiscoveredModel writes the latest observation onto a provider model.
+// The same source always replaces pricing, so a model that is no longer free
+// leaves the free pool. A different source's "unknown" does not erase a
+// concrete free, free_tier, or paid classification.
+func applyDiscoveredModel(pm *registry.ProviderModel, c Candidate, now time.Time) {
+	if c.UpstreamModel != "" {
+		pm.UpstreamModel = c.UpstreamModel
+	}
+	if c.Capabilities != "" {
+		pm.Capabilities = c.Capabilities
+	}
+	if shouldReplacePricing(pm, c) {
+		pm.PricingMode = c.PricingMode
+		if pm.PricingMode == "" {
+			pm.PricingMode = "unknown"
+		}
+		pm.SourceID = c.SourceID
+	}
+	pm.IsActive = true
+	pm.UpdatedAt = now
+}
+
+func shouldReplacePricing(pm *registry.ProviderModel, c Candidate) bool {
+	if pm.SourceID == "" || pm.SourceID == c.SourceID || c.SourceID == "" {
+		return true
+	}
+	if c.PricingMode == "" || c.PricingMode == "unknown" {
+		return pm.PricingMode == "" || pm.PricingMode == "unknown"
+	}
+	return true
+}
+
+func deactivateUnseenModels(state *registry.RegistryState, adapter Adapter, seen map[string]map[string]bool) int {
+	scoped := map[string]struct{}{}
+	for provID := range seen {
+		scoped[provID] = struct{}{}
+	}
+	if scoper, ok := adapter.(ProviderScoper); ok {
+		for _, provID := range scoper.ScopedProviderIDs() {
+			if provID != "" {
+				scoped[provID] = struct{}{}
+			}
+		}
+	}
+
+	deactivated := 0
+	for provID := range scoped {
+		models := state.ProviderModels[provID]
+		for modelID, pm := range models {
+			if pm == nil || !pm.IsActive {
+				continue
+			}
+			if seen[provID][modelID] {
+				continue
+			}
+			if !ownedByAdapter(pm, adapter.SourceID()) {
+				continue
+			}
+			pm.IsActive = false
+			pm.UpdatedAt = time.Now().UTC()
+			deactivated++
+		}
+	}
+	if deactivated > 0 {
+		log.Info("orchestrator", "deactivated models missing from current catalog", "adapter", adapter.SourceID(), "count", deactivated)
+	}
+	return deactivated
+}
+
+func ownedByAdapter(pm *registry.ProviderModel, sourceID string) bool {
+	return pm.SourceID == "" || pm.SourceID == sourceID || pm.SourceID == "models.dev"
 }

@@ -15,8 +15,14 @@ import (
 var globalTrustManager = trust.NewManager()
 var globalRoutingEngine = &routing.Engine{TrustManager: globalTrustManager}
 
-// getActiveCandidates resolves the request routing pool.
+// getActiveCandidates resolves exact-model candidates using the default balanced policy.
 func getActiveCandidates(ctx context.Context, db *sql.DB, model string) []routing.RouteNode {
+	return getPolicyCandidates(ctx, db, model, routing.PolicyBalanced)
+}
+
+// getPolicyCandidates resolves either an exact model or a dynamic policy pool.
+// Passing model="" lets the policy select across all discovered models.
+func getPolicyCandidates(ctx context.Context, db *sql.DB, model string, policy routing.Policy) []routing.RouteNode {
 	if db != nil {
 		// Sync is safely called on every request because it internally
 		// uses a cheap generation-based check preventing full queries/locks
@@ -30,6 +36,5 @@ func getActiveCandidates(ctx context.Context, db *sql.DB, model string) []routin
 		}
 	}
 
-	// For now, always use Balanced policy logic by default
-	return globalRoutingEngine.SelectCandidates(model, routing.PolicyBalanced)
+	return globalRoutingEngine.SelectCandidates(model, policy)
 }

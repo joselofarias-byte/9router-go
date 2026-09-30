@@ -62,8 +62,15 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 
 	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
+	}
+	if modelInfo.VirtualFree {
+		modelInfo, err = h.ChatH.SelectVirtualFreeEntry(modelInfo)
+		if err != nil {
+			chat.WriteResolveError(w, err)
+			return
+		}
 	}
 
 	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
@@ -226,8 +233,15 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 
 	modelInfo, err := h.ChatH.ResolveModel(req.Model)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
+	}
+	if modelInfo.VirtualFree {
+		modelInfo, err = h.ChatH.SelectVirtualFreeEntry(modelInfo)
+		if err != nil {
+			chat.WriteResolveError(w, err)
+			return
+		}
 	}
 	_, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
@@ -450,7 +464,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
 		log.Warn("media", "resolve model failed", "endpoint", endpoint, "model", model, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
 	}
 	log.Debug("media", "forward request", "endpoint", endpoint, "model", model, "provider", modelInfo.Provider, "resolvedModel", modelInfo.Model)
@@ -458,7 +472,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	// Handle combo fallback if model is a combo
 	if len(modelInfo.ComboModels) > 0 {
 		var lastErr string
+		triedEligible := false
 		for _, entry := range modelInfo.ComboModels {
+			if !h.ChatH.AllowVirtualFreeHop(modelInfo.VirtualFree, entry) {
+				continue
+			}
+			triedEligible = true
 			subInfo, err := h.ChatH.ResolveModel(entry)
 			if err != nil {
 				continue
@@ -549,6 +568,10 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			w.WriteHeader(resp.StatusCode)
 			io.Copy(w, resp.Body)
 			h.Repo.UpdateConnectionLastUsed(conn.ID)
+			return
+		}
+		if modelInfo.VirtualFree && !triedEligible {
+			chat.WriteResolveError(w, chat.ErrFreeRouteUnavailable)
 			return
 		}
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("all combo models failed: %s", lastErr))

@@ -345,7 +345,7 @@ func keysString(m map[string]bool) string {
 
 // handleComboFallback iterates through combo model entries, trying each one.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
-func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
+func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, virtualFree bool) {
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
@@ -388,7 +388,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			excludeIDs = nil
 		}
 
+		sawEligibleFreeHop := false
 		for _, entry := range models {
+			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+				continue
+			}
+			sawEligibleFreeHop = true
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
@@ -501,6 +506,16 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			}
 		}
 
+		// A virtual free pool that lost every candidate fails closed here.
+		// Do not retry, and do not surface a generic combo failure that a
+		// client could confuse with a paid-provider outage.
+		if virtualFree && !sawEligibleFreeHop {
+			if !cw.IsCommitted() {
+				writeFreeRouteUnavailable(cw)
+			}
+			return
+		}
+
 		// All entries failed. Retry once only if a bounded wait is available;
 		// otherwise fall through to the error response below.
 		if lastErr == nil || ctx.Err() != nil || attempt == 1 {
@@ -547,7 +562,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 // handleMessagesComboFallback iterates through combo models for the Claude endpoint.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
-func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int) {
+func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, virtualFree bool) {
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
@@ -585,7 +600,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			excludeIDs = nil
 		}
 
+		sawEligibleFreeHop := false
 		for _, entry := range models {
+			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+				continue
+			}
+			sawEligibleFreeHop = true
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
@@ -688,6 +708,16 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
+		}
+
+		// A virtual free pool that lost every candidate fails closed here.
+		// Do not retry, and do not surface a generic combo failure that a
+		// client could confuse with a paid-provider outage.
+		if virtualFree && !sawEligibleFreeHop {
+			if !cw.IsCommitted() {
+				writeFreeRouteUnavailable(cw)
+			}
+			return
 		}
 
 		// All entries failed. Retry once only if a bounded wait is available;
@@ -828,7 +858,7 @@ func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, b
 		return
 	}
 	if len(panel) == 1 {
-		h.handleComboFallback(ctx, cw, body, panel, "fallback", isStream, translateResponse, comboName, stickyLimit)
+		h.handleComboFallback(ctx, cw, body, panel, "fallback", isStream, translateResponse, comboName, stickyLimit, false)
 		return
 	}
 
@@ -879,7 +909,7 @@ func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, b
 		return
 	}
 	if len(answers) == 1 {
-		h.handleComboFallback(ctx, cw, body, []string{answers[0].model}, "fallback", isStream, translateResponse, comboName, stickyLimit)
+		h.handleComboFallback(ctx, cw, body, []string{answers[0].model}, "fallback", isStream, translateResponse, comboName, stickyLimit, false)
 		return
 	}
 

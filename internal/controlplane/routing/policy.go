@@ -19,6 +19,13 @@ const (
 	PolicyTrusted   Policy = "trusted-only"
 )
 
+// IsFreePricing reports whether Fabric currently classifies a model as free.
+// The comparison is exact: discovery writes "free" and "free_tier", and any
+// other spelling stays out of the free pool.
+func IsFreePricing(mode string) bool {
+	return mode == "free" || mode == "free_tier"
+}
+
 type RouteNode struct {
 	ProviderID    string
 	ModelID       string
@@ -34,6 +41,8 @@ type Engine struct {
 
 // SelectCandidates evaluates a requested model/pool against the active registry snapshot,
 // applying the specified routing policy, and returns a sorted list of fallback candidate nodes.
+// An empty requestedModel selects every active model the policy allows. Virtual routes
+// such as free and free-best use that form to build a dynamic pool.
 func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteNode {
 	state := registry.GetActiveState()
 	if state == nil {
@@ -58,18 +67,20 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 				continue
 			}
 
-			// Basic filtering (match requested name/alias)
-			if pm.ModelID != requestedModel {
-				continue
-			}
-
 			// Filter out inactive models
 			if !pm.IsActive {
 				continue
 			}
 
-			// Enforce Policy constraints
-			isFree := (pm.PricingMode == "free" || pm.PricingMode == "free_tier")
+			// Empty model means dynamic pool selection; otherwise preserve exact-match behavior.
+			if requestedModel != "" && pm.ModelID != requestedModel {
+				continue
+			}
+
+			// Enforce Policy constraints. Only the exact Fabric classifications
+			// "free" and "free_tier" count. "FREE", "free ", "trial", empty,
+			// paid, and unknown are not eligible for a free-only pool.
+			isFree := IsFreePricing(pm.PricingMode)
 			if policy == PolicyFreeOnly && !isFree {
 				continue // strict drop
 			}
