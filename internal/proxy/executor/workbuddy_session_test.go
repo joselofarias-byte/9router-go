@@ -1,8 +1,19 @@
 package executor
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"9router/proxy/internal/proxy"
 )
 
 func TestWorkBuddyPromptFromBody(t *testing.T) {
@@ -39,6 +50,27 @@ func TestWorkBuddyPromptRejectsToolsAndImages(t *testing.T) {
 		if _, _, err := workBuddyPromptFromBody(body); err == nil {
 			t.Fatalf("case %d: expected rejection", i)
 		}
+	}
+}
+
+func TestWorkBuddyPromptRejectsUnsupportedMessageShapes(t *testing.T) {
+	const model = "gpt-5.6-luna"
+	cases := map[string]string{
+		"malformed tools": `{"model":"` + model + `","tools":{"type":"function"},"messages":[{"role":"user","content":"hi"}]}`,
+		"malformed message": `{"model":"` + model + `","messages":[{"role":"user","content":"hi"},"unexpected"]}`,
+		"unsupported role": `{"model":"` + model + `","messages":[{"role":"user","content":"hi"},{"role":"function","content":"tool result"}]}`,
+		"malformed tool calls": `{"model":"` + model + `","messages":[{"role":"assistant","content":"hi","tool_calls":{"id":"call-1"}}]}`,
+		"unknown content part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"input_audio","input_audio":"bytes"}]}]}`,
+		"malformed content part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},"unexpected"]}]}`,
+		"malformed text part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"text","text":42}]}]}`,
+		"malformed type part": `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":42,"text":"unexpected"}]}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := workBuddyPromptFromBody([]byte(body)); err == nil {
+				t.Fatal("unsupported content was silently omitted")
+			}
+		})
 	}
 }
 
@@ -87,5 +119,85 @@ func TestRegisterAllIncludesWorkBuddySession(t *testing.T) {
 	RegisterAll()
 	if Get("workbuddy-session") == nil {
 		t.Fatal("workbuddy-session executor is not registered")
+	}
+}
+
+func TestWorkBuddySessionFailureIsSafeAndRoutable(t *testing.T) {
+	const secret = "session-token-private-123"
+	tests := []struct {
+		name   string
+		err    error
+		output string
+		status int
+		code   string
+	}{
+		{"quota", errors.New("exit status 1"), "quota exceeded; token=" + secret, http.StatusTooManyRequests, "workbuddy_quota"},
+		{"expired", errors.New("exit status 1"), "session expired; token=" + secret, http.StatusUnauthorized, "workbuddy_session_expired"},
+		{"missing", exec.ErrNotFound, secret, http.StatusServiceUnavailable, "workbuddy_cli_missing"},
+		{"unknown", errors.New("exit status 1"), secret, http.StatusBadGateway, "workbuddy_cli_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := workBuddySessionFailure(tt.err, tt.output)
+			var upstream *proxy.UpstreamError
+			if !errors.As(got, &upstream) || upstream.StatusCode != tt.status {
+				t.Fatalf("status: got %v, want %d", got, tt.status)
+			}
+			if !strings.Contains(string(upstream.Body), tt.code) {
+				t.Fatalf("body %q missing code %s", upstream.Body, tt.code)
+			}
+			if strings.Contains(got.Error(), secret) || strings.Contains(string(upstream.Body), secret) {
+				t.Fatal("session secret leaked through error")
+			}
+		})
+	}
+}
+
+func TestParseWorkBuddyErrorDoesNotReturnCLIText(t *testing.T) {
+	const secret = "session-token-private-123"
+	_, err := parseWorkBuddyCLIOutput([]byte(`[{"type":"result","is_error":true,"result":"session expired ` + secret + `"}]`))
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unsafe parser error: %v", err)
+	}
+	var resultErr *workBuddyResultError
+	if !errors.As(err, &resultErr) {
+		t.Fatalf("missing classified result error: %v", err)
+	}
+	got := workBuddySessionFailure(err, resultErr.detail).(*proxy.UpstreamError)
+	if got.StatusCode != http.StatusUnauthorized || strings.Contains(got.Error(), secret) {
+		t.Fatalf("unsafe session failure: %v", got)
+	}
+}
+
+func TestWorkBuddyQuotaCooldownSkipsCLIAndExpires(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock CLI uses a POSIX shell")
+	}
+	workBuddySessionQuotaUntil = time.Time{}
+	defer func() { workBuddySessionQuotaUntil = time.Time{} }()
+
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "invocations")
+	cli := filepath.Join(dir, "codebuddy-mock")
+	script := "#!/bin/sh\nprintf x >> \"$WORKBUDDY_TEST_COUNTER\"\nprintf 'quota exceeded\\n' >&2\nexit 1\n"
+	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WORKBUDDY_CODEBUDDY_PATH", cli)
+	t.Setenv("WORKBUDDY_TEST_COUNTER", counter)
+	req := &Request{Ctx: context.Background(), Body: []byte(`{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"hi"}]}`)}
+	for i, wantCalls := range []int{1, 1, 2} {
+		if i == 2 {
+			workBuddySessionQuotaUntil = time.Now().Add(-time.Second)
+		}
+		err := ForwardWorkBuddySession(httptest.NewRecorder(), req)
+		var upstream *proxy.UpstreamError
+		if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("request %d: expected safe 429, got %v", i, err)
+		}
+		calls, readErr := os.ReadFile(counter)
+		if readErr != nil || len(calls) != wantCalls {
+			t.Fatalf("request %d: CLI calls=%d, want %d (read error: %v)", i, len(calls), wantCalls, readErr)
+		}
 	}
 }
