@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -18,8 +20,13 @@ import (
 // this surface separate from codebuddy-intl so API-key and product-session
 // credentials never get conflated.
 var workBuddySessionSemaphore = make(chan struct{}, 1)
+// A Free CLI session has no providerConnections row, so the database model-lock
+// path cannot prevent repeated CLI invocations after its shared quota runs out.
+// Access is serialized by workBuddySessionSemaphore.
+var workBuddySessionQuotaUntil time.Time
 
 const workBuddyLeanSystemPrompt = "You are a general-purpose assistant. Answer the user directly. Do not use tools."
+const workBuddySessionQuotaCooldown = time.Minute
 
 type workBuddyCLIEvent struct {
 	Type         string `json:"type"`
@@ -54,6 +61,10 @@ type workBuddyCLIResult struct {
 	Credit                 float64
 }
 
+type workBuddyResultError struct{ detail string }
+
+func (*workBuddyResultError) Error() string { return "CodeBuddy result error" }
+
 // ForwardWorkBuddySession invokes the official CodeBuddy CLI using its saved
 // browser-authenticated session. The first implementation is intentionally
 // conservative: one request at a time, one turn, no tools, no session
@@ -66,10 +77,12 @@ func ForwardWorkBuddySession(w http.ResponseWriter, req *Request) error {
 	case <-req.Ctx.Done():
 		return req.Ctx.Err()
 	}
-
 	model, prompt, err := workBuddyPromptFromBody(req.Body)
 	if err != nil {
 		return fmt.Errorf("workbuddy-session request: %w", err)
+	}
+	if time.Now().Before(workBuddySessionQuotaUntil) {
+		return workBuddySessionFailure(nil, "quota exceeded")
 	}
 
 	bin := strings.TrimSpace(os.Getenv("WORKBUDDY_CODEBUDDY_PATH"))
@@ -102,19 +115,19 @@ func ForwardWorkBuddySession(w http.ResponseWriter, req *Request) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 2048 {
-			msg = msg[len(msg)-2048:]
+		if req.Ctx.Err() != nil {
+			return req.Ctx.Err()
 		}
-		if msg == "" {
-			msg = "CodeBuddy CLI failed; verify that the CLI is installed and logged in via the International Site"
-		}
-		return fmt.Errorf("workbuddy-session CLI: %w: %s", err, msg)
+		return workBuddySessionRunFailure(err, stderr.String())
 	}
 
 	parsed, err := parseWorkBuddyCLIOutput(stdout.Bytes())
 	if err != nil {
-		return fmt.Errorf("workbuddy-session parse: %w", err)
+		var resultErr *workBuddyResultError
+		if errors.As(err, &resultErr) {
+			return workBuddySessionRunFailure(err, resultErr.detail)
+		}
+		return workBuddySessionRunFailure(err, "")
 	}
 	if parsed.Model == "" {
 		parsed.Model = model
@@ -212,8 +225,11 @@ func workBuddyPromptFromBody(body []byte) (string, string, error) {
 		return "", "", fmt.Errorf("missing model")
 	}
 
-	if tools, ok := reqMap["tools"].([]any); ok && len(tools) > 0 {
-		return "", "", fmt.Errorf("tools are not supported by the WorkBuddy Free session adapter yet")
+	if rawTools, present := reqMap["tools"]; present && rawTools != nil {
+		tools, ok := rawTools.([]any)
+		if !ok || len(tools) > 0 {
+			return "", "", fmt.Errorf("tools are not supported by the WorkBuddy Free session adapter yet")
+		}
 	}
 	if toolChoice, ok := reqMap["tool_choice"]; ok && toolChoice != nil {
 		if s, isString := toolChoice.(string); !isString || (s != "" && s != "none") {
@@ -230,15 +246,25 @@ func workBuddyPromptFromBody(body []byte) (string, string, error) {
 	for _, raw := range messages {
 		msg, ok := raw.(map[string]any)
 		if !ok {
-			continue
+			return "", "", fmt.Errorf("unsupported message shape")
 		}
-		role, _ := msg["role"].(string)
+		role, ok := msg["role"].(string)
+		if !ok && msg["role"] != nil {
+			return "", "", fmt.Errorf("unsupported message role")
+		}
 		role = strings.TrimSpace(role)
-		if role == "tool" {
+		switch role {
+		case "", "system", "developer", "user", "assistant":
+		case "tool":
 			return "", "", fmt.Errorf("tool messages are not supported by the WorkBuddy Free session adapter yet")
+		default:
+			return "", "", fmt.Errorf("unsupported message role")
 		}
-		if tc, ok := msg["tool_calls"].([]any); ok && len(tc) > 0 {
-			return "", "", fmt.Errorf("tool-call history is not supported by the WorkBuddy Free session adapter yet")
+		if rawCalls, present := msg["tool_calls"]; present && rawCalls != nil {
+			calls, ok := rawCalls.([]any)
+			if !ok || len(calls) > 0 {
+				return "", "", fmt.Errorf("tool-call history is not supported by the WorkBuddy Free session adapter yet")
+			}
 		}
 		text, err := workBuddyContentText(msg["content"])
 		if err != nil {
@@ -268,18 +294,27 @@ func workBuddyContentText(content any) (string, error) {
 		for _, rawPart := range v {
 			part, ok := rawPart.(map[string]any)
 			if !ok {
-				continue
+				return "", fmt.Errorf("unsupported message content part")
 			}
-			typeName, _ := part["type"].(string)
+			typeName, ok := part["type"].(string)
+			if !ok && part["type"] != nil {
+				return "", fmt.Errorf("unsupported message content part")
+			}
 			switch typeName {
 			case "text", "input_text", "output_text", "":
-				if text, ok := part["text"].(string); ok && text != "" {
+				text, ok := part["text"].(string)
+				if !ok {
+					return "", fmt.Errorf("unsupported message text part")
+				}
+				if text != "" {
 					parts = append(parts, text)
 				}
 			case "image_url", "image", "input_image":
 				return "", fmt.Errorf("image content is not supported by the WorkBuddy Free session adapter yet")
 			case "tool_use", "tool_result", "tool_call":
 				return "", fmt.Errorf("tool content is not supported by the WorkBuddy Free session adapter yet")
+			default:
+				return "", fmt.Errorf("unsupported message content part")
 			}
 		}
 		return strings.Join(parts, "\n"), nil
@@ -327,7 +362,7 @@ func parseWorkBuddyCLIOutput(raw []byte) (*workBuddyCLIResult, error) {
 				result.SessionID = event.SessionID
 			}
 			if event.IsError || event.Subtype == "error" {
-				return nil, fmt.Errorf("CodeBuddy result error: %s", strings.TrimSpace(event.Result))
+				return nil, &workBuddyResultError{detail: event.Result}
 			}
 			if event.Result != "" {
 				result.Text = event.Result
@@ -339,4 +374,31 @@ func parseWorkBuddyCLIOutput(raw []byte) (*workBuddyCLIResult, error) {
 		return nil, fmt.Errorf("CodeBuddy output contained no successful result")
 	}
 	return result, nil
+}
+
+// The CLI can print session tokens, paths or parts of the request on failure.
+// Use its output only to choose a bounded status; never return it to clients or logs.
+func workBuddySessionRunFailure(err error, output string) error {
+	failure := workBuddySessionFailure(err, output)
+	if upstream, ok := failure.(*proxy.UpstreamError); ok && upstream.StatusCode == http.StatusTooManyRequests {
+		workBuddySessionQuotaUntil = time.Now().Add(workBuddySessionQuotaCooldown)
+	}
+	return failure
+}
+
+func workBuddySessionFailure(err error, output string) error {
+	status := http.StatusBadGateway
+	code := "workbuddy_cli_error"
+	message := "CodeBuddy CLI request failed"
+	lower := strings.ToLower(output)
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		status, code, message = http.StatusServiceUnavailable, "workbuddy_cli_missing", "CodeBuddy CLI is not installed"
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "credits exhausted") || strings.Contains(lower, "insufficient credits"):
+		status, code, message = http.StatusTooManyRequests, "workbuddy_quota", "CodeBuddy session quota or rate limit reached"
+	case strings.Contains(lower, "login") || strings.Contains(lower, "sign in") || strings.Contains(lower, "session expired") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "authentication"):
+		status, code, message = http.StatusUnauthorized, "workbuddy_session_expired", "CodeBuddy session requires login"
+	}
+	body, _ := json.Marshal(map[string]any{"error": map[string]any{"message": message, "type": "upstream_error", "code": code}})
+	return &proxy.UpstreamError{StatusCode: status, Body: body}
 }
