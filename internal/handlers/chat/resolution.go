@@ -343,7 +343,12 @@ func eligibleFreeProviderModel(state *registry.RegistryState, c routing.RouteNod
 		return nil, false
 	}
 	account := state.Accounts[c.AccountID]
-	if account == nil || !account.IsActive || account.ProviderID != c.ProviderID {
+	accountOK := account != nil && account.IsActive && account.ProviderID == c.ProviderID
+	if !accountOK {
+		cfg, known := providers.KnownProviders[c.ProviderID]
+		accountOK = known && cfg.NoAuth && routing.IsVirtualNoAuthAccount(c.ProviderID, c.AccountID)
+	}
+	if !accountOK {
 		return nil, false
 	}
 	pm := providerModelByID(state.ProviderModels[c.ProviderID], c.ModelID)
