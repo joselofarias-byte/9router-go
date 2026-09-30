@@ -161,6 +161,7 @@ func runServer(cCtx *cli.Context) error {
 	// Start Control Plane Orchestrator (background discovery)
 	adapters := []discovery.Adapter{
 		discovery.NewModelsDevAdapter(nil),
+		discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
 		discovery.NewClineFreeAdapter(nil),
 	}
 
