@@ -2,6 +2,7 @@ package promptprofile
 
 import (
 	"context"
+	"strings"
 	json "encoding/json/v2"
 	"testing"
 )
@@ -99,5 +100,48 @@ func TestInjectCodexPreservesFirstSystemInstruction(t *testing.T) {
 	first := msgs[0].(map[string]any)
 	if first["role"] != "system" || first["content"] != "caller system\n\nagentic" {
 		t.Fatalf("first instruction=%v", first)
+	}
+}
+
+func TestAllBuiltInProfilesAreRegisteredAndScoped(t *testing.T) {
+	names := []string{
+		OpenAIAgenticV1,
+		WorkspaceContextV1,
+		FewshotRoutingV1,
+		OperatingSpecV1,
+	}
+	for _, name := range names {
+		p, ok := Lookup(name)
+		if !ok {
+			t.Fatalf("profile %q not registered", name)
+		}
+		if p.Name != name || strings.TrimSpace(p.Instructions) == "" {
+			t.Fatalf("profile %q malformed: %+v", name, p)
+		}
+		if !p.Supports("openai") || !p.Supports("codex") {
+			t.Fatalf("profile %q must support openai and codex", name)
+		}
+		if p.Supports("anthropic") {
+			t.Fatalf("profile %q unexpectedly supports anthropic", name)
+		}
+	}
+}
+
+func TestNamesStableAndComplete(t *testing.T) {
+	want := []string{
+		"none",
+		OpenAIAgenticV1,
+		WorkspaceContextV1,
+		FewshotRoutingV1,
+		OperatingSpecV1,
+	}
+	got := Names()
+	if len(got) != len(want) {
+		t.Fatalf("Names len=%d want=%d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Names[%d]=%q want=%q", i, got[i], want[i])
+		}
 	}
 }

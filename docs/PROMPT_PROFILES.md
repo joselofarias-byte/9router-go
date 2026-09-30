@@ -28,8 +28,11 @@ Select it per request with:
 
 Accepted values are:
 
-- `openai-agentic-v1`
-- `none`
+- `openai-agentic-v1` - balanced engineering execution profile
+- `workspace-context-v1` - workspace/repository state first
+- `fewshot-routing-v1` - compact examples for action/tool routing
+- `operating-spec-v1` - explicit scope/acquire/act/verify/report loop
+- `none` - control / explicit opt-out
 
 Unknown names return HTTP 400 instead of silently falling back.
 
@@ -52,3 +55,26 @@ Use the same task set and model settings for each treatment:
 3. later profiles, one variable at a time.
 
 Record exact provider/model, date, request format, tools, reasoning level, latency, token or credit usage, repetitions, correctness, tool-call success, and refusal/format behavior. This makes the comparison useful even when provider behavior changes.
+
+
+## Local comparison harness
+
+Run `scripts/prompt-profile-bench.sh` against one or more OpenAI/Codex routes. The script compares `none` plus every built-in profile on the same objective smoke tasks, records HTTP status, latency and reported token usage, and emits a single Markdown report.
+
+~~~bash
+PROMPT_PROFILE_BENCH_RUNS=3 \
+NINEROUTER_API_KEY='YOUR_LOCAL_9ROUTER_CLIENT_KEY' \
+bash scripts/prompt-profile-bench.sh codex/gpt-5.3-codex openai/gpt-5.6-sol
+~~~
+
+On Termux the report defaults to `~/storage/downloads` when that directory exists. Else it uses `~/.config/9router-go/benchmarks`.
+
+The smoke set measures reproducible instruction-following and routing mechanics, not general intelligence. Use at least three repetitions before comparing close results, and do not generalize a profile win from one model to another.
+
+### Live OpenCode E2E tests
+
+The Muse Spark tests contact the real OpenCode free-tier service. They are opt-in so ordinary CI is not made red by external entitlement changes. Run them explicitly with:
+
+~~~bash
+OPENCODE_LIVE_E2E=1 go test ./internal/handlers/chat -run 'TestIntegration_OpenCode_MuseSpark' -v
+~~~

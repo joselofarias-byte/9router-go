@@ -11,12 +11,27 @@ const (
 	// Header selects a built-in prompt profile for the current request.
 	Header = "X-9Router-Prompt-Profile"
 
-	// OpenAIAgenticV1 is the first OpenAI/ChatGPT-oriented engineering profile.
+	// OpenAIAgenticV1 is the balanced OpenAI/ChatGPT-oriented engineering profile.
 	OpenAIAgenticV1 = "openai-agentic-v1"
+	// WorkspaceContextV1 emphasizes repository/workspace state as source of truth.
+	WorkspaceContextV1 = "workspace-context-v1"
+	// FewshotRoutingV1 provides compact examples for action/tool routing decisions.
+	FewshotRoutingV1 = "fewshot-routing-v1"
+	// OperatingSpecV1 applies an explicit acquire-act-verify-report operating loop.
+	OperatingSpecV1 = "operating-spec-v1"
 )
 
 //go:embed profiles/openai-agentic-v1.txt
 var openAIAgenticV1Instructions string
+
+//go:embed profiles/workspace-context-v1.txt
+var workspaceContextV1Instructions string
+
+//go:embed profiles/fewshot-routing-v1.txt
+var fewshotRoutingV1Instructions string
+
+//go:embed profiles/operating-spec-v1.txt
+var operatingSpecV1Instructions string
 
 // Profile is a fixed, named instruction profile. Callers select only the name;
 // arbitrary header text is never promoted into a developer/system instruction.
@@ -30,6 +45,21 @@ var profiles = map[string]Profile{
 	OpenAIAgenticV1: {
 		Name:         OpenAIAgenticV1,
 		Instructions: strings.TrimSpace(openAIAgenticV1Instructions),
+		Providers:    []string{"openai", "codex"},
+	},
+	WorkspaceContextV1: {
+		Name:         WorkspaceContextV1,
+		Instructions: strings.TrimSpace(workspaceContextV1Instructions),
+		Providers:    []string{"openai", "codex"},
+	},
+	FewshotRoutingV1: {
+		Name:         FewshotRoutingV1,
+		Instructions: strings.TrimSpace(fewshotRoutingV1Instructions),
+		Providers:    []string{"openai", "codex"},
+	},
+	OperatingSpecV1: {
+		Name:         OperatingSpecV1,
+		Instructions: strings.TrimSpace(operatingSpecV1Instructions),
 		Providers:    []string{"openai", "codex"},
 	},
 }
@@ -46,7 +76,13 @@ func Lookup(name string) (Profile, bool) {
 
 // Names returns the accepted request-header values in stable order.
 func Names() []string {
-	return []string{"none", OpenAIAgenticV1}
+	return []string{
+		"none",
+		OpenAIAgenticV1,
+		WorkspaceContextV1,
+		FewshotRoutingV1,
+		OperatingSpecV1,
+	}
 }
 
 // Supports reports whether the profile is intended for the resolved provider.
