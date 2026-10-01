@@ -3,6 +3,7 @@ package providers
 import (
 	"net/http"
 	"os"
+	"strings"
 )
 
 // ProviderConfig describes how to reach an upstream provider.
@@ -19,12 +20,9 @@ type ProviderConfig struct {
 	STTURL        string            // override /audio/transcriptions endpoint
 	VideoURL      string            // override /videos/generations endpoint
 	VoicesURL     string            // override /audio/voices listing endpoint
+	SystemoneURL  string            // override /systemone endpoint (System One structured evaluation)
 	FetchURL      string            // override /web/fetch endpoint (Jina, Firecrawl, etc.)
 	FetchMethod   string            // HTTP method for fetch: GET or POST (default POST)
-	// LocalOnly means this provider's chat, media, and fetch traffic must stay
-	// on a loopback address. Connection baseUrl overrides, edge relays, and
-	// outbound proxies cannot move it onto a public host.
-	LocalOnly bool
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
@@ -35,6 +33,87 @@ func (p *ProviderConfig) IsGeminiNative() bool { return p.Format == "gemini-nati
 // native one (e.g. the "gemini" provider at /v1beta/openai/chat/completions).
 func (p *ProviderConfig) IsGeminiOpenAICompat() bool { return p.Format == "gemini-openai" }
 
+// modelsListURL is the OpenAI-compatible /v1/models endpoint of providers whose
+// catalogue is fetched live for the dashboard's "Suggested free models" import.
+// It is the same set upstream wires into PROVIDER_MODELS_CONFIG
+// (src/app/api/providers/[id]/models/route.js, v0.5.91).
+var modelsListURL = map[string]string{
+	"tokenharbor": "https://tokenharbor.ai/v1/models",
+	"dahl":        "https://inference.dahl.global/v1/models",
+	"atria":       "https://api.atria-asi.ai/v1/models",
+	"agnes":       "https://apihub.agnes-ai.com/v1/models",
+	"bai":         "https://api.b.ai/v1/models",
+}
+
+// ModelsListURL returns the live catalogue endpoint for a provider, or "" when
+// the provider has none.
+func ModelsListURL(provider string) string {
+	return modelsListURL[strings.ToLower(provider)]
+}
+
+// AnthropicBetaRedactThinking asks Anthropic to return thinking blocks as a
+// signature only. That is right for clients that never render thinking, but it
+// blanks the very summaries a client requested with
+// `thinking.display: "summarized"`, so it is dropped per request when the body
+// asks for them. Upstream: ANTHROPIC_BETA_REDACT_THINKING in
+// open-sse/providers/shared.js.
+const AnthropicBetaRedactThinking = "redact-thinking-2026-02-12"
+
+// WithoutBetaFlag returns a copy of headers with one Anthropic-Beta flag
+// removed. The registry's header map is shared by every request, so a
+// request-scoped edit has to copy rather than mutate.
+func WithoutBetaFlag(headers map[string]string, flag string) map[string]string {
+	current, ok := headers["Anthropic-Beta"]
+	if !ok {
+		return headers
+	}
+	kept := make([]string, 0, 8)
+	for _, existing := range strings.Split(current, ",") {
+		if trimmed := strings.TrimSpace(existing); trimmed != "" && trimmed != flag {
+			kept = append(kept, trimmed)
+		}
+	}
+	res := make(map[string]string, len(headers))
+	for k, v := range headers {
+		res[k] = v
+	}
+	res["Anthropic-Beta"] = strings.Join(kept, ",")
+	return res
+}
+
+// MergeAnthropicBeta unions any number of comma-separated beta flag lists into
+// one de-duplicated header value, keeping the order they were seen in. The
+// caller's own flags are merged in rather than dropped: a client asking for a
+// beta the gateway does not list would otherwise be refused without ever being
+// told why. Port of mergeAnthropicBeta in open-sse/providers/shared.js.
+func MergeAnthropicBeta(values ...string) string {
+	seen := make(map[string]bool, 8)
+	merged := make([]string, 0, 8)
+	for _, value := range values {
+		for _, flag := range strings.Split(value, ",") {
+			flag = strings.TrimSpace(flag)
+			if flag == "" || seen[flag] {
+				continue
+			}
+			seen[flag] = true
+			merged = append(merged, flag)
+		}
+	}
+	return strings.Join(merged, ",")
+}
+
+// WithHeader returns a copy of headers with one entry set. The registry's
+// header map is shared by every request, so a request-scoped change has to
+// copy rather than mutate — the same reason WithoutBetaFlag copies.
+func WithHeader(headers map[string]string, key, value string) map[string]string {
+	res := make(map[string]string, len(headers)+1)
+	for k, v := range headers {
+		res[k] = v
+	}
+	res[key] = value
+	return res
+}
+
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
 	"openai": {
@@ -42,8 +121,8 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
-	"orcarouter": {
-		BaseURL:    "https://orcarouter.ai/v1/chat/completions",
+	"agnes": {
+		BaseURL:    "https://apihub.agnes-ai.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -51,6 +130,21 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.anthropic.com/v1/messages",
 		AuthHeader: "x-api-key",
 		AuthScheme: "raw",
+	},
+	"dahl": {
+		BaseURL:    "https://inference.dahl.global/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"bai": {
+		BaseURL:    "https://api.b.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"atria": {
+		BaseURL:    "https://api.atria-asi.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
 	},
 	"deepseek": {
 		BaseURL:    "https://api.deepseek.com/chat/completions",
@@ -68,9 +162,12 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"openrouter": {
-		BaseURL:    "https://openrouter.ai/api/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://openrouter.ai/api/v1/chat/completions",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		ImageURL:     "https://openrouter.ai/api/v1/images/generations",
+		VideoURL:     "https://openrouter.ai/api/v1/videos",
+		SystemoneURL: "https://openrouter.ai/api/v1/systemone",
 		StaticHeaders: map[string]string{
 			"HTTP-Referer": "https://endpoint-proxy.local",
 			"X-Title":      "Endpoint Proxy",
@@ -96,7 +193,21 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
 		DefaultAPIKey: "public",
-		StaticHeaders: map[string]string{"x-opencode-client": "desktop"},
+		NoAuth:        true,
+		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
+		StaticHeaders: map[string]string{"x-opencode-client": "desktop", "User-Agent": "opencode/1.18.31"},
+	},
+	"opencode-zen": {
+		BaseURL:       "https://opencode.ai/zen/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		DefaultAPIKey: "public",
+		NoAuth:        true,
+		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
+		StaticHeaders: map[string]string{
+			"x-opencode-client": "desktop",
+			"User-Agent":        "opencode/1.18.31",
+		},
 	},
 	"gemini": {
 		BaseURL:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
@@ -238,8 +349,15 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
-			"HTTP-Referer": "https://cline.bot",
-			"X-Title":      "Cline",
+			"HTTP-Referer":       "https://cline.bot",
+			"X-Title":            "Cline",
+			"User-Agent":         "Cline/3.0.61",
+			"X-PLATFORM":         "cli",
+			"X-PLATFORM-VERSION": "3.0.61",
+			"X-CLIENT-TYPE":      "cline-cli",
+			"X-CLIENT-VERSION":   "3.0.61",
+			"X-CORE-VERSION":     "3.0.61",
+			"X-IS-MULTIROOT":     "false",
 		},
 	},
 	"alicode": {
@@ -342,8 +460,15 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
-			"HTTP-Referer": "https://cline.bot",
-			"X-Title":      "Cline",
+			"HTTP-Referer":       "https://cline.bot",
+			"X-Title":            "Cline",
+			"User-Agent":         "Cline/3.0.61",
+			"X-PLATFORM":         "cli",
+			"X-PLATFORM-VERSION": "3.0.61",
+			"X-CLIENT-TYPE":      "cline-cli",
+			"X-CLIENT-VERSION":   "3.0.61",
+			"X-CORE-VERSION":     "3.0.61",
+			"X-IS-MULTIROOT":     "false",
 		},
 	},
 	"perplexity-agent": {
@@ -356,25 +481,16 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.commandcode.ai/alpha/generate",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent":             "commandcode/0.25.7 (cli)",
+			"x-command-code-version": "0.25.7",
+			"x-cli-environment":      "cli",
+		},
 	},
 	"ollama-local": {
-		BaseURL:       "http://127.0.0.1:11434/v1/chat/completions",
-		AuthHeader:    "Authorization",
-		AuthScheme:    "bearer",
-		NoAuth:        true,
-		DefaultAPIKey: "local",
-		LocalOnly:     true,
-	},
-	// llamacpp is llama.cpp's llama-server OpenAI-compatible endpoint.
-	// Default bind is 127.0.0.1:8080. Qwen Code addresses it as
-	// llamacpp/<gguf-alias>. No FetchURL: this provider has no cloud side path.
-	"llamacpp": {
-		BaseURL:       "http://127.0.0.1:8080/v1/chat/completions",
-		AuthHeader:    "Authorization",
-		AuthScheme:    "bearer",
-		NoAuth:        true,
-		DefaultAPIKey: "local",
-		LocalOnly:     true,
+		BaseURL:    "http://localhost:11434/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
 	},
 	"minimax-cn": {
 		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
@@ -394,7 +510,7 @@ var KnownProviders = map[string]ProviderConfig{
 			"anthropic-version":                         "2023-06-01",
 			"Anthropic-Beta":                            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
 			"Anthropic-Dangerous-Direct-Browser-Access": "true",
-			"User-Agent":                                "claude-cli/2.1.258 (external, sdk-cli)",
+			"User-Agent":                                "claude-cli/2.1.280 (external, sdk-cli)",
 			"X-App":                                     "cli",
 			"X-Stainless-Helper-Method":                 "stream",
 			"X-Stainless-Retry-Count":                   "0",
@@ -406,16 +522,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
 			"originator": "codex_cli_rs",
-			"User-Agent": "codex_cli_rs/0.136.0",
+			"User-Agent": "codex_cli_rs/0.154.0",
 		},
 	},
 	"grok-cli": {
-		BaseURL:    "https://cli-chat-proxy.grok.com",
+		BaseURL:    "https://cli-chat-proxy.grok.com/v1/responses",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
 	"kiro": {
-		BaseURL:    "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+		BaseURL:    "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -480,6 +596,14 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		FetchURL:   "https://api.firecrawl.com/v1/scrape",
+	},
+	"freebuff": {
+		BaseURL:    "https://www.codebuff.com/api/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent": "ai-sdk/openai-compatible/1.0/codebuff",
+		},
 	},
 
 	"aws-polly": {
@@ -558,7 +682,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"xquik": {
-		BaseURL:    "https://api.xquik.com/v1/x/search-tweets",
+		BaseURL:    "https://xquik.com/api/v1/x/tweets/search",
 		AuthHeader: "x-api-key",
 		AuthScheme: "raw",
 	},
@@ -594,6 +718,13 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 	"qoder": {
 		BaseURL:    "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	// Qoder CN is a distinct deployment with its own gateway and credentials.
+	// It is never aliased onto qoder (AGENTS.md section 3.A).
+	"qoder-cn": {
+		BaseURL:    "https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -720,6 +851,11 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 	"tencent": {
 		BaseURL:    "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"tokenharbor": {
+		BaseURL:    "https://tokenharbor.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
