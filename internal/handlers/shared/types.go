@@ -19,6 +19,7 @@ type ModelInfo struct {
 	Strategy     string   // combo routing strategy: "fallback", "round-robin", "sticky", "fusion"
 	StickyLimit  int      // sticky round-robin: consecutive requests per model before rotating (default 1)
 	JudgeModel   string   // optional judge model for fusion strategy
+	VirtualFree  bool     // built-in free/free-best dynamic pool
 }
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
@@ -26,6 +27,7 @@ type ConnectionData struct {
 	APIKey                 string         `json:"apiKey"`
 	AccessToken            string         `json:"accessToken"`
 	BaseURL                string         `json:"baseUrl,omitempty"`
+	LocalOnly              bool           `json:"localOnly,omitempty"`
 	ProxyPoolID            string         `json:"proxyPoolId,omitempty"`
 	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled,omitempty"`
 	ConnectionProxyURL     string         `json:"connectionProxyUrl,omitempty"`
