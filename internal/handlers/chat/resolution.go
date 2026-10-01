@@ -1,19 +1,65 @@
 package chat
 
 import (
-	"9router/proxy/internal/constants"
-	"9router/proxy/internal/db"
-	"9router/proxy/internal/handlers/shared"
-	"9router/proxy/internal/log"
-	"9router/proxy/internal/providers"
-	"9router/proxy/internal/proxy"
-	"9router/proxy/internal/proxy/executor"
-	"9router/proxy/internal/proxy/oauth"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
+
+	"9router/proxy/internal/controlplane/registry"
+	"9router/proxy/internal/controlplane/routing"
+	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/proxy/oauth"
 )
+
+// FreeRouteUnavailableCode is the OpenAI-style error code clients match when
+// the virtual free / free-best pool has no eligible model. The request fails
+// closed: it is never sent to a paid provider under that name.
+const FreeRouteUnavailableCode = "free_route_unavailable"
+
+const freeRouteUnavailableMessage = "free route unavailable: no eligible free or free-tier models with an active local connection"
+
+// ErrFreeRouteUnavailable is the sentinel for an empty or stale virtual free pool.
+// errors.Is matches it, including errors wrapped with a detail suffix.
+var ErrFreeRouteUnavailable = errors.New(FreeRouteUnavailableCode)
+
+func freeRouteUnavailable(detail string) error {
+	if detail == "" {
+		return ErrFreeRouteUnavailable
+	}
+	return fmt.Errorf("%w: %s", ErrFreeRouteUnavailable, detail)
+}
+
+// writeFreeRouteUnavailable writes the stable OpenAI-style 503 body.
+// The message is fixed so a client never receives connection secrets.
+func writeFreeRouteUnavailable(w http.ResponseWriter) {
+	handlerutil.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"error": map[string]any{
+			"message": freeRouteUnavailableMessage,
+			"type":    "server_error",
+			"code":    FreeRouteUnavailableCode,
+		},
+	})
+}
+
+// WriteResolveError maps a resolveModel failure to an OpenAI-style JSON error.
+// An unavailable virtual free pool is HTTP 503 with code free_route_unavailable.
+// Every other resolve failure stays HTTP 400.
+func WriteResolveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrFreeRouteUnavailable) {
+		writeFreeRouteUnavailable(w)
+		return
+	}
+	handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+}
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
 // Pass a TokenSaverConfig to enable token saver features, or nil for all-off defaults.
@@ -28,16 +74,8 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 	// ResponseHeaderTimeout bounds how long we wait for the upstream to
 	// start responding — closing the "accept then go silent" gap without
 	// killing a stream that has already begun.
-	var transport http.RoundTripper
-	if origTransport, ok := http.DefaultTransport.(*http.Transport); ok {
-		t := origTransport.Clone()
-		constants.DefaultHTTPTransportConfig.Configure(t)
-		transport = proxy.NewFallbackTransport(t)
-	} else if fb, ok := http.DefaultTransport.(*proxy.FallbackTransport); ok {
-		transport = fb
-	} else {
-		transport = proxy.NewFallbackTransport(http.DefaultTransport)
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 2 * time.Minute
 	return &ChatHandler{
 		Repo: repo,
 		Client: &http.Client{
@@ -57,10 +95,7 @@ func (h *ChatHandler) ResolveModel(modelStr string) (*ModelInfo, error) {
 
 // resolveProviderAlias resolves a provider alias to its canonical ID.
 func resolveProviderAlias(alias string) string {
-	if canonical, ok := providers.ProviderAliasMap[alias]; ok {
-		return canonical
-	}
-	return alias
+	return providers.ResolveAlias(alias)
 }
 
 // resolveModelEntry parses a single "provider/model" string into a ModelInfo
@@ -69,19 +104,14 @@ func resolveProviderAlias(alias string) string {
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 	if !strings.Contains(entry, "/") {
-		if h.Repo == nil {
-			return nil
-		}
-		if combo, err := h.Repo.GetComboByName(entry); err == nil && combo != nil && combo.Models != "" {
+		combo, err := h.Repo.GetComboByName(entry)
+		if err == nil && combo != nil && combo.Models != "" {
 			var subModels []string
 			if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
 				first := h.resolveModelEntry(subModels[0])
 				if first != nil {
 					first.ComboModels = subModels
-					strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
-					first.Strategy = strat
-					first.StickyLimit = sticky
-					first.JudgeModel = judge
+					first.Strategy = combo.Strategy
 					return first
 				}
 			}
@@ -89,54 +119,13 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 		return nil
 	}
 	parts := strings.SplitN(entry, "/", 2)
-	prefix := parts[0]
-	model := parts[1]
-
-	if info := h.resolvePrefixProvider(prefix, model); info != nil {
-		return info
-	}
-
-	provider := resolveProviderAlias(prefix)
-	if provider != prefix {
-		if info := h.resolvePrefixProvider(provider, model); info != nil {
+	provider := resolveProviderAlias(parts[0])
+	if _, ok := providers.KnownProviders[provider]; !ok {
+		if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
 			return info
 		}
-		if h.Repo != nil {
-			if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
-				conns, _ := h.Repo.GetProviderConnections(provider, true)
-				if len(conns) == 0 {
-					return &ModelInfo{Provider: node.ID, Model: model}
-				}
-			}
-		}
 	}
-
-	provider = routeModelToOwningProvider(provider, model)
-	return &ModelInfo{Provider: provider, Model: model}
-}
-
-// museSparkOwners are the providers whose upstream registry actually serves the
-// muse-spark family. Upstream open-sse registry lists these ids only under
-// opencode-zen / opencode-go, never under antigravity.
-var museSparkOwners = []string{"opencode", "opencode-go", "opencode-zen"}
-
-// routeModelToOwningProvider corrects a model requested under a provider that
-// does not serve it, so callers that reuse a dashboard-assigned prefix (e.g.
-// "ag/muse-spark-1.3-contributor-free" copied from a combo) reach the executor
-// that owns the model instead of failing upstream with 404/403.
-func routeModelToOwningProvider(provider, model string) string {
-	if provider != "antigravity" && provider != "antigravity-go" {
-		return provider
-	}
-	if !strings.Contains(model, "muse-spark") {
-		return provider
-	}
-	for _, owner := range museSparkOwners {
-		if _, ok := providers.KnownProviders[owner]; ok {
-			return owner
-		}
-	}
-	return provider
+	return &ModelInfo{Provider: provider, Model: parts[1]}
 }
 
 // flattenComboModels recursively expands combo-name entries into concrete
@@ -204,6 +193,304 @@ func stripModelContextMarker(modelStr string) string {
 	return modelStr
 }
 
+// isVirtualFreeRoute reports the built-in names. free and free-best are the
+// same dynamic pool: score order puts the current best candidate first, and
+// both names then fall back through the rest of that free-only chain.
+// Matching trims space and ignores case.
+func isVirtualFreeRoute(modelStr string) bool {
+	switch canonicalVirtualName(modelStr) {
+	case "free", "free-best":
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalVirtualName(modelStr string) string {
+	return strings.ToLower(strings.TrimSpace(modelStr))
+}
+
+// resolveDynamicFreeBest builds a transient fallback combo from discovered
+// free and free-tier models that also have an active local provider connection.
+// An explicit alias or combo named free / free-best is resolved earlier and wins.
+// The error return is fail-closed: callers must not continue into the
+// openai/anthropic/deepseek fallback with the virtual name.
+func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
+	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
+	if len(candidates) == 0 {
+		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
+	}
+
+	// Second gate. SelectCandidates already drops non-free rows; this re-reads
+	// the current registry so a paid, unknown, inactive, or disconnected model
+	// cannot enter the chain if the policy filter or a stale candidate is wrong.
+	state := registry.GetActiveState()
+	models := freeRouteEntries(state, candidates)
+	if len(models) == 0 {
+		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
+	}
+
+	var first *ModelInfo
+	resolved := make([]string, 0, len(models))
+	for _, entry := range models {
+		info := h.resolveModelEntry(entry)
+		if info == nil {
+			continue
+		}
+		resolved = append(resolved, entry)
+		if first == nil {
+			first = info
+		}
+	}
+	if first == nil {
+		return nil, freeRouteUnavailable("failed to resolve free candidates")
+	}
+	first.ComboModels = resolved
+	first.Strategy = "fallback"
+	first.VirtualFree = true
+	return first, nil
+}
+
+// freeEntryStillEligible re-reads Fabric pricing and the active local account
+// for one dynamic-pool entry. A sync failure or a paid, inactive, or
+// disconnected model is not eligible.
+func (h *ChatHandler) freeEntryStillEligible(entry string) bool {
+	if h == nil || h.Repo == nil || entry == "" {
+		return false
+	}
+	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
+	for _, current := range freeRouteEntries(registry.GetActiveState(), candidates) {
+		if current == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowVirtualFreeHop reports whether this fallback hop may run.
+// Explicit user combos pass virtualFree false and are never filtered, so a
+// caller-defined free or free-best combo can still include paid models.
+func (h *ChatHandler) AllowVirtualFreeHop(virtualFree bool, entry string) bool {
+	if !virtualFree {
+		return true
+	}
+	if h.freeEntryStillEligible(entry) {
+		return true
+	}
+	log.Warn("combo", "skip free hop no longer eligible", "entry", entry)
+	return false
+}
+
+// SelectVirtualFreeEntry returns the first dynamic-pool entry that is still
+// free and connected. Single-target endpoints use it before they forward.
+func (h *ChatHandler) SelectVirtualFreeEntry(info *ModelInfo) (*ModelInfo, error) {
+	if info == nil || !info.VirtualFree {
+		return info, nil
+	}
+	for _, entry := range info.ComboModels {
+		if !h.freeEntryStillEligible(entry) {
+			log.Warn("combo", "skip free hop no longer eligible", "entry", entry)
+			continue
+		}
+		picked := h.resolveModelEntry(entry)
+		if picked == nil {
+			continue
+		}
+		picked.VirtualFree = true
+		picked.Strategy = info.Strategy
+		picked.ComboModels = info.ComboModels
+		return picked, nil
+	}
+	return nil, freeRouteUnavailable("no eligible free or free-tier models with an active local connection")
+}
+
+// freeRouteEntries returns provider/upstream pairs that are still free and
+// backed by an active provider plus an active local account in state.
+func freeRouteEntries(state *registry.RegistryState, candidates []routing.RouteNode) []string {
+	if state == nil {
+		return nil
+	}
+	models := make([]string, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		pm, ok := eligibleFreeProviderModel(state, c)
+		if !ok {
+			continue
+		}
+		model := pm.UpstreamModel
+		if model == "" {
+			model = pm.ModelID
+		}
+		if c.ProviderID == "" || model == "" {
+			continue
+		}
+		entry := c.ProviderID + "/" + model
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		models = append(models, entry)
+	}
+	return models
+}
+
+func eligibleFreeProviderModel(state *registry.RegistryState, c routing.RouteNode) (*registry.ProviderModel, bool) {
+	if state == nil || c.ProviderID == "" || c.ModelID == "" || c.AccountID == "" {
+		return nil, false
+	}
+	provider := state.Providers[c.ProviderID]
+	if provider == nil || !provider.IsActive {
+		return nil, false
+	}
+	account := state.Accounts[c.AccountID]
+	accountOK := account != nil && account.IsActive && account.ProviderID == c.ProviderID
+	if !accountOK {
+		cfg, known := providers.KnownProviders[c.ProviderID]
+		accountOK = known && cfg.NoAuth && routing.IsVirtualNoAuthAccount(c.ProviderID, c.AccountID)
+	}
+	if !accountOK {
+		return nil, false
+	}
+	pm := providerModelByID(state.ProviderModels[c.ProviderID], c.ModelID)
+	if pm == nil || !pm.IsActive || pm.ProviderID != c.ProviderID || !routing.IsFreePricing(pm.PricingMode) {
+		return nil, false
+	}
+	return pm, true
+}
+
+func providerModelByID(models map[string]*registry.ProviderModel, modelID string) *registry.ProviderModel {
+	if models == nil || modelID == "" {
+		return nil
+	}
+	if pm := models[modelID]; pm != nil && pm.ModelID == modelID {
+		return pm
+	}
+	for _, pm := range models {
+		if pm != nil && pm.ModelID == modelID {
+			return pm
+		}
+	}
+	return nil
+}
+
+// resolveComboModel expands a stored combo. ok is false when the row is not a
+// usable combo so the caller can keep walking. A flatten error is returned
+// with ok true so a broken explicit combo is not replaced by another route.
+func (h *ChatHandler) resolveComboModel(combo *models.Combo) (*ModelInfo, error, bool) {
+	if combo == nil || combo.Models == "" {
+		return nil, nil, false
+	}
+	var modelStrings []string
+	if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err != nil || len(modelStrings) == 0 {
+		return nil, nil, false
+	}
+	// Flatten nested combos into concrete leaves so rotation covers
+	// every reachable model (a nested combo entry used to collapse to
+	// its first leaf, so combo-wombo -> free-tier never rotated).
+	flattened, flatErr := h.flattenComboModels(modelStrings)
+	if flatErr != nil {
+		return nil, flatErr, true
+	}
+	if len(flattened) == 0 {
+		return nil, nil, false
+	}
+	firstInfo := h.resolveModelEntry(flattened[0])
+	if firstInfo == nil {
+		firstInfo, _ = h.resolveModel(flattened[0])
+	}
+	if firstInfo == nil {
+		return nil, nil, false
+	}
+	firstInfo.ComboModels = flattened
+	firstInfo.Strategy = combo.Strategy
+	return firstInfo, nil, true
+}
+
+func (h *ChatHandler) concreteAliasTarget(target string) *ModelInfo {
+	if !strings.Contains(target, "/") {
+		return nil
+	}
+	parts := strings.SplitN(target, "/", 2)
+	provider := resolveProviderAlias(parts[0])
+	if _, ok := providers.KnownProviders[provider]; !ok {
+		if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
+			return info
+		}
+	}
+	return &ModelInfo{Provider: provider, Model: parts[1]}
+}
+
+// resolveFoldedVirtualOverride matches an alias or combo whose name differs
+// from the request only by case or surrounding space. Exact-case lookups have
+// already run. Alias wins over combo, matching the exact-case order.
+func (h *ChatHandler) resolveFoldedVirtualOverride(modelStr string) (*ModelInfo, error, bool) {
+	canonical := canonicalVirtualName(modelStr)
+	if canonical != "free" && canonical != "free-best" {
+		return nil, nil, false
+	}
+
+	if aliases, err := h.Repo.GetModelAliases(); err == nil {
+		target, ok := foldedAliasTarget(aliases, canonical)
+		if ok {
+			if info := h.concreteAliasTarget(target); info != nil {
+				return info, nil, true
+			}
+		}
+	}
+
+	combos, err := h.Repo.GetCombos()
+	if err != nil {
+		return nil, nil, false
+	}
+	matched := foldedComboName(combos, canonical)
+	if matched == "" || matched == modelStr {
+		return nil, nil, false
+	}
+	combo, err := h.Repo.GetComboByName(matched)
+	if err != nil {
+		return nil, err, true
+	}
+	return h.resolveComboModel(combo)
+}
+
+func foldedAliasTarget(aliases map[string]string, canonical string) (string, bool) {
+	var target string
+	found := false
+	for key, value := range aliases {
+		if !strings.EqualFold(strings.TrimSpace(key), canonical) {
+			continue
+		}
+		if strings.TrimSpace(key) == canonical {
+			return value, true
+		}
+		if !found {
+			target = value
+			found = true
+		}
+	}
+	return target, found
+}
+
+func foldedComboName(combos []*models.Combo, canonical string) string {
+	matched := ""
+	for _, combo := range combos {
+		if combo == nil {
+			continue
+		}
+		name := strings.TrimSpace(combo.Name)
+		if !strings.EqualFold(name, canonical) {
+			continue
+		}
+		if name == canonical {
+			return combo.Name
+		}
+		if matched == "" {
+			matched = combo.Name
+		}
+	}
+	return matched
+}
+
 // resolveModel resolves a model string through aliases, combos, and provider/model parsing.
 // Returns the first concrete ModelInfo found, or an error.
 func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
@@ -216,142 +503,90 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
 		parts := strings.SplitN(modelStr, "/", 2)
-		prefix := parts[0]
+		providerAlias := parts[0]
 		model := parts[1]
+		provider := resolveProviderAlias(providerAlias)
 
-		// Check custom prefix provider node first (before built-in alias resolution shadows it, e.g. "oa" or "cc")
-		if info := h.resolvePrefixProvider(prefix, model); info != nil {
-			return info, nil
-		}
-
-		provider := resolveProviderAlias(prefix)
-		if provider != prefix {
+		if _, ok := providers.KnownProviders[provider]; !ok {
 			if info := h.resolvePrefixProvider(provider, model); info != nil {
 				return info, nil
 			}
-			// If the alias-resolved provider has no active connections, check if the prefix
-			// matches a providerNode so errors point to the intended custom node ID.
-			if h.Repo != nil {
-				if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
-					conns, _ := h.Repo.GetProviderConnections(provider, true)
-					if len(conns) == 0 {
-						return &ModelInfo{Provider: node.ID, Model: model}, nil
-					}
-				}
-			}
 		}
-		provider = routeModelToOwningProvider(provider, model)
 		return &ModelInfo{Provider: provider, Model: model}, nil
 	}
 
 	// 2. Check if it's a model alias (e.g., "gpt-4o" -> "openai/gpt-4o")
-	if h.Repo != nil {
-		aliasTarget, err := h.Repo.GetModelAlias(modelStr)
-		if err == nil && aliasTarget != "" {
-			if strings.Contains(aliasTarget, "/") {
-				parts := strings.SplitN(aliasTarget, "/", 2)
-				prefix := parts[0]
-				model := parts[1]
-
-				if info := h.resolvePrefixProvider(prefix, model); info != nil {
+	aliasTarget, err := h.Repo.GetModelAlias(modelStr)
+	if err == nil && aliasTarget != "" {
+		if strings.Contains(aliasTarget, "/") {
+			parts := strings.SplitN(aliasTarget, "/", 2)
+			provider := resolveProviderAlias(parts[0])
+			if _, ok := providers.KnownProviders[provider]; !ok {
+				if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
 					return info, nil
 				}
-
-				provider := resolveProviderAlias(prefix)
-				if provider != prefix {
-					if info := h.resolvePrefixProvider(provider, model); info != nil {
-						return info, nil
-					}
-					if h.Repo != nil {
-						if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
-							conns, _ := h.Repo.GetProviderConnections(provider, true)
-							if len(conns) == 0 {
-								return &ModelInfo{Provider: node.ID, Model: model}, nil
-							}
-						}
-					}
-				}
-				return &ModelInfo{
-					Provider: provider,
-					Model:    model,
-				}, nil
 			}
+			return &ModelInfo{
+				Provider: provider,
+				Model:    parts[1],
+			}, nil
 		}
-	}
-
-	// Upstream PR #4135: route bare codex-auto-review to the Codex provider
-	// Outside Repo guard so it resolves with nil Repo / empty DB (static catalog).
-	if modelStr == "codex-auto-review" {
-		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
 	}
 
 	// 3. Check if it's a combo name
-	if h.Repo != nil {
-		combo, err := h.Repo.GetComboByName(modelStr)
-		if err == nil && combo != nil && combo.Models != "" {
-			var modelStrings []string
-			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
-				// Flatten nested combos into concrete leaves so rotation covers
-				// every reachable model (a nested combo entry used to collapse to
-				// its first leaf, so combo-wombo -> free-tier never rotated).
-				flattened, flatErr := h.flattenComboModels(modelStrings)
-				if flatErr != nil {
-					return nil, flatErr
-				}
-				if len(flattened) > 0 {
-					firstInfo := h.resolveModelEntry(flattened[0])
-					if firstInfo == nil {
-						firstInfo, _ = h.resolveModel(flattened[0])
-					}
-					if firstInfo != nil {
-						firstInfo.ComboModels = flattened
-						strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
-						firstInfo.Strategy = strat
-						firstInfo.StickyLimit = sticky
-						firstInfo.JudgeModel = judge
-						return firstInfo, nil
-					}
-				}
-			}
+	combo, err := h.Repo.GetComboByName(modelStr)
+	if err == nil {
+		if info, comboErr, ok := h.resolveComboModel(combo); ok {
+			return info, comboErr
 		}
+	}
+
+	// Built-in virtual route. Checked after aliases and combos so a caller-defined
+	// "free" or "free-best" pool keeps working, and before the common-provider
+	// fallback so the name cannot be sent to a paid provider by accident.
+	// Case and surrounding space fold onto the same route: FREE and " free-best "
+	// are the virtual names, and an alias or combo stored under any case of
+	// those names still wins.
+	if isVirtualFreeRoute(modelStr) {
+		if info, overrideErr, ok := h.resolveFoldedVirtualOverride(modelStr); ok {
+			return info, overrideErr
+		}
+		return h.resolveDynamicFreeBest()
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
-	// Check custom prefix provider nodes first for bare alias
+	// Next.js treats bare alias as provider with default model for search/media endpoints.
+	if canonical := resolveProviderAlias(modelStr); canonical != modelStr {
+		if _, ok := providers.KnownProviders[canonical]; ok {
+			if conns, err := h.Repo.GetProviderConnections(canonical, true); err == nil && len(conns) > 0 {
+				return &ModelInfo{Provider: canonical, Model: ""}, nil
+			}
+		}
+	}
+	if _, ok := providers.KnownProviders[modelStr]; ok {
+		if conns, err := h.Repo.GetProviderConnections(modelStr, true); err == nil && len(conns) > 0 {
+			return &ModelInfo{Provider: modelStr, Model: ""}, nil
+		}
+	}
+	// Also check prefix provider nodes for bare alias (e.g., custom prefixes)
 	if info := h.resolvePrefixProvider(modelStr, ""); info != nil {
 		return info, nil
 	}
-	if h.Repo != nil {
-		if canonical := resolveProviderAlias(modelStr); canonical != modelStr {
-			if _, ok := providers.KnownProviders[canonical]; ok {
-				if conns, err := h.Repo.GetProviderConnections(canonical, true); err == nil && len(conns) > 0 {
-					return &ModelInfo{Provider: canonical, Model: ""}, nil
-				}
-			}
-		}
-		if _, ok := providers.KnownProviders[modelStr]; ok {
-			if conns, err := h.Repo.GetProviderConnections(modelStr, true); err == nil && len(conns) > 0 {
-				return &ModelInfo{Provider: modelStr, Model: ""}, nil
-			}
-		}
 
-		// 4. Check common providers as a fallback
-		for _, provider := range []string{"openai", "anthropic", "deepseek"} {
-			conns, err := h.Repo.GetProviderConnections(provider, true)
-			if err == nil && len(conns) > 0 {
-				return &ModelInfo{Provider: provider, Model: modelStr}, nil
-			}
+	// 4. Check common providers as a fallback
+	for _, provider := range []string{"openai", "anthropic", "deepseek"} {
+		conns, err := h.Repo.GetProviderConnections(provider, true)
+		if err == nil && len(conns) > 0 {
+			return &ModelInfo{Provider: provider, Model: modelStr}, nil
 		}
 	}
+
 	return nil, fmt.Errorf("could not resolve model: %s", modelStr)
 }
 
 // resolvePrefixProvider checks if a provider name is a providerNode prefix.
 // If so, it finds the matching connection and returns a pinned ModelInfo.
 func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelInfo {
-	if h.Repo == nil {
-		return nil
-	}
 	node, _, err := h.Repo.GetProviderNodeByPrefix(prefix)
 	if err != nil || node == nil {
 		return nil
@@ -367,43 +602,4 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 		Model:        model,
 		ConnectionID: conn.ID,
 	}
-}
-
-// resolveComboRouting retrieves the routing strategy, sticky limit, and judge model
-// for a combo, prioritizing per-combo settings, then global combo settings, then combo.Strategy.
-func (h *ChatHandler) resolveComboRouting(comboName string, fallbackStrategy string) (strategy string, stickyLimit int, judgeModel string) {
-	strategy = fallbackStrategy
-	if strategy == "" {
-		strategy = "fallback"
-	}
-	stickyLimit = 1
-
-	if h.Repo == nil {
-		return strategy, stickyLimit, ""
-	}
-
-	settings, err := h.Repo.GetSettings()
-	if err != nil || settings == nil {
-		return strategy, stickyLimit, ""
-	}
-
-	if cs, ok := settings.ComboStrategies[comboName]; ok {
-		if cs.Strategy != "" {
-			strategy = cs.Strategy
-		}
-		if cs.StickyLimit > 0 {
-			stickyLimit = cs.StickyLimit
-		}
-		judgeModel = cs.JudgeModel
-		return strategy, stickyLimit, judgeModel
-	}
-
-	if settings.ComboStrategy != "" {
-		strategy = settings.ComboStrategy
-	}
-	if settings.ComboStickyRoundRobinLimit > 0 {
-		stickyLimit = settings.ComboStickyRoundRobinLimit
-	}
-
-	return strategy, stickyLimit, ""
 }
