@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"slices"
 	"strings"
 	"time"
 
+	"9router/proxy/internal/controlplane/capacity"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
@@ -61,10 +63,37 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
+	// Prefer accounts with fresh known quota while preserving every unknown
+	// account as a fallback. This is generic: providers publish capacity hints
+	// independently, so Antigravity, Codex and future adapters stay isolated.
+	if len(allConns) > 1 && model != "" {
+		ids := make([]string, 0, len(allConns))
+		for _, c := range allConns {
+			ids = append(ids, c.ID)
+		}
+		ordered := capacity.OrderAccounts(provider, model, ids)
+		rank := make(map[string]int, len(ordered))
+		for i, id := range ordered {
+			rank[id] = i
+		}
+		sort.SliceStable(allConns, func(i, j int) bool {
+			return rank[allConns[i].ID] < rank[allConns[j].ID]
+		})
+	}
+
 	var excludeIDs []string
 	var lastErr error
 	for _, c := range allConns {
 		if slices.Contains(excludeIDs, c.ID) {
+			continue
+		}
+		if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+			continue
+		}
+		if capacity.IsExhausted(provider, c.ID, model) {
+			continue
+		}
+		if provider == "antigravity" && IsAntigravityModelBlocked(c.ID, model) {
 			continue
 		}
 		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
