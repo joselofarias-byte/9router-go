@@ -172,3 +172,30 @@ func TestNewProvidersRegistry_v059(t *testing.T) {
 		t.Errorf("expected grok-4.6 to have reasoning and search, got %+v", grokCaps)
 	}
 }
+
+func TestExternalGatewayProviders(t *testing.T) {
+	command, ok := KnownProviders["commandcode"]
+	if !ok {
+		t.Fatal("expected commandcode provider registered")
+	}
+	if command.BaseURL != "https://api.commandcode.ai/provider/v1/chat/completions" {
+		t.Fatalf("unexpected commandcode BaseURL: %s", command.BaseURL)
+	}
+	if command.AuthHeader != "Authorization" || command.AuthScheme != "bearer" {
+		t.Fatalf("unexpected commandcode auth: %s/%s", command.AuthHeader, command.AuthScheme)
+	}
+
+	zans, ok := KnownProviders["zanslab"]
+	if !ok {
+		t.Fatal("expected zanslab provider registered")
+	}
+	if zans.BaseURL != "https://zanslab.id/v1/chat/completions" {
+		t.Fatalf("unexpected zanslab BaseURL: %s", zans.BaseURL)
+	}
+	if zans.AuthHeader != "Authorization" || zans.AuthScheme != "bearer" {
+		t.Fatalf("unexpected zanslab auth: %s/%s", zans.AuthHeader, zans.AuthScheme)
+	}
+	if got := ResolveAlias("zl"); got != "zanslab" {
+		t.Fatalf("expected zl alias to resolve to zanslab, got %s", got)
+	}
+}
