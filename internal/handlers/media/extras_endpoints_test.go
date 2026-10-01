@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -299,6 +300,10 @@ func TestHandleAudioVoices_unknownProvider(t *testing.T) {
 	}
 }
 
+type voicesTestTransport func(*http.Request) (*http.Response, error)
+
+func (f voicesTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestHandleAudioVoices_elevenlabs(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -310,7 +315,19 @@ func TestHandleAudioVoices_elevenlabs(t *testing.T) {
 	handler := chat.NewChatHandler(nil)
 	req := httptest.NewRequest("GET", "/v1/audio/voices?provider=elevenlabs", nil)
 	rec := httptest.NewRecorder()
-	handler.Client = upstream.Client()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := upstream.Client().Transport
+	handler.Client = &http.Client{Transport: voicesTestTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "api.elevenlabs.io" {
+			t.Fatalf("unexpected voices host: %s", r.URL.Host)
+		}
+		local := r.Clone(r.Context())
+		local.URL.Scheme, local.URL.Host = target.Scheme, target.Host
+		return transport.RoundTrip(local)
+	})}
 	handler.HandleAudioVoices(rec, req)
 
 	if rec.Code != http.StatusOK {

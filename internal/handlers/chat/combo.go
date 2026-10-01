@@ -346,6 +346,7 @@ func keysString(m map[string]bool) string {
 // handleComboFallback iterates through combo model entries, trying each one.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, virtualFree bool) {
+	ctx = withFreeProfile(ctx, comboName, virtualFree)
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
@@ -390,7 +391,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 		sawEligibleFreeHop := false
 		for _, entry := range models {
-			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+			if !h.allowFreeProfileHop(ctx, virtualFree, entry) {
 				continue
 			}
 			sawEligibleFreeHop = true
@@ -563,6 +564,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 // handleMessagesComboFallback iterates through combo models for the Claude endpoint.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, virtualFree bool) {
+	ctx = withFreeProfile(ctx, comboName, virtualFree)
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
@@ -602,7 +604,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 		sawEligibleFreeHop := false
 		for _, entry := range models {
-			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+			if !h.allowFreeProfileHop(ctx, virtualFree, entry) {
 				continue
 			}
 			sawEligibleFreeHop = true

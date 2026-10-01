@@ -46,4 +46,16 @@ func TestSetupRoutes(t *testing.T) {
 	if w.Code == http.StatusMethodNotAllowed || w.Code == http.StatusNotFound {
 		t.Errorf("expected /chat/completions route to be registered, got status %d", w.Code)
 	}
+	for _, path := range []string{"/api/admin/registry", "/api/admin/explain-route?model=free-best"} {
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code == http.StatusNotFound || w.Code == http.StatusMethodNotAllowed {
+			t.Errorf("diagnostic not mounted: %s: %d", path, w.Code)
+		}
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/api/admin/health-check", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("health-check not mounted: %d", w.Code)
+	}
 }

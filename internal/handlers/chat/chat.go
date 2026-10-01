@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -382,7 +383,7 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	for _, m := range data {
 		seenIDs[strings.ToLower(m.ID)] = true
 	}
-	for _, id := range []string{"free", "free-best"} {
+	for _, id := range routing.FreeProfiles() {
 		if seenIDs[id] {
 			continue
 		}

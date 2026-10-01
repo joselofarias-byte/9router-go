@@ -5,7 +5,6 @@ import (
 
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
-	"9router/proxy/internal/controlplane/trust"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -35,13 +34,26 @@ func (h *ChatHandler) HandleAdminExplainRoute(w http.ResponseWriter, r *http.Req
 	if policyParam != "" {
 		policy = routing.Policy(policyParam)
 	}
-
-	// For explanation, we just instantiate the Engine directly (in production, passed down)
-	engine := &routing.Engine{
-		TrustManager: trust.NewManager(),
+	switch policy {
+	case routing.PolicyBalanced, routing.PolicyFreeOnly, routing.PolicyFreeFirst, routing.PolicyTrusted:
+	default:
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unknown routing policy")
+		return
 	}
 
-	candidates := engine.SelectCandidates(model, policy)
+	requested := model
+	if routing.IsFreeProfile(model) {
+		requested, policy = "", routing.PolicyFreeOnly
+	}
+	var candidates []routing.RouteNode
+	if h.Repo != nil {
+		candidates = getPolicyCandidates(r.Context(), h.Repo.RawDB(), requested, policy)
+	} else {
+		candidates = globalRoutingEngine.SelectCandidates(requested, policy)
+	}
+	if routing.IsFreeProfile(model) {
+		candidates = routing.FilterProfile(registry.GetActiveState(), candidates, model)
+	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"requestedModel": model,

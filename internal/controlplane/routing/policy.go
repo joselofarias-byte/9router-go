@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"9router/proxy/internal/controlplane/availability"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/scoring"
 	"9router/proxy/internal/controlplane/trust"
@@ -46,11 +47,13 @@ type RouteNode struct {
 	UpstreamModel string
 	AccountID     string
 	Score         scoring.Score
+	LatencyMs     float64
 }
 
 // Engine evaluates and selects routing candidates based on policies.
 type Engine struct {
 	TrustManager *trust.Manager
+	Availability *availability.Store
 }
 
 // SelectCandidates evaluates a requested model/pool against the active registry snapshot,
@@ -102,6 +105,14 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 			riskProfile := providers.GetProviderRiskProfile(provID)
 
 			appendCandidate := func(accountID string) {
+				var observed availability.State
+				if e.Availability != nil {
+					key := availability.Key{Provider: provID, Model: pm.ModelID, Account: accountID}
+					observed = e.Availability.Get(key)
+					if !observed.BlockedUntil.IsZero() {
+						return
+					}
+				}
 				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, accountID)
 
 				if policy == PolicyTrusted && trustLvl != trust.TrustTrusted && trustLvl != trust.TrustVerified {
@@ -112,7 +123,10 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					TrustLevel:         trustLvl,
 					IsFreeTier:         isFree,
 					AccountRiskPenalty: riskProfile.ScorePenalty,
-					// TTFT, Latency, etc., would be pulled from a metrics store
+					TTFTMs:             int(observed.TTFTMs),
+				}
+				if observed.Attempts > 0 {
+					factors.SuccessRate = float64(observed.Successes) / float64(observed.Attempts)
 				}
 
 				score := scoring.Calculate(factors)
@@ -132,6 +146,7 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					UpstreamModel: pm.UpstreamModel,
 					AccountID:     accountID,
 					Score:         score,
+					LatencyMs:     observed.LatencyMs,
 				})
 			}
 
