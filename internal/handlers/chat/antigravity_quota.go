@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/controlplane/capacity"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/translator"
 )
@@ -73,9 +74,10 @@ func applyActiveStrikeBlocks(connectionID string, quotas map[string]AntigravityM
 // ClearAntigravityQuotaCache resets the in-memory cache (primarily for unit tests).
 func ClearAntigravityQuotaCache() {
 	agQuotaMu.Lock()
-	defer agQuotaMu.Unlock()
 	agQuotaCache = make(map[string]map[string]AntigravityModelQuota)
 	agLastRefreshAt = make(map[string]time.Time)
+	agQuotaMu.Unlock()
+	capacity.ClearProvider("antigravity")
 }
 
 // IsAntigravityModelBlocked reports whether connectionID has an exhausted quota for model until resetAt.
@@ -238,8 +240,20 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 	agQuotaMu.Lock()
 	agQuotaCache[connectionID] = quotas
 	agQuotaMu.Unlock()
+	publishAntigravityCapacity(connectionID, quotas)
 
 	return quotas, nil
+}
+
+func publishAntigravityCapacity(connectionID string, quotas map[string]AntigravityModelQuota) {
+	for model, q := range quotas {
+		capacity.Update("antigravity", connectionID, model, q.RemainingPercentage, q.ResetAt)
+		for alias, canonical := range translator.AntigravityModelSynonyms {
+			if canonical == model && alias != model {
+				capacity.Update("antigravity", connectionID, alias, q.RemainingPercentage, q.ResetAt)
+			}
+		}
+	}
 }
 
 // HandleAntigravityQuotaError handles Antigravity 409/429 errors by refreshing live quota and returning model resetAt.
@@ -302,6 +316,7 @@ func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, conne
 						ResetAt:             blockUntil,
 					}
 					agQuotaMu.Unlock()
+					capacity.Update("antigravity", connectionID, m, 0, blockUntil)
 					log.Warn("ag_quota", "optimistic quota strike-break: 3x429 within 60s while quota>0, CACHE_BLOCK 15m", "connection", shortConn, "model", m, "blockUntil", blockUntil.Format(time.RFC3339))
 					return &blockUntil
 				}
