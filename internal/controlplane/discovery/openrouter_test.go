@@ -76,6 +76,21 @@ func TestOpenRouterOfficialCatalogLive(t *testing.T) {
 	t.Logf("total=%d free=%d; catalog only, no inference", len(got), free)
 }
 
+func TestOpenRouterSetCatalogURL(t *testing.T) {
+	a := NewOpenRouterAdapter(nil)
+	if a.url != OpenRouterModelsURL {
+		t.Fatalf("default url %s", a.url)
+	}
+	a.SetCatalogURL("http://fixture.example/models")
+	if a.url != "http://fixture.example/models" {
+		t.Fatalf("fixture url %s", a.url)
+	}
+	a.SetCatalogURL("  ")
+	if a.url != OpenRouterModelsURL {
+		t.Fatalf("restored url %s", a.url)
+	}
+}
+
 func TestOpenRouterCatalogFailureDoesNotReplacePreviousClassification(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 	defer srv.Close()

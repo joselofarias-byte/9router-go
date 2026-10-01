@@ -26,3 +26,6 @@ docker-compose.local.yml
 .vscode/
 .DS_Store
 graphify-out
+
+# Free-coding measurement output. Regenerate locally; do not commit runs.
+.free-coding-out/

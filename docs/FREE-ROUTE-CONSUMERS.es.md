@@ -121,4 +121,12 @@ Para verificar solo el catálogo oficial sin claves ni inferencia:
 ```bash
 OPENROUTER_CATALOG_LIVE=1 go test ./internal/controlplane/discovery \
   -run TestOpenRouterOfficialCatalogLive -v
+
+## Medición de utilidad para programar
+
+El filtro `coding-best-free` y `POST /api/admin/health-check` no miden calidad
+de programación. El arnés aparte está en
+[`docs/FREE-CODING-MEASUREMENT.es.md`](FREE-CODING-MEASUREMENT.es.md) y
+`scripts/free-coding-measure.sh`. Separa fixtures, discovery público e
+inferencia autenticada. Un listado de catálogo no es un ranking de modelos.
 ```
