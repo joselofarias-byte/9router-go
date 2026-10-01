@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "id": "qwen/coder:free",
+      "pricing": {"prompt": "0", "completion": "0", "request": "0"},
+      "context_length": 262144,
+      "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+      "supported_parameters": ["tools", "reasoning"]
+    },
+    {
+      "id": "vendor/mislabeled:free",
+      "pricing": {"prompt": "0.01", "completion": "0"},
+      "architecture": {"output_modalities": ["text"]},
+      "supported_parameters": ["tools"]
+    },
+    {
+      "id": "vendor/paid-model",
+      "pricing": {"prompt": "0.01", "completion": "0.03"},
+      "architecture": {"output_modalities": ["text"]},
+      "supported_parameters": ["tools"]
+    }
+  ]
+}

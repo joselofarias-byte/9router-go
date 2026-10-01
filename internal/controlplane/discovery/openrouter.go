@@ -27,6 +27,17 @@ func NewOpenRouterAdapter(client *http.Client) *OpenRouterAdapter {
 	return &OpenRouterAdapter{client: client, url: OpenRouterModelsURL}
 }
 
+// SetCatalogURL points catalog reads at a fixture or test server so callers
+// can reuse Discover instead of cloning the pricing rules. An empty value
+// restores the public catalog. Requests stay unauthenticated.
+func (a *OpenRouterAdapter) SetCatalogURL(rawURL string) {
+	if strings.TrimSpace(rawURL) == "" {
+		a.url = OpenRouterModelsURL
+		return
+	}
+	a.url = rawURL
+}
+
 func (a *OpenRouterAdapter) SourceID() string            { return "openrouter-official" }
 func (a *OpenRouterAdapter) ScopedProviderIDs() []string { return []string{"openrouter"} }
 
