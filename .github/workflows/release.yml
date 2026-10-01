@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+  REGISTRY_IMAGE: luqmenul/9router-go
 
 jobs:
   binaries:
@@ -19,6 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Build Web SPA
+        run: |
+          cd web
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -60,6 +71,7 @@ jobs:
             9router-go-darwin-amd64
             9router-go-darwin-arm64
             9router-go-windows-amd64.exe
+            SHA256SUMS.txt
           body_path: /tmp/changelog.md
           generate_release_notes: false
         env:
@@ -67,7 +79,6 @@ jobs:
 
   docker:
     name: Build and push Docker image
-    if: vars.ENABLE_DOCKER_RELEASE == 'true' && vars.DOCKERHUB_IMAGE != ''
     runs-on: ubuntu-latest
     environment: prod
     steps:

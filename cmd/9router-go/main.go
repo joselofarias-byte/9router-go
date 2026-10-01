@@ -4,25 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/urfave/cli/v2"
+	"go.uber.org/fx"
 
-	"9router/proxy/internal/config"
-	"9router/proxy/internal/controlplane/discovery"
-	"9router/proxy/internal/controlplane/registry"
-	"9router/proxy/internal/db"
-	"9router/proxy/internal/handlers"
-	"9router/proxy/internal/middleware"
-	"9router/proxy/internal/providers"
+	"9router/proxy/internal/app"
+	"9router/proxy/internal/daemon"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -56,6 +48,11 @@ func main() {
 				Name:  "no-injection-guard",
 				Value: os.Getenv("INJECTION_GUARD_DISABLED") == "true",
 				Usage: "disable the prompt-injection detector (on by default; env: INJECTION_GUARD_DISABLED)",
+			},
+			&cli.BoolFlag{
+				Name:    daemon.BackgroundName,
+				Aliases: []string{"d"},
+				Usage:   "run as a background daemon: detaches from the terminal and returns (env: 9ROUTER_BACKGROUND)",
 			},
 		},
 		Commands: []*cli.Command{
@@ -120,13 +117,50 @@ func main() {
 					},
 				},
 			},
+			{
+				Name:   "start",
+				Usage:  "Start the gateway in the background and return (same as --background)",
+				Action: startDetached,
+			},
+			{
+				Name:   "stop",
+				Usage:  "Stop the background gateway",
+				Action: stopDetached,
+			},
+			{
+				Name:   "restart",
+				Usage:  "Restart the background gateway",
+				Action: restartDetached,
+			},
+			{
+				Name:   "status",
+				Usage:  "Show whether the background gateway is running",
+				Action: statusDetached,
+			},
+			{
+				Name:  "logs",
+				Usage: "Print the tail of the background run log",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 40, Usage: "number of log lines to print"},
+				},
+				Action: logsDetached,
+			},
 		},
-		Action: runServer,
+		Action: foregroundOrBackground,
 	}
-
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// foregroundOrBackground is the flag-free entry point: with --background (or
+// -d, or the `start` sub-command) it detaches and returns, otherwise it runs
+// the server in this terminal exactly as before.
+func foregroundOrBackground(cCtx *cli.Context) error {
+	if cCtx.Bool(daemon.BackgroundName) {
+		return startDetached(cCtx)
+	}
+	return runServer(cCtx)
 }
 
 func runServer(cCtx *cli.Context) error {
@@ -140,118 +174,38 @@ func runServer(cCtx *cli.Context) error {
 		}
 	}
 
-	cfg := config.LoadConfig()
+	cliParams := app.NewCLIParams(cCtx)
 
-	if err := db.InitGlobalDatabase(cfg.DatabasePath); err != nil {
-		return fmt.Errorf("database init: %w", err)
+	fxApp := fx.New(
+		app.AppModule,
+		fx.Replace(cliParams),
+		app.DefaultFxLogger(),
+	)
+
+	startCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := fxApp.Start(startCtx); err != nil {
+		return err
 	}
-
-	conn, err := db.GetConnection()
-	if err != nil {
-		return fmt.Errorf("database connect: %w", err)
-	}
-	defer conn.Close()
-
-	// Initialize Control Plane Registry from DB Snapshot
-	registryErr := registry.InitRegistry(conn)
-	if registryErr != nil {
-		log.Printf("[config] registry init warning: %v", registryErr)
-	}
-
-	// Start Control Plane Orchestrator (background discovery)
-	adapters := []discovery.Adapter{
-		discovery.NewModelsDevAdapter(nil),
-		discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
-		discovery.NewClineFreeAdapter(nil),
-	}
-
-	unoAPIKey := os.Getenv("UNOROUTER_API_KEY")
-	if unoAPIKey != "" {
-		adapters = append(adapters, discovery.NewUnoRouterAdapter(nil, unoAPIKey))
-	} else {
-		log.Printf("[config] unorouter adapter skipped (UNOROUTER_API_KEY not set)")
-	}
-
-	// Read OrcaRouter configuration from environment for Control Plane discovery.
-	// Only instantiate if configured to keep it purely opt-in without polling if unused.
-	orcaBaseURL := os.Getenv("ORCAROUTER_BASE_URL")
-	orcaAPIKey := os.Getenv("ORCAROUTER_API_KEY")
-	if orcaBaseURL != "" && orcaAPIKey != "" {
-		adapters = append(adapters, discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey))
-	}
-
-	orchestrator := discovery.NewOrchestrator(conn, adapters)
-	orchestrator.Start(context.Background())
-
-	repo := db.NewRepo(conn)
-
-	ts := handlers.NewTokenSaverConfig(cCtx.Bool("rtk"), cCtx.Bool("caveman"), cCtx.Bool("ponytail"))
-	if settings, sErr := repo.GetSettings(); sErr == nil && settings != nil {
-		rtk := settings.RTKEnabled
-		if cCtx.IsSet("rtk") {
-			rtk = cCtx.Bool("rtk")
-		}
-		caveman := settings.CavemanEnabled
-		if cCtx.IsSet("caveman") {
-			caveman = cCtx.Bool("caveman")
-		}
-		ponytail := settings.PonytailEnabled
-		if cCtx.IsSet("ponytail") {
-			ponytail = cCtx.Bool("ponytail")
-		}
-		ts.SetAll(rtk, caveman, ponytail)
-		ts.SetCaveman(caveman, settings.CavemanLevel)
-		ts.SetPonytail(ponytail, settings.PonytailLevel)
-	}
-	ts.SetInjectionGuard(!cCtx.Bool("no-injection-guard"))
-	log.Printf("[config] token savers — rtk=%v caveman=%v (%s) ponytail=%v (%s)", ts.RTKEnabled(), ts.CavemanEnabled(), ts.CavemanLevel(), ts.PonytailEnabled(), ts.PonytailLevel())
-	autoUpdate := cCtx.Bool("auto-update")
-	if !autoUpdate && repo != nil {
-		if settings, sErr := repo.GetSettings(); sErr == nil && settings != nil {
-			autoUpdate = settings.AutoUpdate
-		}
-	}
-	updater.StartBackgroundCheck(context.Background(), autoUpdate)
-	log.Printf("[config] auto-update enabled=%v", autoUpdate)
-	catalogPath := filepath.Join(filepath.Dir(cfg.DatabasePath), "model-catalog.json")
-	providers.StartBackgroundCatalogSync(context.Background(), nil, catalogPath)
-
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.MaxBody(middleware.DefaultMaxBodySize))
-	r.Use(chiMiddleware.Recoverer)
-
-	r.Use(middleware.RequestLogger)
-
-	handlers.SetupServerRouter(r, repo, ts)
-
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("9Router Go Proxy (%s) starting on port %d", updater.CurrentVersion, cfg.Port)
 
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 
-	server := &http.Server{
-		Addr:    addr,
-		Handler: r,
+	// A daemon records its PID so `9router-go stop|status|restart` can find it
+	// after the launching terminal is long gone.
+	if daemon.IsBackgroundProcess() {
+		daemon.RegisterPID()
+		defer daemon.UnregisterPID()
 	}
 
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
-		}
-	}()
-
-	fmt.Fprintf(os.Stdout, "\n  🚀 9Router Go Proxy (%s) on %s\n\n", updater.CurrentVersion, addr)
-	log.Printf("Server is ready to handle requests at %s", addr)
-
-	<-signals // first signal → begin graceful shutdown
-	fmt.Fprintln(os.Stdout, "\n  Shutting down...")
-
-	// Signal in-flight SSE streams to end promptly: the stall reader closes each
-	// upstream body, handlers emit a final [DONE], and Shutdown completes well
-	// within its deadline instead of waiting out the full timeout.
-	shutdown.Cancel()
+	select {
+	case <-signals: // ^C or a supervisor's SIGTERM
+	case <-shutdown.StopRequested():
+		// The dashboard shutdown button and the updater's restart hook both
+		// land here. Windows cannot raise SIGTERM on itself, so this request
+		// channel is the only portable way to stop this process.
+	}
 
 	// A second signal force-quits immediately (e.g. a stream stuck mid-drain).
 	go func() {
@@ -260,14 +214,11 @@ func runServer(cCtx *cli.Context) error {
 		os.Exit(1)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		// Log instead of Fatalf so the deferred conn.Close()/logFile.Close()
-		// still run; SQLite WAL recovers any straggler on next open.
-		log.Printf("Server shutdown did not complete in time: %v", err)
-	} else {
-		log.Println("Server stopped gracefully")
-	}
-	return nil
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stopCancel()
+	stopErr := fxApp.Stop(stopCtx)
+
+	// The listener is closed now, so a restart hook can bind the same port.
+	shutdown.RunAfterStop()
+	return stopErr
 }
