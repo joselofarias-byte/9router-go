@@ -47,8 +47,15 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to seed apiKeys: %v", err)
 	}
 
+	// The shared fixture must never forward synthetic keys to real APIs.
+	// Tests needing a successful upstream replace this URL with their own server.
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fixture upstream not configured", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(fixture.Close)
+
 	// Seed provider connections (used by resolve/fallback tests)
-	deepseekData, _ := json.Marshal(map[string]interface{}{"apiKey": "sk-test-deepseek-key"})
+	deepseekData, _ := json.Marshal(map[string]interface{}{"apiKey": "sk-test-deepseek-key", "baseUrl": fixture.URL})
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-1', 'deepseek', 'apikey', 'DeepSeek Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
 		string(deepseekData)); err != nil {
@@ -56,7 +63,7 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to seed providerConnections: %v", err)
 	}
 
-	groqData, _ := json.Marshal(map[string]interface{}{"apiKey": "gsk-test-groq-key"})
+	groqData, _ := json.Marshal(map[string]interface{}{"apiKey": "gsk-test-groq-key", "baseUrl": fixture.URL})
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-2', 'groq', 'apikey', 'Groq Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
 		string(groqData)); err != nil {
@@ -1037,8 +1044,12 @@ func TestHandleChatCompletions_ComboFallback(t *testing.T) {
 func TestHandleChatCompletions_ComboAllFail(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
+	// Only the explicitly mocked providers participate in this failure test.
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id IN ('conn-1','conn-2')`); err != nil {
+		t.Fatal(err)
+	}
 
-	// Mock upstream: returns 500 for all requests
+	// Mock upstream: returns 429 for all requests
 	failingUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -1087,9 +1098,9 @@ func TestHandleChatCompletions_ComboAllFail(t *testing.T) {
 
 	handler.HandleChatCompletions(rec, req)
 
-	// Should return the last upstream error status (429 from mock, or 401 if it fetched a real connection without key)
-	if rec.Code != http.StatusTooManyRequests && rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 429 or 401 from last failed model, got %d, body: %s", rec.Code, rec.Body.String())
+	// Return the actual mocked upstream error, without a live API fallback.
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 from last failed model, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 }
 

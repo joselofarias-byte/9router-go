@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"9router/proxy/internal/controlplane/availability"
+	"9router/proxy/internal/controlplane/capacity"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/scoring"
 	"9router/proxy/internal/controlplane/trust"
@@ -48,6 +49,7 @@ type RouteNode struct {
 	AccountID     string
 	Score         scoring.Score
 	LatencyMs     float64
+	Quota         capacity.Snapshot
 }
 
 // Engine evaluates and selects routing candidates based on policies.
@@ -105,6 +107,14 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 			riskProfile := providers.GetProviderRiskProfile(provID)
 
 			appendCandidate := func(accountID string) {
+				wire := pm.UpstreamModel
+				if wire == "" {
+					wire = pm.ModelID
+				}
+				quota := capacity.Inspect(provID, accountID, wire)
+				if !capacity.Eligible(quota) {
+					return
+				}
 				var observed availability.State
 				if e.Availability != nil {
 					key := availability.Key{Provider: provID, Model: pm.ModelID, Account: accountID}
@@ -147,6 +157,7 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					AccountID:     accountID,
 					Score:         score,
 					LatencyMs:     observed.LatencyMs,
+					Quota:         quota,
 				})
 			}
 
@@ -176,7 +187,25 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 
 	// Sort candidates by score descending (stable due to preceding shuffle)
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].Score.Total > candidates[j].Score.Total
+		a, b := candidates[i], candidates[j]
+		if a.Score.Total != b.Score.Total {
+			return a.Score.Total > b.Score.Total
+		}
+		if (a.Quota.Status == capacity.Available) != (b.Quota.Status == capacity.Available) {
+			return a.Quota.Status == capacity.Available
+		}
+		// Percentages from different provider/model limits are not comparable.
+		// Use a deterministic group key before comparing peers to keep sort transitive.
+		if a.ProviderID != b.ProviderID {
+			return a.ProviderID < b.ProviderID
+		}
+		if a.ModelID != b.ModelID {
+			return a.ModelID < b.ModelID
+		}
+		if a.Quota.Status == capacity.Available {
+			return a.Quota.RemainingPercentage > b.Quota.RemainingPercentage
+		}
+		return false
 	})
 
 	return candidates

@@ -1,10 +1,12 @@
 package chat
 
 import (
+	"9router/proxy/internal/controlplane/capacity"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"9router/proxy/internal/constants"
@@ -54,6 +56,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 				// Candidate is good. Fetch real DB credentials using the routed AccountID.
 				cpConn, cpErr := h.Repo.GetProviderConnectionByID(cand.AccountID)
 				if cpErr == nil && cpConn != nil && cpConn.IsActive == 1 {
+					if !accountCapacityAvailable(cand.ProviderID, model, cpConn.ID) {
+						continue
+					}
 					// Re-check dynamic blocks that the static CP policy might have missed
 					if locked, _ := h.Repo.IsConnectionModelLocked(cpConn.ID, model); locked {
 						continue
@@ -124,6 +129,15 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
 		}
 
+		ids := make([]string, 0, len(connections))
+		for _, c := range connections {
+			ids = append(ids, c.ID)
+		}
+		ranks := map[string]int{}
+		for i, id := range capacity.OrderAccounts(provider, model, ids) {
+			ranks[id] = i
+		}
+		sort.SliceStable(connections, func(i, j int) bool { return ranks[connections[i].ID] < ranks[connections[j].ID] })
 		excludeSet := make(map[string]bool, len(excludeIDs))
 		for _, id := range excludeIDs {
 			excludeSet[id] = true
@@ -131,7 +145,7 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 		conn = nil
 		for _, c := range connections {
-			if excludeSet[c.ID] {
+			if excludeSet[c.ID] || !accountCapacityAvailable(provider, model, c.ID) {
 				continue
 			}
 			// Skip connections that have an active per-connection model lock
@@ -151,6 +165,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		}
 	}
 
+	if model != "" && !accountCapacityAvailable(provider, model, conn.ID) {
+		return nil, nil, fmt.Errorf("connection capacity unavailable")
+	}
 	var connData ConnectionData
 	if conn.Data != "" {
 		if err := json.Unmarshal([]byte(conn.Data), &connData); err != nil {
