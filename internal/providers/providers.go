@@ -12,6 +12,7 @@ type ProviderConfig struct {
 	AuthHeader    string            // "Authorization" or "x-api-key"
 	AuthScheme    string            // "bearer" or "raw"
 	NoAuth        bool              // true = no API key required
+	LocalOnly     bool              // true = upstream must resolve to loopback only
 	DefaultAPIKey string            // fallback API key when none provided
 	StaticHeaders map[string]string // extra headers to set on every request
 	Format        string            // "" (OpenAI standard), "gemini-native"
