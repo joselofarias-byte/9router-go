@@ -2,6 +2,8 @@ package translator
 
 import (
 	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"fmt"
 	"time"
 )
 
@@ -38,6 +40,7 @@ type OpenAIUsage struct {
 	CacheCreationInputTokens int                      `json:"cache_creation_input_tokens"`
 	PromptTokensDetails      *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails  *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptCacheIncluded      bool                     `json:"-"`
 }
 
 type PromptTokensDetails struct {
@@ -107,13 +110,46 @@ type OpenAIRespMsg struct {
 	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
 }
 
+// OpenAIReasoningDetail is one entry of reasoning_details. Vendors disagree on
+// the shape: some send a bare string, others an object carrying text or content.
+type OpenAIReasoningDetail struct {
+	Text    string
+	Content string
+}
+
+// UnmarshalJSON accepts both the bare-string and the object shape.
+func (d *OpenAIReasoningDetail) UnmarshalJSON(b []byte) error {
+	var raw any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("OpenAIReasoningDetail.UnmarshalJSON: %w", err)
+	}
+	switch v := raw.(type) {
+	case string:
+		d.Text = v
+	case map[string]any:
+		d.Text, _ = v["text"].(string)
+		d.Content, _ = v["content"].(string)
+	}
+	return nil
+}
+
+// MarshalJSON emits the bare string when the entry carries nothing but text, so
+// a translated request round-trips back to the shape the vendor expects.
+func (d OpenAIReasoningDetail) MarshalJSON() ([]byte, error) {
+	if d.Content == "" {
+		return json.Marshal(d.Text)
+	}
+	return json.Marshal(map[string]string{"text": d.Text, "content": d.Content})
+}
+
 // OpenAIDelta holds the per-chunk delta in an OpenAI stream.
 type OpenAIDelta struct {
-	Role             string                 `json:"role"`
-	Content          string                 `json:"content"`
-	ReasoningContent string                 `json:"reasoning_content"`
-	Reasoning        string                 `json:"reasoning"`
-	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
+	Role             string                  `json:"role"`
+	Content          string                  `json:"content"`
+	ReasoningContent string                  `json:"reasoning_content"`
+	Reasoning        string                  `json:"reasoning"`
+	ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
+	ToolCalls        []OpenAIToolCallStream  `json:"tool_calls"`
 }
 
 // OpenAIToolCallStream holds a streaming tool call fragment.
@@ -184,13 +220,14 @@ type ClaudeThinking struct {
 type ClaudeOutputConfig struct {
 	Effort string `json:"effort,omitempty"`
 }
+
 // ClaudeRequest is the full Claude /v1/messages request body.
 type ClaudeRequest struct {
-	Model       string          `json:"model"`
-	Messages    []ClaudeMessage `json:"messages"`
-	System      jsontext.Value  `json:"system,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Model        string              `json:"model"`
+	Messages     []ClaudeMessage     `json:"messages"`
+	System       jsontext.Value      `json:"system,omitempty"`
+	Temperature  *float64            `json:"temperature,omitempty"`
+	MaxTokens    *int                `json:"max_tokens,omitempty"`
 	Thinking     *ClaudeThinking     `json:"thinking,omitempty"`
 	OutputConfig *ClaudeOutputConfig `json:"output_config,omitempty"`
 	Tools        []ClaudeTool        `json:"tools,omitempty"`
@@ -225,6 +262,12 @@ type OpenAIContentBlock struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text,omitempty"`
 	ImageUrl *OpenAIImageUrl `json:"image_url,omitempty"`
+	File     *OpenAIFile     `json:"file,omitempty"`
+}
+
+// OpenAIFile holds inline file/document data (e.g. data:application/pdf;base64,...).
+type OpenAIFile struct {
+	FileData string `json:"file_data"`
 }
 
 // OpenAIImageUrl holds a data URL for inline images.

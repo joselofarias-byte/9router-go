@@ -1,7 +1,9 @@
 package chat
 
 import (
+	json "encoding/json/v2"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +18,7 @@ func TestProcessCommandcodeEvent_TextDelta(t *testing.T) {
 		ResponseID: "test-id",
 		Created:    1000,
 	}
-	event := map[string]interface{}{"type": "text-delta", "text": "Hello world"}
+	event := map[string]any{"type": "text-delta", "text": "Hello world"}
 	chunks := executor.ProcessCommandcodeEvent(event, "text-delta", state)
 	if len(chunks) == 0 {
 		t.Fatal("expected output chunks")
@@ -34,7 +36,7 @@ func TestProcessCommandcodeEvent_TextDelta(t *testing.T) {
 
 func TestProcessCommandcodeEvent_ReasoningDelta(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000}
-	event := map[string]interface{}{"type": "reasoning-delta", "text": "thinking step by step"}
+	event := map[string]any{"type": "reasoning-delta", "text": "thinking step by step"}
 	chunks := executor.ProcessCommandcodeEvent(event, "reasoning-delta", state)
 	if len(chunks) == 0 {
 		t.Fatal("expected output chunks")
@@ -46,7 +48,7 @@ func TestProcessCommandcodeEvent_ReasoningDelta(t *testing.T) {
 
 func TestProcessCommandcodeEvent_ToolInputStart(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000}
-	event := map[string]interface{}{
+	event := map[string]any{
 		"type":     "tool-input-start",
 		"id":       "call_123",
 		"toolName": "get_weather",
@@ -66,7 +68,7 @@ func TestProcessCommandcodeEvent_ToolInputStart(t *testing.T) {
 func TestProcessCommandcodeEvent_ToolInputDelta(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000}
 	state.ToolIndexByID = map[string]int{"call_123": 0}
-	event := map[string]interface{}{
+	event := map[string]any{
 		"type":  "tool-input-delta",
 		"id":    "call_123",
 		"delta": `{"location":"Jakarta"}`,
@@ -82,11 +84,11 @@ func TestProcessCommandcodeEvent_ToolInputDelta(t *testing.T) {
 
 func TestProcessCommandcodeEvent_ToolCall(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000}
-	event := map[string]interface{}{
+	event := map[string]any{
 		"type":       "tool-call",
 		"toolCallId": "call_456",
 		"toolName":   "search",
-		"input":      map[string]interface{}{"query": "test"},
+		"input":      map[string]any{"query": "test"},
 	}
 	chunks := executor.ProcessCommandcodeEvent(event, "tool-call", state)
 	if len(chunks) == 0 {
@@ -102,8 +104,8 @@ func TestProcessCommandcodeEvent_ToolCall(t *testing.T) {
 
 func TestProcessCommandcodeEvent_FinishStep(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000}
-	event := map[string]interface{}{
-		"type":          "finish-step",
+	event := map[string]any{
+		"type":         "finish-step",
 		"finishReason": "stop",
 	}
 	chunks := executor.ProcessCommandcodeEvent(event, "finish-step", state)
@@ -120,7 +122,7 @@ func TestProcessCommandcodeEvent_Finish(t *testing.T) {
 		ResponseID: "test-id",
 		Created:    1000,
 	}
-	event := map[string]interface{}{"type": "finish", "finishReason": "stop"}
+	event := map[string]any{"type": "finish", "finishReason": "stop"}
 	chunks := executor.ProcessCommandcodeEvent(event, "finish", state)
 	if len(chunks) == 0 {
 		t.Fatal("expected output from finish")
@@ -135,7 +137,7 @@ func TestProcessCommandcodeEvent_Finish(t *testing.T) {
 
 func TestProcessCommandcodeEvent_Error(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000}
-	event := map[string]interface{}{
+	event := map[string]any{
 		"type":  "error",
 		"error": "rate limit exceeded",
 	}
@@ -154,7 +156,7 @@ func TestProcessCommandcodeEvent_Error(t *testing.T) {
 
 func TestBuildCommandcodeChunk(t *testing.T) {
 	state := &executor.CommandcodeStreamState{ResponseID: "test-id", Created: 1000, Model: "deepseek-v4"}
-	result := executor.BuildCommandcodeChunk(state, map[string]interface{}{"content": "hi"}, "stop")
+	result := executor.BuildCommandcodeChunk(state, map[string]any{"content": "hi"}, "stop")
 	if !strings.Contains(result, "deepseek-v4") {
 		t.Errorf("expected model in chunk, got %s", result)
 	}
@@ -173,6 +175,9 @@ func TestForwardCommandcodeRequest_Success(t *testing.T) {
 		}
 		if r.Header.Get("x-session-id") == "" {
 			t.Errorf("expected x-session-id header")
+		}
+		if r.Header.Get("User-Agent") != "commandcode/0.25.7 (cli)" {
+			t.Errorf("expected User-Agent header 'commandcode/0.25.7 (cli)', got %q", r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -229,5 +234,138 @@ func TestForwardCommandcodeRequest_UpstreamError(t *testing.T) {
 	}
 	if ue.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", ue.StatusCode)
+	}
+}
+
+func TestForwardCommandcodeRequest_StaticHeaders(t *testing.T) {
+	var capturedUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: srv.URL,
+		StaticHeaders: map[string]string{
+			"User-Agent": "custom-cc-agent/1.0",
+		},
+	}
+	body := []byte(`{"model":"deepseek-v4","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := executor.ForwardCommandcode(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "sk-cc",
+		Body:     body,
+		IsStream: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedUA != "custom-cc-agent/1.0" {
+		t.Errorf("expected User-Agent 'custom-cc-agent/1.0', got %q", capturedUA)
+	}
+}
+
+func TestForwardCommandcodeRequest_ImageAndReasoningEffort(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &capturedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: srv.URL,
+	}
+	body := []byte(`{
+		"model": "deepseek-v4-vision",
+		"reasoning_effort": "high",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "what is this?"},
+					{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+				]
+			}
+		]
+	}`)
+	rec := httptest.NewRecorder()
+	err := executor.ForwardCommandcode(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "sk-test",
+		Body:     body,
+		IsStream: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params, _ := capturedBody["params"].(map[string]any)
+	if params == nil {
+		t.Fatal("expected params object in payload")
+	}
+	if effort, _ := params["reasoning_effort"].(string); effort != "high" {
+		t.Errorf("expected reasoning_effort 'high', got %v", params["reasoning_effort"])
+	}
+
+	msgs, _ := params["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	userMsg, _ := msgs[0].(map[string]any)
+	content, _ := userMsg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(content))
+	}
+	imgPart, _ := content[1].(map[string]any)
+	if imgPart["type"] != "image" {
+		t.Errorf("expected content[1].type 'image', got %v", imgPart["type"])
+	}
+	if imgPart["image"] != "data:image/png;base64,iVBORw0KGgo=" {
+		t.Errorf("expected data URI preserved, got %v", imgPart["image"])
+	}
+	if imgPart["mimeType"] != "image/png" {
+		t.Errorf("expected mimeType 'image/png', got %v", imgPart["mimeType"])
+	}
+}
+
+func TestBuildCommandcodeBody_DefaultsMaxTokens(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &capturedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	rec := httptest.NewRecorder()
+	err := executor.ForwardCommandcode(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "sk-test",
+		Body:     []byte(`{"model":"cmc/deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":1024,"stream":false}`),
+		IsStream: false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	params, _ := capturedBody["params"].(map[string]any)
+	if params == nil {
+		t.Fatal("expected params object in payload")
+	}
+	if mt, _ := params["max_tokens"].(float64); mt != 1024 {
+		t.Errorf("expected params.max_tokens 1024 (test ping parity), got %v", params["max_tokens"])
 	}
 }

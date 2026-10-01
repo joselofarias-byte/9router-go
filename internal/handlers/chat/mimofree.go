@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/translator"
 )
 
 // MiMo anti-abuse: the free chat endpoint returns 403 "Illegal access"
@@ -24,6 +27,9 @@ const mimoSystemMarker = "You are MiMoCode, an interactive CLI tool that helps u
 
 const mimoBootstrapURL = "https://api.xiaomimimimo.com/api/free-ai/bootstrap"
 const mimoChatURL = "https://api.xiaomimimimo.com/api/free-ai/openai/chat"
+
+// mimoProviderID is the provider key the thinking-level table is filed under.
+const mimoProviderID = "mimo-free"
 
 const sessionIDLength = 24
 const sessionAffixPrefix = "ses_"
@@ -70,6 +76,11 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 	}
 
 	upstreamBody := injectMimoMarker(body)
+	fittedBody, fittedToolMap := translator.FitToolNames(upstreamBody)
+	if len(fittedToolMap) > 0 {
+		upstreamBody = fittedBody
+		w = executor.NewToolNameRestoringWriter(w, fittedToolMap)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", mimoChatURL, bytes.NewReader(upstreamBody))
 	if err != nil {
@@ -114,6 +125,14 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
 		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
+	}
+
+	if translator.NeedsResponsesBridge(ctx) && !isStream {
+		raw, rErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		if rErr != nil {
+			return fmt.Errorf("mimo read response: %w", rErr)
+		}
+		return h.respondAsResponses(ctx, w, raw)
 	}
 
 	if isStream {
@@ -168,12 +187,15 @@ func getMimoJWT() (string, error) {
 	return mimoJWT, nil
 }
 
-// injectMimoMarker ensures the request body has the anti-abuse system message.
+// injectMimoMarker ensures the request body has the anti-abuse system message and
+// a reasoning_effort the MiMo backend will accept.
 func injectMimoMarker(body []byte) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body
 	}
+
+	clampMimoEffort(req)
 
 	messages, ok := req["messages"].([]any)
 	if !ok {
@@ -195,7 +217,7 @@ func injectMimoMarker(body []byte) []byte {
 	}
 
 	if hasMarker {
-		return body
+		return marshalMimoBody(req, body)
 	}
 
 	markerMsg := map[string]any{
@@ -205,10 +227,34 @@ func injectMimoMarker(body []byte) []byte {
 	newMessages := append([]any{markerMsg}, messages...)
 	req["messages"] = newMessages
 
+	return marshalMimoBody(req, body)
+}
+
+// clampMimoEffort downgrades reasoning_effort "max" to "high" for models whose
+// declared thinking levels do not include it. mimo-v2.5-pro and v2.6 on this lane
+// answer 400 to "max"; v2.5 accepts it, so the decision follows the declared
+// levels rather than the model name. Port of upstream 1b72f02e.
+func clampMimoEffort(req map[string]any) {
+	model, _ := req["model"].(string)
+	if model == "" {
+		return
+	}
+	if effort, ok := req["reasoning_effort"].(string); ok && effort != "" {
+		req["reasoning_effort"] = providers.ClampDeepseekEffort(mimoProviderID, model, effort)
+		return
+	}
+	if reasoning, ok := req["reasoning"].(map[string]any); ok {
+		if effort, ok := reasoning["effort"].(string); ok && effort != "" {
+			reasoning["effort"] = providers.ClampDeepseekEffort(mimoProviderID, model, effort)
+		}
+	}
+}
+
+func marshalMimoBody(req map[string]any, original []byte) []byte {
 	patched, err := json.Marshal(req)
 	if err != nil {
 		log.Error("mimo", "marshal patched request failed", "error", err)
-		return body
+		return original
 	}
 	return patched
 }

@@ -12,7 +12,7 @@ func TestTransformCodebuddyBody_ForceStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestTransformCodebuddyBody_StreamAlreadyTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestTransformCodebuddyBody_ReasoningEffortNone(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error for %q: %v", eff, err)
 		}
-		var m map[string]interface{}
+		var m map[string]any
 		if err := json.Unmarshal(out, &m); err != nil {
 			t.Fatalf("unmarshal output: %v", err)
 		}
@@ -64,7 +64,7 @@ func TestTransformCodebuddyBody_ReasoningEffortMedium(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestTransformCodebuddyBody_NoReasoningEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
@@ -92,6 +92,43 @@ func TestTransformCodebuddyBody_NoReasoningEffort(t *testing.T) {
 	}
 	if _, exists := m["reasoning_summary"]; exists {
 		t.Error("reasoning_summary should not be present when no effort set")
+	}
+}
+
+func TestTransformCodebuddyBody_UpstreamMessageShape(t *testing.T) {
+	// Upstream codebuddy-intl.js parity: leading system prompt, user content
+	// as typed blocks, client system messages dropped.
+	input := `{"model":"glm-5.3-flash","messages":[{"role":"system","content":"client-sys"},{"role":"user","content":"hi"}],"stream":false}`
+	out, err := transformCodebuddyBody([]byte(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m struct {
+		Stream   bool `json:"stream"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if !m.Stream {
+		t.Error("stream must be forced true")
+	}
+	if len(m.Messages) != 2 {
+		t.Fatalf("expected system + user messages, got %d: %s", len(m.Messages), out)
+	}
+	if m.Messages[0].Role != "system" {
+		t.Errorf("first message must be system, got %q", m.Messages[0].Role)
+	}
+	blocks, ok := m.Messages[1].Content.([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("user content must be typed blocks, got %#v", m.Messages[1].Content)
+	}
+	block, _ := blocks[0].(map[string]any)
+	if block["type"] != "text" || block["text"] != "hi" {
+		t.Errorf("unexpected user block: %#v", block)
 	}
 }
 

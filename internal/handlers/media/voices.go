@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -22,9 +23,13 @@ import (
 // local-device | elevenlabs | gemini, ?lang=<code> filter, ?apiKey for elevenlabs.
 
 const (
-	elevenVoicesURL = "https://api.elevenlabs.io/v1/voices"
-	edgeUA          = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-	voicesCacheTTL  = 24 * time.Hour
+	elevenVoicesURL   = "https://api.elevenlabs.io/v1/voices"
+	deepgramModelsURL = "https://api.deepgram.com/v1/models"
+	inworldVoicesURL  = "https://api.inworld.ai/tts/v1/voices"
+	minimaxVoiceURL   = "https://api.minimax.io/v1/get_voice"
+	minimaxCNVoiceURL = "https://api.minimaxi.com/v1/get_voice"
+	edgeUA            = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+	voicesCacheTTL    = 24 * time.Hour
 )
 
 // edgeVoicesURL is a var so tests can stub the upstream.
@@ -36,10 +41,13 @@ type voiceCacheEntry struct {
 }
 
 var (
-	voiceCacheMu     sync.Mutex
-	edgeVoiceCache   voiceCacheEntry
-	elevenVoiceCache = map[string]voiceCacheEntry{} // by API key
-	localVoiceCache  voiceCacheEntry
+	voiceCacheMu       sync.Mutex
+	edgeVoiceCache     voiceCacheEntry
+	elevenVoiceCache   = map[string]voiceCacheEntry{} // by API key
+	minimaxVoiceCache  = map[string]voiceCacheEntry{} // by apiKey+provider+voiceType
+	deepgramVoiceCache voiceCacheEntry
+	inworldVoiceCache  voiceCacheEntry
+	localVoiceCache    voiceCacheEntry
 )
 
 // ponytail: hardcoded subset of Intl.DisplayNames("en"); unknown codes fall
@@ -130,8 +138,36 @@ func (h *MediaHandler) HandleAudioVoices(w http.ResponseWriter, r *http.Request)
 	switch provider {
 	case "edge-tts":
 		voices, err = fetchEdgeTTSVoices(h.Client, r.Context())
+	case "deepgram":
+		voices, err = h.fetchDeepgramVoices(r.Context())
+	case "inworld":
+		voices, err = h.fetchInworldVoices(r.Context())
+	case "minimax", "minimax-cn":
+		voices, err = h.fetchMinimaxVoices(r.Context(), provider, q.Get("voice_type"))
 	case "elevenlabs":
-		voices, err = fetchElevenLabsVoices(h.Client, r.Context(), q.Get("apiKey"))
+		apiKey := q.Get("apiKey")
+		if apiKey == "" && h.Repo != nil {
+			if conns, cerr := h.Repo.GetProviderConnections("elevenlabs", true); cerr == nil {
+				for _, c := range conns {
+					var cd struct {
+						APIKey      string `json:"apiKey"`
+						AccessToken string `json:"accessToken"`
+					}
+					if c != nil && c.Data != "" {
+						_ = json.Unmarshal([]byte(c.Data), &cd)
+					}
+					if cd.APIKey != "" {
+						apiKey = cd.APIKey
+						break
+					}
+					if cd.AccessToken != "" {
+						apiKey = cd.AccessToken
+						break
+					}
+				}
+			}
+		}
+		voices, err = fetchElevenLabsVoices(h.Client, r.Context(), apiKey)
 	case "gemini":
 		voices = fetchGeminiVoices()
 	case "local-device":
@@ -197,7 +233,7 @@ func fetchEdgeTTSVoices(client *http.Client, ctx context.Context) ([]map[string]
 		return nil, err
 	}
 	req.Header.Set("User-Agent", edgeUA)
-	resp, err := client.Do(req)
+	resp, err := doDirectOrClient(ctx, client, req)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +302,7 @@ func fetchElevenLabsVoices(client *http.Client, ctx context.Context, apiKey stri
 		return nil, err
 	}
 	req.Header.Set("xi-api-key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -388,4 +424,386 @@ func fetchLocalDeviceVoices() []map[string]any {
 	localVoiceCache = voiceCacheEntry{voices: voices, time: time.Now()}
 	voiceCacheMu.Unlock()
 	return voices
+}
+
+// connectionAPIKey returns the first active connection apiKey/accessToken for
+// a provider, mirroring upstream getProviderConnections({provider, isActive}).
+func (h *MediaHandler) connectionAPIKey(provider string) string {
+	if h.Repo == nil {
+		return ""
+	}
+	conns, err := h.Repo.GetProviderConnections(provider, true)
+	if err != nil {
+		return ""
+	}
+	for _, c := range conns {
+		var cd struct {
+			APIKey      string `json:"apiKey"`
+			AccessToken string `json:"accessToken"`
+		}
+		if c != nil && c.Data != "" {
+			_ = json.Unmarshal([]byte(c.Data), &cd)
+		}
+		if cd.APIKey != "" {
+			return cd.APIKey
+		}
+		if cd.AccessToken != "" {
+			return cd.AccessToken
+		}
+	}
+	return ""
+}
+
+// fetchDeepgramVoices mirrors upstream
+// src/app/api/media-providers/tts/deepgram/voices/route.js: uses the first
+// active deepgram connection key against GET /v1/models (Token scheme) and
+// groups tts entries by language.
+func (h *MediaHandler) fetchDeepgramVoices(ctx context.Context) ([]map[string]any, error) {
+	voiceCacheMu.Lock()
+	if deepgramVoiceCache.voices != nil && time.Since(deepgramVoiceCache.time) < voicesCacheTTL {
+		voices := deepgramVoiceCache.voices
+		voiceCacheMu.Unlock()
+		return voices, nil
+	}
+	voiceCacheMu.Unlock()
+
+	apiKey := h.connectionAPIKey("deepgram")
+	if apiKey == "" {
+		return nil, errors.New("No Deepgram connection found")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, deepgramModelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Token "+apiKey)
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = "Failed"
+		}
+		return nil, fmt.Errorf("Deepgram API %d: %s", resp.StatusCode, msg)
+	}
+	var data struct {
+		TTS []struct {
+			Name          string   `json:"name"`
+			CanonicalName string   `json:"canonical_name"`
+			Languages     []string `json:"languages"`
+			Metadata      struct {
+				Tags []string `json:"tags"`
+			} `json:"metadata"`
+		} `json:"tts"`
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
+	}
+	voices := []map[string]any{}
+	seen := map[string]bool{}
+	for _, m := range data.TTS {
+		langs := m.Languages
+		if len(langs) == 0 {
+			canon := m.CanonicalName
+			if i := strings.LastIndex(canon, "-"); i >= 0 {
+				canon = canon[i+1:]
+			}
+			if canon == "" {
+				canon = "en"
+			}
+			langs = []string{canon}
+		}
+		id := m.CanonicalName
+		if id == "" {
+			id = m.Name
+		}
+		gender := ""
+		for _, t := range m.Metadata.Tags {
+			if t == "masculine" || t == "feminine" {
+				gender = t
+				break
+			}
+		}
+		for _, lang := range langs {
+			key := lang + "\x00" + id
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			voices = append(voices, map[string]any{
+				"id":          id,
+				"name":        firstNonEmpty(m.Name, id),
+				"locale":      lang,
+				"lang":        lang,
+				"country":     "",
+				"countryName": "",
+				"langName":    langName(lang),
+				"gender":      gender,
+			})
+		}
+	}
+	voiceCacheMu.Lock()
+	deepgramVoiceCache = voiceCacheEntry{voices: voices, time: time.Now()}
+	voiceCacheMu.Unlock()
+	return voices, nil
+}
+
+// fetchInworldVoices mirrors upstream
+// src/app/api/media-providers/tts/inworld/voices/route.js: uses the first
+// active inworld connection key against GET /tts/v1/voices (Basic scheme)
+// and groups entries by language.
+func (h *MediaHandler) fetchInworldVoices(ctx context.Context) ([]map[string]any, error) {
+	voiceCacheMu.Lock()
+	if inworldVoiceCache.voices != nil && time.Since(inworldVoiceCache.time) < voicesCacheTTL {
+		voices := inworldVoiceCache.voices
+		voiceCacheMu.Unlock()
+		return voices, nil
+	}
+	voiceCacheMu.Unlock()
+
+	apiKey := h.connectionAPIKey("inworld")
+	if apiKey == "" {
+		return nil, errors.New("No Inworld connection found")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, inworldVoicesURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Basic "+apiKey)
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = "Failed"
+		}
+		return nil, fmt.Errorf("Inworld API %d: %s", resp.StatusCode, msg)
+	}
+	var data struct {
+		Voices []struct {
+			VoiceID   string   `json:"voiceId"`
+			VoiceID2  string   `json:"voice_id"`
+			Name      string   `json:"name"`
+			Languages []string `json:"languages"`
+		} `json:"voices"`
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
+	}
+	voices := []map[string]any{}
+	for _, v := range data.Voices {
+		id := firstNonEmpty(v.VoiceID, v.VoiceID2)
+		if id == "" {
+			continue
+		}
+		langs := v.Languages
+		if len(langs) == 0 {
+			langs = []string{"en"}
+		}
+		for _, lang := range langs {
+			voices = append(voices, map[string]any{
+				"id":          id,
+				"name":        firstNonEmpty(v.Name, id),
+				"locale":      lang,
+				"lang":        lang,
+				"country":     "",
+				"countryName": "",
+				"langName":    langName(lang),
+				"gender":      "",
+			})
+		}
+	}
+	voiceCacheMu.Lock()
+	inworldVoiceCache = voiceCacheEntry{voices: voices, time: time.Now()}
+	voiceCacheMu.Unlock()
+	return voices, nil
+}
+
+// fetchMinimaxVoices mirrors upstream
+// src/app/api/media-providers/tts/minimax/voices/route.js: POSTs
+// {voice_type} to /v1/get_voice with the first active minimax/minimax-cn
+// connection key and groups voices by language bucket (system voices keep
+// their language prefix, clones/generated go to Custom).
+func (h *MediaHandler) fetchMinimaxVoices(ctx context.Context, provider, voiceType string) ([]map[string]any, error) {
+	if voiceType == "" {
+		voiceType = "all"
+	}
+	apiKey := h.connectionAPIKey(provider)
+	if apiKey == "" {
+		return nil, fmt.Errorf("No %s connection found", provider)
+	}
+	cacheKey := apiKey + "\x00" + provider + "\x00" + voiceType
+	voiceCacheMu.Lock()
+	if e, ok := minimaxVoiceCache[cacheKey]; ok && time.Since(e.time) < voicesCacheTTL {
+		voices := e.voices
+		voiceCacheMu.Unlock()
+		return voices, nil
+	}
+	voiceCacheMu.Unlock()
+
+	endpoint := minimaxVoiceURL
+	if provider == "minimax-cn" {
+		endpoint = minimaxCNVoiceURL
+	}
+	payload := map[string]string{"voice_type": voiceType}
+	raw, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(raw)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	var data map[string]any
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &data)
+	}
+	baseResp, _ := data["base_resp"].(map[string]any)
+	if baseResp == nil {
+		baseResp, _ = data["baseResp"].(map[string]any)
+	}
+	statusCode := 0.0
+	statusMsg := ""
+	if baseResp != nil {
+		statusCode, _ = toFloat(baseResp["status_code"])
+		if statusCode == 0 {
+			statusCode, _ = toFloat(baseResp["statusCode"])
+		}
+		statusMsg, _ = baseResp["status_msg"].(string)
+		if statusMsg == "" {
+			statusMsg, _ = baseResp["statusMsg"].(string)
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		if statusMsg == "" {
+			if m, _ := data["message"].(string); m != "" {
+				statusMsg = m
+			} else {
+				statusMsg = strings.TrimSpace(string(body))
+			}
+			if statusMsg == "" {
+				statusMsg = "Failed"
+			}
+		}
+		return nil, fmt.Errorf("MiniMax API %d: %s", resp.StatusCode, statusMsg)
+	}
+	if statusCode != 0 {
+		if statusMsg == "" {
+			statusMsg = "MiniMax voice API error"
+		}
+		return nil, errors.New(statusMsg)
+	}
+	voices := []map[string]any{}
+	seen := map[string]bool{}
+	groups := []struct {
+		key   string
+		label string
+	}{
+		{"system_voice", "System"},
+		{"voice_cloning", "Cloned"},
+		{"voice_generation", "Generated"},
+		{"music_generation", "Music"},
+	}
+	for _, g := range groups {
+		list, _ := data[g.key].([]any)
+		for _, item := range list {
+			m, _ := item.(map[string]any)
+			if m == nil {
+				continue
+			}
+			id, _ := m["voice_id"].(string)
+			if id == "" {
+				id, _ = m["voiceId"].(string)
+			}
+			if id == "" {
+				continue
+			}
+			name, _ := m["voice_name"].(string)
+			if name == "" {
+				name, _ = m["voiceName"].(string)
+			}
+			if name == "" {
+				name = id
+			}
+			lang := "Custom"
+			display := name + " · " + g.label
+			if g.key == "system_voice" {
+				lang = id
+				if i := strings.Index(id, "_"); i > 0 {
+					lang = id[:i]
+				}
+				if strings.TrimSpace(lang) == "" {
+					lang = "Custom"
+				}
+				display = name
+			}
+			key := lang + "\x00" + id
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			voices = append(voices, map[string]any{
+				"id":          id,
+				"name":        display,
+				"locale":      lang,
+				"lang":        lang,
+				"country":     "",
+				"countryName": "",
+				"langName":    lang,
+				"gender":      "",
+				"category":    g.key,
+			})
+		}
+	}
+	voiceCacheMu.Lock()
+	minimaxVoiceCache[cacheKey] = voiceCacheEntry{voices: voices, time: time.Now()}
+	voiceCacheMu.Unlock()
+	return voices, nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case string:
+		var f float64
+		_, err := fmt.Sscanf(strings.TrimSpace(n), "%g", &f)
+		return f, err == nil
+	}
+	return 0, false
 }

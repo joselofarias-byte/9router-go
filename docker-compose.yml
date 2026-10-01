@@ -3,11 +3,11 @@ services:
     build: .
     container_name: 9router-go
     ports:
-      - "20128:20128"
+      - "20130:20130"
     volumes:
       - 9router-data:/data
     environment:
-      - PORT=20128
+      - PORT=20130
       - DATA_DIR=/data
       # Token saver toggles (all default off except RTK):
       # - RTK_ENABLED=true

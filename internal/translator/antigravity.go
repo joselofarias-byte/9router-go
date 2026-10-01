@@ -16,6 +16,13 @@ import (
 // Antigravity backend rejects larger values (parity with Next.js capabilities.js).
 const maxAntigravityOutputTokens = 64000
 
+// thinkingHeadroomTokens is added on top of thinkingBudget when ensuring
+// maxOutputTokens strictly exceeds it (parity across chat and image paths).
+const thinkingHeadroomTokens = 8192
+
+// antigravityDecoyUnavailable is the placeholder description for injected decoy tools.
+const antigravityDecoyUnavailable = "This tool is currently unavailable."
+
 // antigravityRequestBlacklist are fields Google generateContent rejects when
 // present at the request root (thinking/reasoning fields set by upstream clients).
 var antigravityRequestBlacklist = []string{
@@ -29,11 +36,15 @@ var antigravityRequestBlacklist = []string{
 }
 
 // AntigravityRequest is the wrapper format for Antigravity API.
+// RequestType is omitempty: PR decolua/9router#3986 showed Google's Cloud Code
+// endpoint enforces a tiny separate quota bucket whenever requestType="agent"
+// is present, causing false 429 RESOURCE_EXHAUSTED on OMP harness payloads
+// even with quota remaining. So the agent path omits the field entirely.
 type AntigravityRequest struct {
 	Project     string         `json:"project"`
 	Model       string         `json:"model"`
 	UserAgent   string         `json:"userAgent"`
-	RequestType string         `json:"requestType"`
+	RequestType string         `json:"requestType,omitempty"`
 	RequestID   string         `json:"requestId"`
 	Request     jsontext.Value `json:"request"`
 }
@@ -77,27 +88,27 @@ var AntigravityDecoyPlaceholderParams = map[string]any{
 
 // AntigravityDecoyTools are the 21 decoy tools matching official IDE defaults.
 var AntigravityDecoyTools = []GeminiFunctionDecl{
-	{Name: "browser_subagent", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "command_status", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "find_by_name", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "generate_image", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "grep_search", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "list_dir", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "list_resources", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "mcp_sequential-thinking_sequentialthinking", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "multi_replace_file_content", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "notify_user", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "read_resource", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "read_terminal", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "read_url_content", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "replace_file_content", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "run_command", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "search_web", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "send_command_input", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "task_boundary", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "view_content_chunk", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "view_file", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
-	{Name: "write_to_file", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "browser_subagent", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "command_status", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "find_by_name", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "generate_image", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "grep_search", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "list_dir", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "list_resources", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "mcp_sequential-thinking_sequentialthinking", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "multi_replace_file_content", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "notify_user", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "read_resource", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "read_terminal", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "read_url_content", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "replace_file_content", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "run_command", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "search_web", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "send_command_input", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "task_boundary", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "view_content_chunk", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "view_file", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "write_to_file", Description: antigravityDecoyUnavailable, Parameters: AntigravityDecoyPlaceholderParams},
 }
 
 // CloakAntigravityRequest cloaks tool names with `_ide` suffix and appends decoy tools.
@@ -212,11 +223,50 @@ var competitivePromptBlacklist = []string{
 	"Anthropic's Claude Agent SDK",
 }
 
+// Harness tag patterns that trigger false 429 RESOURCE_EXHAUSTED rejections on
+// the Antigravity gateway (parity with decolua/9router PR #3987). OMP-family
+// harnesses inject these XML markers in system text; normalizing them to
+// neutral tags keeps instruction bodies intact while bypassing the filter.
+var (
+	harnessTagSystemConventions = regexp.MustCompile(`(?i)<(/?)system[-_]conventions>`)
+	harnessTagSystemDirective   = regexp.MustCompile(`(?i)<(/?)system[-_]directive>`)
+	harnessTagCritical          = regexp.MustCompile(`(?i)<(/?)critical>`)
+	harnessBrandOMPFull         = regexp.MustCompile(`(?i)Oh My Pi coding harness`)
+	harnessBrandOMP             = regexp.MustCompile(`(?i)Oh My Pi`)
+	harnessBrandOMPLive         = regexp.MustCompile(`(?i)omp Live`)
+	claudeBillingHeaderRegex    = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
+	hermesIdentityRegex         = regexp.MustCompile(`(?i)You are Hermes Agent,\s*(an intelligent AI assistant)(?: created by Nous Research)?\.`)
+)
 var opencodeRegex = regexp.MustCompile(`(?i)\bopencode\b`)
 
+// normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
+// Bodies are preserved; only the marker names change.
+func normalizeHarnessMarkers(text string) string {
+	text = harnessTagSystemConventions.ReplaceAllString(text, "<${1}conventions>")
+	text = harnessTagSystemDirective.ReplaceAllString(text, "<${1}instructions>")
+	text = harnessTagCritical.ReplaceAllString(text, "<${1}important>")
+	text = harnessBrandOMPFull.ReplaceAllString(text, "AI coding assistant")
+	text = harnessBrandOMP.ReplaceAllString(text, "coding assistant")
+	text = harnessBrandOMPLive.ReplaceAllString(text, "coding assistant live")
+	return text
+}
+
 func rewriteCompetingBranding(text string) string {
+	return rewriteBrandingText(text, true)
+}
+
+// rewriteBrandingText applies competitive-prompt rewrites. Harness markers
+// (tags + branding) are fingerprints of system-instruction text only;
+// user/model messages, tool definitions, arguments, and results keep the
+// existing Claude-SDK + opencode handling and are never harness-normalized.
+func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	for _, phrase := range competitivePromptBlacklist {
 		text = strings.ReplaceAll(text, phrase, "")
+	}
+	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
+	text = hermesIdentityRegex.ReplaceAllString(text, "You are Hermes Agent. You are ${1}.")
+	if isSystemInstruction {
+		text = normalizeHarnessMarkers(text)
 	}
 	text = opencodeRegex.ReplaceAllStringFunc(text, func(m string) string {
 		switch m {
@@ -262,7 +312,7 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 		var filtered []GeminiPart
 		for _, p := range c.Parts {
 			if p.Text != "" {
-				text := rewriteCompetingBranding(p.Text)
+				text := rewriteBrandingText(p.Text, false)
 				if strings.TrimSpace(text) == "" && p.FunctionCall == nil && p.FunctionResponse == nil && p.InlineData == nil && p.FileData == nil && p.ThoughtSignature == "" {
 					continue
 				}
@@ -300,12 +350,12 @@ var AntigravityModelSynonyms = map[string]string{
 	"gemini-3-pro-high":          "gemini-pro-agent",
 	"gemini-3-pro-low":           "gemini-3.1-pro-low",
 	// 3.8 flash tiered models -> backend model: gemini-3.8-flash-tiered
-	"gemini-3.8-flash":           "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-high":      "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-medium":    "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-low":       "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-agent":     "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-thinking":  "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash":          "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-high":     "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-medium":   "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-low":      "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-agent":    "gemini-3.8-flash-tiered",
+	"gemini-3.8-flash-thinking": "gemini-3.8-flash-tiered",
 	// 3.7 flash tiered models -> backend model: gemini-3.7-flash-tiered
 	"gemini-3.7-flash":           "gemini-3.7-flash-tiered",
 	"gemini-3.7-flash-high":      "gemini-3.7-flash-tiered",
@@ -315,10 +365,10 @@ var AntigravityModelSynonyms = map[string]string{
 	"gemini-3.7-flash-extra-low": "gemini-3.7-flash-tiered",
 	"gemini-3.7-flash-thinking":  "gemini-3.7-flash-tiered",
 	// 3.6 flash tiered models -> backend model: gemini-3.6-flash-tiered
-	"gemini-3.6-flash":           "gemini-3.6-flash-tiered",
-	"gemini-3.6-flash-high":      "gemini-3.6-flash-tiered",
-	"gemini-3.6-flash-medium":    "gemini-3.6-flash-tiered",
-	"gemini-3.6-flash-low":       "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash":        "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash-high":   "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash-medium": "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash-low":    "gemini-3.6-flash-tiered",
 }
 
 // NormalizeAntigravityModel maps known aliases/synonyms to Antigravity internal backend model names.
@@ -354,10 +404,7 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 	}
 	conversationID := antigravityUUIDFromSeed("antigravity:conversation:" + sessionID)
 	trajectoryID := antigravityUUIDFromSeed(fmt.Sprintf("antigravity:trajectory:%s:%s:%s", sessionID, model, requestType))
-	step := contentCount*2 - 1
-	if step < 1 {
-		step = 1
-	}
+	step := max(contentCount*2-1, 1)
 	return fmt.Sprintf("agent/%s/%d/%s/%d", conversationID, time.Now().UnixMilli(), trajectoryID, step)
 }
 
@@ -380,9 +427,29 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 	}
 
 	gc, _ := m["generationConfig"].(map[string]any)
-	if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
-		gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
-		changed = true
+	if gc != nil {
+		if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
+			gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
+			changed = true
+		}
+		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT (PR #3981)
+		var thinkingBudget float64
+		if tc, ok := gc["thinkingConfig"].(map[string]any); ok {
+			if tb, ok := tc["thinkingBudget"].(float64); ok {
+				thinkingBudget = tb
+			}
+		}
+		if thinkingBudget > 0 {
+			curMax, hasMax := gc["maxOutputTokens"].(float64)
+			if !hasMax || curMax <= thinkingBudget {
+				newMax := thinkingBudget + thinkingHeadroomTokens
+				if newMax > maxAntigravityOutputTokens {
+					newMax = maxAntigravityOutputTokens
+				}
+				gc["maxOutputTokens"] = newMax
+				changed = true
+			}
+		}
 	}
 
 	if !changed {
@@ -524,10 +591,12 @@ func fixAntigravityContents(req *GeminiRequest) bool {
 		}
 		fixed[i] = GeminiContent{Role: role, Parts: filtered}
 	}
-	if changed {
-		req.Contents = fixed
+	normalized := NormalizeGeminiContents(fixed)
+	if changed || len(normalized) != len(req.Contents) {
+		req.Contents = normalized
+		return true
 	}
-	return changed
+	return false
 }
 
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.
@@ -551,12 +620,14 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 	geminiBody = hardenAntigravityRequest(geminiBody)
 
 	wrapper := AntigravityRequest{
-		Project:     projectID,
-		Model:       modelName,
-		UserAgent:   "antigravity",
-		RequestType: "agent",
-		RequestID:   antigravityBuildRequestID(projectID, modelName, "agent", contentCount),
-		Request:     geminiBody,
+		Project:   projectID,
+		Model:     modelName,
+		UserAgent: "antigravity",
+		// Omit RequestType (was "agent"): parity with decolua/9router#3986.
+		// Google rejects agent-bucketed requests with false 429s; requestId
+		// keeps its existing agent/<...>/<...>/<...>/<step> shape.
+		RequestID: antigravityBuildRequestID(projectID, modelName, "agent", contentCount),
+		Request:   geminiBody,
 	}
 	out, err := json.Marshal(wrapper)
 	if err != nil {

@@ -130,11 +130,11 @@ func TestForwardCodexRequest_Success(t *testing.T) {
 			t.Errorf("expected Bearer auth")
 		}
 
-		var reqBody map[string]interface{}
+		var reqBody map[string]any
 		if err := json.UnmarshalRead(r.Body, &reqBody); err != nil {
 			t.Fatalf("parse body: %v", err)
 		}
-		input, ok := reqBody["input"].([]interface{})
+		input, ok := reqBody["input"].([]any)
 		if !ok || len(input) == 0 {
 			t.Errorf("expected Responses API input array")
 		}

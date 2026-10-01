@@ -1,54 +1,23 @@
 package config
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
-	"9router/proxy/internal/log"
-		"os"
+	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 
-	"9router/proxy/internal/constants"
-)
+	"github.com/spf13/viper"
 
-// loadDotenv reads key=value pairs from .env file and sets them as env vars.
-// Supports single/double-quoted values, strips inline `#` comments (except
-// inside quotes), and never overrides an existing environment variable.
-func loadDotenv(path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || k == "" {
-			continue
-		}
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-			v = v[1 : len(v)-1]
-		} else if idx := strings.IndexByte(v, '#'); idx >= 0 {
-			v = strings.TrimSpace(v[:idx])
-		}
-		// Existing env vars take precedence
-		if os.Getenv(k) == "" {
-			os.Setenv(k, v)
-		}
-	}
-}
+	"9router/proxy/internal/constants"
+	"9router/proxy/internal/log"
+)
 
 // Config holds the proxy gateway configuration.
 type Config struct {
+	Host            string
 	Port            int
 	DatabasePath    string
 	JWTSecret       string
@@ -60,10 +29,67 @@ type Config struct {
 	PonytailEnabled bool
 }
 
+// NewViper creates and configures a new Viper instance reading from .env with standard defaults.
+func NewViper() *viper.Viper {
+	return NewViperWithFile(".env")
+}
+
+// NewViperWithFile creates and configures a new Viper instance with the specified env file path.
+func NewViperWithFile(configFile string) *viper.Viper {
+	v := viper.New()
+	if configFile != "" {
+		v.SetConfigFile(configFile)
+		v.SetConfigType("env")
+	}
+
+	v.AutomaticEnv()
+
+	v.SetDefault("PORT", 20130)
+	v.SetDefault("API_KEY_SECRET", "endpoint-proxy-api-key-secret")
+	v.SetDefault("MACHINE_ID_SALT", "endpoint-proxy-salt")
+	v.SetDefault("RTK_ENABLED", true)
+	v.SetDefault("CAVEMAN_ENABLED", false)
+	v.SetDefault("PONYTAIL_ENABLED", false)
+
+	if configFile != "" {
+		if err := v.ReadInConfig(); err != nil {
+			var configFileNotFoundError viper.ConfigFileNotFoundError
+			if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) && !errors.As(err, &configFileNotFoundError) {
+				log.Warn("config", "read config file failed", "file", configFile, "error", err)
+			}
+		}
+	}
+
+	return v
+}
+
+// ProvideViper returns a configured Viper instance for dependency injection.
+func ProvideViper() *viper.Viper {
+	return NewViper()
+}
+
+// ProvideConfig provides *Config for dependency injection using the provided Viper instance.
+func ProvideConfig(v *viper.Viper) *Config {
+	return LoadConfigFromViper(v)
+}
+
 // ResolveDataDir returns the base data directory: DATA_DIR env, else the
-// platform default (~/.9router, or %APPDATA%/9router on Windows).
+// value from .env, else the platform default (~/.9router, or
+// %APPDATA%/9router on Windows).
+//
+// The .env read is load-bearing, not a convenience. The server resolves its
+// data dir through viper (LoadConfigFromViper), which does read .env, while
+// `9router-go status|stop|logs` runs in a separate short-lived process that
+// never boots the server. Reading only os.Getenv here meant a deployment
+// configured purely through .env — every Docker/compose setup — had the CLI
+// look at a different directory than the running daemon: status reported "not
+// running" against a live listener, stop refused to kill it, and logs claimed
+// no log existed. Both sides now answer the same question the same way.
 func ResolveDataDir() string {
-	if dataDir := os.Getenv("DATA_DIR"); dataDir != "" {
+	if dataDir := strings.TrimSpace(os.Getenv("DATA_DIR")); dataDir != "" {
+		return dataDir
+	}
+	if dataDir := dataDirFromEnvFile(); dataDir != "" {
 		return dataDir
 	}
 	if homeDir, err := os.UserHomeDir(); err == nil {
@@ -79,16 +105,62 @@ func ResolveDataDir() string {
 	return ".9router"
 }
 
-// LoadConfig loads the configuration from environment variables and platform defaults.
+// dataDirFromEnvFile reads DATA_DIR out of the .env next to the binary or in
+// the working directory. Viper owns the file format, so this reuses it rather
+// than hand-parsing KEY=VALUE and drifting from what the server accepted.
+func dataDirFromEnvFile() string {
+	for _, path := range envFileCandidates() {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		v := viper.New()
+		v.SetConfigFile(path)
+		v.SetConfigType("env")
+		if err := v.ReadInConfig(); err != nil {
+			continue
+		}
+		if dir := strings.TrimSpace(v.GetString("DATA_DIR")); dir != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+// envFileCandidates lists the .env locations the server itself reads: the one
+// in the working directory, then the one beside the executable so a daemon
+// started from another directory still finds the same config its CLI reports on.
+func envFileCandidates() []string {
+	candidates := []string{".env"}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), ".env"))
+	}
+	return candidates
+}
+
+// LoadConfig loads the configuration from environment variables, .env file, and platform defaults using Viper.
 func LoadConfig() *Config {
-	loadDotenv(".env")
-	portStr := os.Getenv("PORT")
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 {
-		port = 20128 // Default port
+	return LoadConfigFromViper(NewViper())
+}
+
+// LoadConfigFromViper builds *Config using the given Viper instance.
+func LoadConfigFromViper(v *viper.Viper) *Config {
+	if v == nil {
+		v = NewViper()
+	}
+	host := strings.TrimSpace(v.GetString("HOST"))
+	if host == "" {
+		host = strings.TrimSpace(v.GetString("BIND_ADDR"))
 	}
 
-	dataDir := ResolveDataDir()
+	port := v.GetInt("PORT")
+	if port <= 0 {
+		port = 20130 // Default port (unified port)
+	}
+
+	dataDir := v.GetString("DATA_DIR")
+	if dataDir == "" {
+		dataDir = ResolveDataDir()
+	}
 
 	// Ensure the base data directory exists
 	if err := os.MkdirAll(dataDir, constants.FilePermDir); err != nil {
@@ -96,7 +168,7 @@ func LoadConfig() *Config {
 	}
 
 	// Database file: DB_PATH overrides default DATA_DIR/db/data.sqlite
-	dbPath := os.Getenv("DB_PATH")
+	dbPath := v.GetString("DB_PATH")
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "db", "data.sqlite")
 	} else if fi, err := os.Stat(dbPath); err == nil && fi.IsDir() {
@@ -113,26 +185,27 @@ func LoadConfig() *Config {
 
 	// INITIAL_PASSWORD has no hardcoded default — an empty value forces the
 	// operator to set one explicitly rather than shipping a known password.
-	initialPassword := os.Getenv("INITIAL_PASSWORD")
+	initialPassword := v.GetString("INITIAL_PASSWORD")
 
-	apiKeySecret := os.Getenv("API_KEY_SECRET")
+	apiKeySecret := v.GetString("API_KEY_SECRET")
 	if apiKeySecret == "" {
 		apiKeySecret = "endpoint-proxy-api-key-secret"
 	}
 
-	machineIDSalt := os.Getenv("MACHINE_ID_SALT")
+	machineIDSalt := v.GetString("MACHINE_ID_SALT")
 	if machineIDSalt == "" {
 		machineIDSalt = "endpoint-proxy-salt"
 	}
 
-	rtkEnabled := os.Getenv("RTK_ENABLED") != "false" // default on
-	cavemanEnabled := os.Getenv("CAVEMAN_ENABLED") == "true"
-	ponytailEnabled := os.Getenv("PONYTAIL_ENABLED") == "true"
+	rtkEnabled := v.GetBool("RTK_ENABLED")
+	cavemanEnabled := v.GetBool("CAVEMAN_ENABLED")
+	ponytailEnabled := v.GetBool("PONYTAIL_ENABLED")
 
 	return &Config{
+		Host:            host,
 		Port:            port,
 		DatabasePath:    dbPath,
-		JWTSecret:       loadJWTSecret(dataDir),
+		JWTSecret:       loadJWTSecret(v, dataDir),
 		InitialPassword: initialPassword,
 		APIKeySecret:    apiKeySecret,
 		MachineIDSalt:   machineIDSalt,
@@ -142,8 +215,14 @@ func LoadConfig() *Config {
 	}
 }
 
-func loadJWTSecret(dataDir string) string {
-	secret := os.Getenv("JWT_SECRET")
+func loadJWTSecret(v *viper.Viper, dataDir string) string {
+	var secret string
+	if v != nil {
+		secret = v.GetString("JWT_SECRET")
+	}
+	if secret == "" {
+		secret = os.Getenv("JWT_SECRET")
+	}
 	if secret != "" {
 		return secret
 	}

@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -23,39 +22,7 @@ func WriteSSEHeaders(w http.ResponseWriter) http.Flusher {
 	return f
 }
 
-// SSECopy reads from upstream in a raw loop and writes each chunk to the client.
-// A simplified passthrough that does NOT parse SSE framing — use when translation is not needed.
-// onChunk is called for each chunk before writing (for metrics/TTFT tracking).
-// Returns the first upstream or write error so a truncated stream is not
-// reported as a successful completion.
-func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte)) error {
-	// Allocate a local buffer instead of using the shared pool. The buffer is
-	// alive for the entire read loop, so there is no safe point to return it
-	// to the pool, and the pool would add a race window between ReleaseByteSlice
-	// and the next iteration's write/flush completing.
-	buf := make([]byte, 4096)
-
-	for {
-		n, err := upstream.Read(buf)
-		if n > 0 {
-			if onChunk != nil {
-				onChunk(buf[:n])
-			}
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return fmt.Errorf("write stream to client: %w", werr)
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return fmt.Errorf("read upstream stream: %w", err)
-		}
-	}
-}
+// SSECopy lives in sse_copy.go.
 
 // DefaultHeartbeatInterval is the default period for sending SSE keep-alive ping comments.
 // Set to 15 seconds so strict clients (Oh My Pi / Cline / Roo) with 30-60s idle timeouts

@@ -123,6 +123,11 @@ func TestHandleSearch_Antigravity(t *testing.T) {
 			QueriesUsed int `json:"queries_used"`
 			LLMTokens   int `json:"llm_tokens"`
 		} `json:"usage"`
+		Metrics struct {
+			ResponseTimeMS        int64 `json:"response_time_ms"`
+			UpstreamLatencyMS     int64 `json:"upstream_latency_ms"`
+			TotalResultsAvailable any   `json:"total_results_available"`
+		} `json:"metrics"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
@@ -148,5 +153,24 @@ func TestHandleSearch_Antigravity(t *testing.T) {
 	}
 	if resp.Answer.Source != "antigravity" {
 		t.Errorf("expected answer source antigravity, got %s", resp.Answer.Source)
+	}
+	if resp.Metrics.ResponseTimeMS < 0 {
+		t.Errorf("expected response_time_ms >= 0, got %d", resp.Metrics.ResponseTimeMS)
+	}
+	if resp.Metrics.UpstreamLatencyMS < 0 {
+		t.Errorf("expected upstream_latency_ms >= 0, got %d", resp.Metrics.UpstreamLatencyMS)
+	}
+
+	// Verify key order matches upstream exactly
+	rawJSON := rec.Body.String()
+	pIdx := strings.Index(rawJSON, `"provider"`)
+	qIdx := strings.Index(rawJSON, `"query"`)
+	rIdx := strings.Index(rawJSON, `"results"`)
+	aIdx := strings.Index(rawJSON, `"answer"`)
+	uIdx := strings.Index(rawJSON, `"usage"`)
+	mIdx := strings.Index(rawJSON, `"metrics"`)
+	eIdx := strings.Index(rawJSON, `"errors"`)
+	if !(pIdx < qIdx && qIdx < rIdx && rIdx < aIdx && aIdx < uIdx && uIdx < mIdx && mIdx < eIdx) {
+		t.Errorf("top-level key order mismatch: expected provider < query < results < answer < usage < metrics < errors in %s", rawJSON)
 	}
 }

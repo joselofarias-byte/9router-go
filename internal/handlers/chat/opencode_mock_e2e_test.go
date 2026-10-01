@@ -268,17 +268,15 @@ func TestE2E_Opencode_MuseSpark_Mock_Vision(t *testing.T) {
 		if !strings.Contains(body, "image_url") {
 			t.Errorf("expected image_url preserved in Responses input, got %s", body)
 		}
-		resp := map[string]any{
-			"id":     "resp_vision",
-			"object": "response",
-			"output": []map[string]any{
-				{"type": "message", "content": []map[string]any{{"type": "text", "text": "Image is a cat"}}},
-			},
-			"usage": map[string]any{"input_tokens": 40, "output_tokens": 10},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		b, _ := json.Marshal(resp)
-		_, _ = w.Write(b)
+		// buildResponsesBody forces stream:true, so this upstream answers
+		// with Responses events. A single JSON document here used to be
+		// folded into a fabricated empty completion that the test then
+		// accepted as a 200.
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\n" +
+			`data: {"type":"response.output_text.delta","delta":"Image is a cat"}` + "\n\n" +
+			"event: response.completed\n" +
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":40,"output_tokens":10}}}` + "\n\n"))
 	}))
 	defer upstream.Close()
 
@@ -323,5 +321,86 @@ func TestE2E_Opencode_MuseSpark_Mock_Vision(t *testing.T) {
 	choices, _ := resp["choices"].([]any)
 	if len(choices) == 0 {
 		t.Fatalf("expected choices, got %v", resp)
+	}
+	choice, _ := choices[0].(map[string]any)
+	msg, _ := choice["message"].(map[string]any)
+	if msg["content"] != "Image is a cat" {
+		t.Fatalf("expected the upstream answer to reach the client, got %v", msg)
+	}
+}
+
+func TestE2E_Opencode_SpaceBunny_ChatCompletions_Shape(t *testing.T) {
+	var capturedBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Errorf("expected /chat/completions path, got %s", r.URL.Path)
+		}
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(r.Body)
+		capturedBody = buf.Bytes()
+
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		// Model must be stripped of prefix
+		if parsed["model"] != "space-bunny-free" {
+			t.Errorf("expected model 'space-bunny-free', got %v", parsed["model"])
+		}
+		// Tools must have .function wrapper (Chat Completions format)
+		tools, ok := parsed["tools"].([]any)
+		if !ok || len(tools) != 4 {
+			t.Fatalf("expected 4 fingerprint tools, got %v", tools)
+		}
+		for _, tool := range tools {
+			tm, ok := tool.(map[string]any)
+			if !ok {
+				t.Fatalf("expected tool to be map, got %v", tool)
+			}
+			fn, ok := tm["function"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected .function wrapper in chat completions tool, got %v", tm)
+			}
+			if fn["name"] == "" {
+				t.Errorf("expected tool name in function object")
+			}
+		}
+		// tool_choice must be 'none' for tool-less request
+		if parsed["tool_choice"] != "none" {
+			t.Errorf("expected tool_choice 'none', got %v", parsed["tool_choice"])
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	ocData, _ := json.Marshal(map[string]any{
+		"apiKey":  "public",
+		"baseUrl": upstream.URL + "/chat/completions",
+	})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-oc-bunny', 'opencode', 'apikey', 'OC Bunny Mock', 1, 1, ?, '2026-09-03T00:00:00Z', '2026-09-03T00:00:00Z')`, string(ocData)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	// Test 1: with oc/ prefix
+	req1 := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "oc/space-bunny-free",
+		"messages": [{"role": "user", "content": "hi"}],
+		"stream": false
+	}`)))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	handler.HandleChatCompletions(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 for oc/space-bunny-free, got %d: %s", rec1.Code, rec1.Body.String())
 	}
 }

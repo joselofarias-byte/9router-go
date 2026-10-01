@@ -3,10 +3,12 @@ package usagetracker
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/translator"
 )
 
 const (
@@ -29,7 +31,7 @@ type RecentRequest struct {
 	Provider         string `json:"provider"`
 	PromptTokens     int    `json:"promptTokens"`
 	CompletionTokens int    `json:"completionTokens"`
-	CachedTokens     int    `json:"cachedTokens,omitempty"`
+	CachedTokens     int    `json:"cachedTokens"`
 	Status           string `json:"status"`
 }
 
@@ -55,6 +57,7 @@ type Tracker struct {
 	lastErrorProvider string
 	lastErrorTs       int64
 	recentRing        []RecentRequest
+	ringInitialized   bool
 	subscribers       map[chan []byte]struct{}
 	broadcastDebounce *time.Timer
 }
@@ -103,23 +106,25 @@ func (t *Tracker) TrackPending(model, provider, connectionID string, started boo
 		t.byModel[modelKey] = newModelCount
 	}
 
-	// Update byAccount
-	if connectionID != "" {
-		accountMap, ok := t.byAccount[connectionID]
-		if !ok && started {
-			accountMap = make(map[string]int)
-			t.byAccount[connectionID] = accountMap
-		}
-		if accountMap != nil {
-			newAccCount := accountMap[modelKey] + delta
-			if newAccCount <= 0 {
-				delete(accountMap, modelKey)
-				if len(accountMap) == 0 {
-					delete(t.byAccount, connectionID)
-				}
-			} else {
-				accountMap[modelKey] = newAccCount
+	// Update byAccount (track public/direct requests under "__direct__" so they are never dropped)
+	connKey := connectionID
+	if connKey == "" {
+		connKey = "__direct__"
+	}
+	accountMap, ok := t.byAccount[connKey]
+	if !ok && started {
+		accountMap = make(map[string]int)
+		t.byAccount[connKey] = accountMap
+	}
+	if accountMap != nil {
+		newAccCount := accountMap[modelKey] + delta
+		if newAccCount <= 0 {
+			delete(accountMap, modelKey)
+			if len(accountMap) == 0 {
+				delete(t.byAccount, connKey)
 			}
+		} else {
+			accountMap[modelKey] = newAccCount
 		}
 	}
 
@@ -133,6 +138,8 @@ func (t *Tracker) TrackPending(model, provider, connectionID string, started boo
 
 // PushRecent adds a completed request to the ring buffer and notifies subscribers.
 func (t *Tracker) PushRecent(req RecentRequest, repo *db.Repo) {
+	t.ensureRingInitialized(repo)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -146,8 +153,40 @@ func (t *Tracker) PushRecent(req RecentRequest, repo *db.Repo) {
 	t.scheduleBroadcastLocked(repo)
 }
 
+// ensureRingInitialized seeds the in-memory ring from DB history once under a write lock.
+func (t *Tracker) ensureRingInitialized(repo *db.Repo) {
+	if repo == nil {
+		return
+	}
+	t.mu.RLock()
+	initialized := t.ringInitialized
+	t.mu.RUnlock()
+	if initialized {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ringInitialized {
+		return
+	}
+	t.ringInitialized = true
+	if rows, err := repo.GetRecentUsageHistory(ringCap); err == nil {
+		seeded := make([]RecentRequest, 0, len(rows))
+		for _, rh := range rows {
+			seeded = append(seeded, recentFromHistoryRow(rh))
+		}
+		t.recentRing = append(t.recentRing, seeded...)
+		if len(t.recentRing) > ringCap {
+			t.recentRing = t.recentRing[:ringCap]
+		}
+	}
+}
+
 // GetActiveState computes the current active state for SSE streaming.
 func (t *Tracker) GetActiveState(repo *db.Repo) StreamPayload {
+	t.ensureRingInitialized(repo)
+
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -170,11 +209,13 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 			}
 		}
 	}
-
 	var active []ActiveRequest
+	accountCountedModels := make(map[string]int)
 	for connID, models := range t.byAccount {
 		accName := connMap[connID]
-		if accName == "" {
+		if connID == "__direct__" || connID == "" {
+			accName = "Public / Direct"
+		} else if accName == "" {
 			if len(connID) > 8 {
 				accName = fmt.Sprintf("Account %s...", connID[:8])
 			} else {
@@ -184,6 +225,7 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 		for modelKey, count := range models {
 			if count > 0 {
 				mName, pName := parseModelKey(modelKey)
+				accountCountedModels[modelKey] += count
 				active = append(active, ActiveRequest{
 					Model:    mName,
 					Provider: pName,
@@ -194,18 +236,18 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 		}
 	}
 
-	// If byAccount was empty but byModel had items (e.g. no-auth/public requests)
-	if len(active) == 0 {
-		for modelKey, count := range t.byModel {
-			if count > 0 {
-				mName, pName := parseModelKey(modelKey)
-				active = append(active, ActiveRequest{
-					Model:    mName,
-					Provider: pName,
-					Account:  "Public / Direct",
-					Count:    count,
-				})
-			}
+	// If any active requests were in byModel but not captured in byAccount, include them as Public / Direct
+	for modelKey, totalCount := range t.byModel {
+		alreadyCounted := accountCountedModels[modelKey]
+		remaining := totalCount - alreadyCounted
+		if remaining > 0 {
+			mName, pName := parseModelKey(modelKey)
+			active = append(active, ActiveRequest{
+				Model:    mName,
+				Provider: pName,
+				Account:  "Public / Direct",
+				Count:    remaining,
+			})
 		}
 	}
 
@@ -259,12 +301,31 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 	}
 }
 
+// recentFromHistoryRow maps a persisted usageHistory row onto the stream shape
+// so ring seeding and live pushes render identically.
+func recentFromHistoryRow(rh db.UsageHistoryRow) RecentRequest {
+	cached := translator.CachedTokensFromJSON([]byte(rh.Tokens))
+
+	status := "ok"
+	if rh.Status != "" && rh.Status != "success" && rh.Status != "ok" {
+		status = rh.Status
+	}
+
+	return RecentRequest{
+		Timestamp:        rh.Timestamp,
+		Model:            rh.Model,
+		Provider:         rh.Provider,
+		PromptTokens:     rh.PromptTokens,
+		CompletionTokens: rh.CompletionTokens,
+		CachedTokens:     cached,
+		Status:           status,
+	}
+}
+
 func parseModelKey(key string) (model, provider string) {
 	// key format: "modelName (providerName)"
-	var m, p string
-	if n, _ := fmt.Sscanf(key, "%s (%s)", &m, &p); n == 2 {
-		p = p[:len(p)-1] // remove trailing ')'
-		return m, p
+	if idx := strings.LastIndex(key, " ("); idx != -1 && strings.HasSuffix(key, ")") {
+		return key[:idx], key[idx+2 : len(key)-1]
 	}
 	return key, "unknown"
 }
@@ -292,20 +353,22 @@ func (t *Tracker) scheduleBroadcastLocked(repo *db.Repo) {
 	}
 
 	t.broadcastDebounce = time.AfterFunc(50*time.Millisecond, func() {
+		t.ensureRingInitialized(repo)
 		t.mu.RLock()
+		defer t.mu.RUnlock()
+
 		payload := t.buildPayloadLocked(repo)
 		b, err := json.Marshal(payload)
 		if err != nil {
-			t.mu.RUnlock()
 			return
 		}
-		subs := make([]chan []byte, 0, len(t.subscribers))
-		for ch := range t.subscribers {
-			subs = append(subs, ch)
-		}
-		t.mu.RUnlock()
 
-		for _, ch := range subs {
+		// The send stays under the read lock: unsubscribe closes the channel
+		// while holding the write lock, and a send racing that close panics
+		// with "send on closed channel". Snapshotting the channels first and
+		// sending after RUnlock left exactly that window open — the map was
+		// read safely, the channel itself was not.
+		for ch := range t.subscribers {
 			select {
 			case ch <- b:
 			default:

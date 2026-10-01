@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/translator"
 )
@@ -98,7 +100,14 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	if err != nil {
 		if uErr, ok := err.(*proxy.UpstreamError); ok {
 			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
-				HandleAntigravityQuotaError(ctx, h.Client, connectionID, uErr.StatusCode, modelName, apiKey, projectID)
+				if dur, ok := extractResetDuration(uErr.Body); ok {
+					BlockAntigravityModelUntil(connectionID, modelName, time.Now().UTC().Add(dur))
+				}
+				HandleAntigravityQuotaError(AntigravityQuotaError{
+					Ctx: ctx, Client: h.Client, ConnectionID: connectionID,
+					Status: uErr.StatusCode, Model: modelName, AccessToken: apiKey,
+					ProjectID: projectID, ErrorMessage: string(uErr.Body),
+				})
 			}
 		}
 		return fmt.Errorf("ForwardGemini (%s/%s): %w", provider, modelName, err)
@@ -114,7 +123,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	// Handle response — antigravity wraps non-streaming response in {"response": {...}}
 	// For streaming (SSE), the events are NOT wrapped — pipe directly.
 	if projectID != "" && !isStream {
-		raw, err := io.ReadAll(resp.Body)
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 		if err != nil {
 			log.Error("gemini", "read response body failed", "error", err)
 			return fmt.Errorf("read gemini response body: %w", err)
@@ -134,8 +143,12 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
 }
 
-// storeAntigravityProjectID persists a discovered Antigravity project ID on the
+// StoreAntigravityProjectID persists a discovered Antigravity project ID on the
 // connection so later requests skip the onboarding RPCs entirely.
+func (h *ChatHandler) StoreAntigravityProjectID(connectionID, pid string) {
+	h.storeAntigravityProjectID(connectionID, pid)
+}
+
 func (h *ChatHandler) storeAntigravityProjectID(connectionID, pid string) {
 	if connectionID == "" || pid == "" {
 		return
@@ -147,12 +160,15 @@ func (h *ChatHandler) storeAntigravityProjectID(connectionID, pid string) {
 	}()
 }
 
-// refreshOAuthTokenIfExpired checks and refreshes OAuth token for any provider with refreshToken.
+// RefreshOAuthTokenIfExpired checks and refreshes OAuth token for any provider with refreshToken.
+func (h *ChatHandler) RefreshOAuthTokenIfExpired(connectionID, currentToken string) (string, string, error) {
+	return h.refreshOAuthTokenIfExpired(connectionID, currentToken)
+}
+
 func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken string) (string, string, error) {
 	if connectionID == "" {
 		return currentToken, "", nil
 	}
-
 	db := h.Repo.RawDB()
 	row := db.QueryRow("SELECT provider, data FROM providerConnections WHERE id = ?", connectionID)
 	var provider string
@@ -161,7 +177,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		return currentToken, "", nil
 	}
 
-	var connMap map[string]interface{}
+	var connMap map[string]any
 	if err := json.Unmarshal([]byte(rawData), &connMap); err != nil {
 		return currentToken, "", nil
 	}
@@ -178,20 +194,26 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	// Try per-provider OAuth refresher first
 	if refresher := oauth.Get(provider); refresher != nil {
 		log.Info("oauth", "token expired, custom refresh", "provider", provider, "project", projectID)
+		var connPSD map[string]any
+		if raw, ok := connMap["providerSpecificData"].(map[string]any); ok {
+			connPSD = raw
+		}
 		result, err := refresher(context.Background(), &oauth.Params{
-			Client:       h.Client,
-			Provider:     provider,
-			RefreshToken: oauthData.RefreshToken,
-			AccessToken:  currentToken,
+			Client:               h.Client,
+			Provider:             provider,
+			RefreshToken:         oauthData.RefreshToken,
+			AccessToken:          currentToken,
+			ProviderSpecificData: oauth.StringMap(connPSD),
 		})
 		if err != nil {
+			h.parkRejectedOAuthAccount(connectionID, err)
 			return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 		}
 		update := oauth.BuildConnectionUpdate(result)
-		var existing map[string]interface{}
+		var existing map[string]any
 		if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
 			log.Error("oauth", "unmarshal connection data failed", "conn", connectionID, "error", err)
-			existing = make(map[string]interface{})
+			existing = make(map[string]any)
 		}
 		for k, v := range update {
 			existing[k] = v
@@ -211,6 +233,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 			newPID = result.ProjectID
 		}
 		log.Info("oauth", "token refreshed", "provider", provider, "project", newPID)
+		h.clearOAuthAccountPark(connectionID)
 		return result.AccessToken, newPID, nil
 	}
 
@@ -223,14 +246,15 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	log.Info("oauth", "token expired, standard refresh", "provider", provider, "project", projectID)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
+		h.parkRejectedOAuthAccount(connectionID, err)
 		return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 	}
 
 	update := tokenResp.BuildConnectionUpdate()
-	var existing map[string]interface{}
+	var existing map[string]any
 	if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
 		log.Error("oauth", "unmarshal connection data failed", "conn", connectionID, "error", err)
-		existing = make(map[string]interface{})
+		existing = make(map[string]any)
 	}
 	for k, v := range update {
 		existing[k] = v
@@ -242,6 +266,8 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 	}
+
+	h.clearOAuthAccountPark(connectionID)
 
 	log.Info("oauth", "token refreshed", "provider", provider, "project", projectID)
 	return tokenResp.AccessToken, projectID, nil
@@ -261,7 +287,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 		return "", "", err
 	}
 
-	var connMap map[string]interface{}
+	var connMap map[string]any
 	if err := json.Unmarshal([]byte(rawData), &connMap); err != nil {
 		return "", "", err
 	}
@@ -274,18 +300,26 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	// Try per-provider OAuth refresher first
 	if refresher := oauth.Get(provider); refresher != nil {
 		log.Info("oauth", "force refresh", "provider", provider)
+		var forcePSD map[string]any
+		if raw, ok := connMap["providerSpecificData"].(map[string]any); ok {
+			forcePSD = raw
+		}
 		result, err := refresher(context.Background(), &oauth.Params{
-			Client:       h.Client,
-			Provider:     provider,
-			RefreshToken: oauthData.RefreshToken,
+			Client:               h.Client,
+			Provider:             provider,
+			RefreshToken:         oauthData.RefreshToken,
+			ProviderSpecificData: oauth.StringMap(forcePSD),
 		})
 		if err == nil && result != nil {
-			var existing map[string]interface{}
+			var existing map[string]any
 			if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
 				log.Error("oauth", "unmarshal conn data failed", "conn", connectionID, "error", err)
-				existing = make(map[string]interface{})
+				existing = make(map[string]any)
 			}
 			existing["accessToken"] = result.AccessToken
+			if result.RefreshToken != "" {
+				existing["refreshToken"] = result.RefreshToken
+			}
 			if result.ProjectID != "" {
 				existing["projectId"] = result.ProjectID
 			}
@@ -301,7 +335,18 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 			if result.ProjectID != "" {
 				newPID = result.ProjectID
 			}
+			h.clearOAuthAccountPark(connectionID)
 			return result.AccessToken, newPID, nil
+		}
+		// A grant the provider rejected is rejected on the standard endpoint
+		// too, so park the account and report instead of spending a second
+		// call on it. Any other failure still falls through: the standard
+		// endpoint stays a real second chance for a provider quirk.
+		if err != nil {
+			if h.parkRejectedOAuthAccount(connectionID, err) {
+				return "", "", fmt.Errorf("OAuth refresh for %s: %w", provider, err)
+			}
+			log.Warn("oauth", "custom refresh failed, trying standard", "provider", provider, "conn", connectionID, "error", err)
 		}
 	}
 
@@ -314,14 +359,15 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	log.Info("oauth", "force refresh (standard)", "provider", provider)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
+		h.parkRejectedOAuthAccount(connectionID, err)
 		return "", "", fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 	}
 
 	update := tokenResp.BuildConnectionUpdate()
-	var existing map[string]interface{}
+	var existing map[string]any
 	if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
 		log.Error("oauth", "unmarshal conn data failed", "conn", connectionID, "error", err)
-		existing = make(map[string]interface{})
+		existing = make(map[string]any)
 	}
 	for k, v := range update {
 		existing[k] = v
@@ -333,6 +379,8 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 	}
+
+	h.clearOAuthAccountPark(connectionID)
 
 	pid := ""
 	if v, ok := existing["projectId"].(string); ok {
@@ -349,6 +397,13 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 	flusher := proxy.WriteSSEHeaders(hw)
 	geminiState := &translator.GeminiStreamState{}
 	start := time.Now()
+	// A /v1/responses client is one hop further out: Gemini events become
+	// OpenAI chunks here and those chunks become Responses events, so the
+	// bridge consumes this branch's output instead of the raw writer.
+	var bridge *executor.ResponsesBridge
+	if translator.NeedsResponsesBridge(ctx) {
+		bridge = newResponsesBridge(ctx, hw, flusher, metrics, start)
+	}
 	// One session per stream so the OpenAI→Claude translation state cannot
 	// collide across concurrent requests; always cleared on exit.
 	sessionKey := fmt.Sprintf("gemini-stream-%d", time.Now().UnixNano())
@@ -391,6 +446,12 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 		}
 		metrics.ResponseBuf.Write(openaiChunk)
 
+		if bridge != nil {
+			bridge.FeedFrames(openaiChunk)
+			totalBytesWritten += len(openaiChunk)
+			return
+		}
+
 		if translateResponse {
 			// openaiChunk may have multiple SSE lines -- split and translate each
 			for _, sse := range strings.Split(string(openaiChunk), "\n") {
@@ -410,13 +471,23 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 				totalBytesWritten += n
 			}
 		} else {
-			hw.Write(openaiChunk)
-			hw.Write([]byte("\n\n"))
+			n, _ := hw.Write(openaiChunk)
+			totalBytesWritten += n
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
 	})
+	if bridge != nil {
+		bridge.Close()
+	}
+	if !translateResponse && bridge == nil {
+		n, _ := hw.Write([]byte("data: [DONE]\n\n"))
+		totalBytesWritten += n
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	log.Info("gemini", "stream ended", "chunks", totalChunks, "bytesWritten", totalBytesWritten, "duration_ms", time.Since(start).Milliseconds(), "err", err)
 	// Pull actual accumulated usage (incl. cached tokens) out of the session so
 	// the log sees real numbers instead of the fallback estimate.
@@ -433,7 +504,7 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 // handleGeminiNonStream translates a Gemini non-stream response to OpenAI format,
 // and then to Claude format if translateResponse is true.
 func (h *ChatHandler) handleGeminiNonStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResp bool, metrics *streamMetrics) error {
-	body, err := io.ReadAll(upstream)
+	body, err := io.ReadAll(io.LimitReader(upstream, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return fmt.Errorf("read gemini response body: %w", err)
 	}
@@ -453,6 +524,12 @@ func (h *ChatHandler) handleGeminiNonStream(ctx context.Context, w http.Response
 		w.WriteHeader(http.StatusOK)
 		w.Write(body)
 		return nil
+	}
+
+	if translator.NeedsResponsesBridge(ctx) {
+		// The body is already Chat Completions at this point, so it goes
+		// through the same converter the other non-streaming paths use.
+		return h.respondAsResponses(ctx, w, openaiResp)
 	}
 
 	if translateResp {

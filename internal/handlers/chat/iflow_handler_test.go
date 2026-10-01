@@ -40,12 +40,12 @@ func TestForwardIflowRequest_Stream(t *testing.T) {
 			t.Errorf("expected Accept header for streaming")
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		json.UnmarshalRead(r.Body, &body)
 		if body["stream"] != true {
 			t.Errorf("expected stream=true in body")
 		}
-		so, ok := body["stream_options"].(map[string]interface{})
+		so, ok := body["stream_options"].(map[string]any)
 		if !ok || so["include_usage"] != true {
 			t.Errorf("expected stream_options.include_usage=true in body")
 		}
@@ -147,10 +147,10 @@ func TestForwardIflowRequest_UpstreamError(t *testing.T) {
 
 func TestForwardIflowRequest_ForceStreamOptions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]interface{}
+		var body map[string]any
 		json.UnmarshalRead(r.Body, &body)
 
-		so, ok := body["stream_options"].(map[string]interface{})
+		so, ok := body["stream_options"].(map[string]any)
 		if !ok {
 			t.Fatal("expected stream_options in body")
 		}

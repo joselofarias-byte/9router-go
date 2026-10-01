@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +23,8 @@ type CodexStreamState struct {
 	CurrentEvent      string
 	OutputLength      int
 	ToolCallCount     int
-	Completed         bool // response.completed seen — finish chunk already emitted
+	Completed         bool   // response.completed seen — finish chunk already emitted
+	UpstreamErr       []byte // raw upstream {"type":"error",...} event, if any
 	CurrentToolCallID string
 	ToolCallIdx       map[string]int
 	ToolCallNames     map[string]string
@@ -38,6 +40,19 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	}
 
 	eventType, _ := event["type"].(string)
+
+	// Upstream error events (e.g. {"type":"error","error":{...FreeTierError}})
+	// must surface, never vanish: without this the converter below emits a
+	// 200 with empty content for a failed turn (silent success). Record on
+	// state; handleCodexStream converts to an UpstreamError after the scan.
+	if eventType == "error" {
+		if raw, err := json.Marshal(event); err == nil {
+			state.UpstreamErr = raw
+		} else {
+			state.UpstreamErr = []byte(`{"type":"error"}`)
+		}
+		return nil
+	}
 
 	switch eventType {
 	case "response.output_text.delta", "response.text.delta":
@@ -188,7 +203,10 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			state.ToolCallArgs = make(map[string]string)
 		}
 		state.ToolCallArgs[callID] += delta
-
+		if state.ArgsEmitted == nil {
+			state.ArgsEmitted = make(map[int]bool)
+		}
+		state.ArgsEmitted[idx] = true
 		fnMap := map[string]any{
 			"arguments": delta,
 		}
@@ -257,9 +275,6 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				state.ToolCallCount++
 			}
 		}
-		if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
-			return nil
-		}
 		// If name wasn't captured before, use it now
 		if name == "" && state.ToolCallNames != nil {
 			name = state.ToolCallNames[callID]
@@ -312,9 +327,9 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				"index": 0,
 				"delta": map[string]any{
 					"tool_calls": []map[string]any{{
-						"index": idx,
-						"id":    callID,
-						"type":  "function",
+						"index":    idx,
+						"id":       callID,
+						"type":     "function",
 						"function": fnMapDone,
 					}},
 				},
@@ -350,6 +365,12 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				}
 				fullArgs, _ := item["arguments"].(string)
 				if fullArgs != "" {
+					if state.ArgsEmitted != nil && state.ArgsEmitted[idx] {
+						return nil
+					}
+					if existing, ok := state.ToolCallArgs[callID]; ok && existing != "" {
+						return nil
+					}
 					if state.ToolCallArgs == nil {
 						state.ToolCallArgs = make(map[string]string)
 					}
@@ -357,28 +378,26 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 					if state.ArgsEmitted == nil {
 						state.ArgsEmitted = make(map[int]bool)
 					}
-					if !state.ArgsEmitted[idx] {
-						state.ArgsEmitted[idx] = true
-						chunk := map[string]any{
-							"id":      responseID,
-							"object":  "chat.completion.chunk",
-							"created": created,
-							"choices": []map[string]any{{
-								"index": 0,
-								"delta": map[string]any{
-									"tool_calls": []map[string]any{{
-										"index": idx,
-										"function": map[string]any{
-											"arguments": fullArgs,
-										},
-									}},
-								},
-							}},
-						}
-						b, err := json.Marshal(chunk)
-						if err == nil {
-							return []string{fmt.Sprintf("data: %s\n\n", string(b))}
-						}
+					state.ArgsEmitted[idx] = true
+					chunk := map[string]any{
+						"id":      responseID,
+						"object":  "chat.completion.chunk",
+						"created": created,
+						"choices": []map[string]any{{
+							"index": 0,
+							"delta": map[string]any{
+								"tool_calls": []map[string]any{{
+									"index": idx,
+									"function": map[string]any{
+										"arguments": fullArgs,
+									},
+								}},
+							},
+						}},
+					}
+					b, err := json.Marshal(chunk)
+					if err == nil {
+						return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 					}
 				}
 			}
@@ -462,6 +481,13 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 	created := time.Now().Unix()
 	state := &CodexStreamState{}
 
+	// A Responses client and a Responses endpoint already agree: relaying the
+	// body untouched keeps the fields the native API owns (previous_response_id,
+	// item ids, store) instead of round-tripping them through Chat Completions.
+	if translator.IsResponsesClient(req.Ctx) {
+		return passthroughResponses(w, req, upstream)
+	}
+
 	if req.IsStream {
 		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 		defer hw.Close()
@@ -499,6 +525,10 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				}
 			})
 
+			// Headers are already committed on the stream path, so a pure
+			// upstream error (no content at all) can only be signaled by
+			// closing without useful chunks; the non-stream path below
+			// returns a proper UpstreamError instead.
 			if !doneSeen {
 				return writeSSEFinish(hw, flusher, req, state, responseID, created)
 			}
@@ -572,25 +602,74 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 		return err
 	}
 
-	// Non-streaming (req.IsStream == false)
+	// Non-streaming (req.IsStream == false). sseBuf is capped: a slow,
+	// huge, or endless upstream stream must not expand the heap without
+	// bound (same 10MB discipline as proxy.openai non-stream reads).
+	const maxCodexSSEBytes = 10 << 20
 	var sseBuf bytes.Buffer
+	var sseTruncated bool
 	_ = proxy.ScanStream(upstream, func(payload []byte) {
+		if sseTruncated {
+			return
+		}
 		data := string(payload)
 		if data == "[DONE]" {
 			return
 		}
 		out := ProcessCodexEvent(data, state, responseID, created)
 		for _, chunk := range out {
+			if sseBuf.Len()+len(chunk) > maxCodexSSEBytes {
+				sseTruncated = true
+				return
+			}
 			sseBuf.WriteString(chunk)
 		}
 	})
 
+	// Upstream error events must fail loudly, never masquerade as an empty
+	// 200. Parse status/message from the recorded event (default 502).
+	if len(state.UpstreamErr) > 0 && state.OutputLength == 0 && state.ToolCallCount == 0 {
+		return codexUpstreamError(state.UpstreamErr)
+	}
 	converted, ok := sseToOpenAIJSON(sseBuf.Bytes())
 	if !ok {
-		// Fallback empty response
-		converted = []byte(fmt.Sprintf(`{"id":"%s","object":"chat.completion","created":%d,"choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`, responseID, created))
+		if len(state.UpstreamErr) > 0 {
+			return codexUpstreamError(state.UpstreamErr)
+		}
+		// Upstream answered 200 with an event stream that never carried a
+		// completion. Fabricating `content: ""` here read to the client as a
+		// served empty turn and ended combo fallback on this model, so report
+		// the 502 and let the router move on.
+		return proxy.UpstreamFailure(http.StatusBadGateway, proxy.NoCompletionInStream)
 	}
 	return jsonResponse(req.Ctx, w, bytes.NewReader(converted), req.TranslateResp, req.ResponseBuf)
+}
+
+// codexUpstreamError converts a recorded upstream {"type":"error",...} event
+// into an UpstreamError (default 502). FreeTierError / access gates map to
+// 403 so fallback treats them as credential problems, not capacity.
+func codexUpstreamError(raw []byte) error {
+	var event struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	status := http.StatusBadGateway
+	msg := "upstream error"
+	if err := json.Unmarshal(raw, &event); err == nil {
+		if event.Error.Message != "" {
+			msg = event.Error.Message
+		}
+		t := strings.ToLower(event.Error.Type)
+		if strings.Contains(t, "freetier") || strings.Contains(t, "forbidden") || strings.Contains(t, "auth") {
+			status = http.StatusForbidden
+		}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{"message": msg, "type": "upstream_error", "code": status},
+	})
+	return &proxy.UpstreamError{StatusCode: status, Body: body}
 }
 
 // writeSSEFinish writes the closing [DONE] frame and records usage. If the
@@ -629,8 +708,32 @@ func writeSSEFinish(w http.ResponseWriter, flusher http.Flusher, req *Request, s
 
 // ---- Kiro EventStream → OpenAI SSE ----
 
+// kiroToolCall accumulates one toolUseEvent. Kiro streams the arguments as
+// several frames — each carrying a slice of the JSON text under `input` — and
+// closes the tool with a `stop: true` frame, so arguments are only complete at
+// the end of the stream.
+type kiroToolCall struct {
+	id      string
+	name    string
+	inputs  strings.Builder
+	emitted bool
+}
+
 type kiroStreamState struct {
 	toolCallIndex int
+	tools         []*kiroToolCall
+}
+
+// tool returns the buffer for id, creating it on first sight.
+func (s *kiroStreamState) tool(id, name string) *kiroToolCall {
+	for _, existing := range s.tools {
+		if existing.id == id {
+			return existing
+		}
+	}
+	call := &kiroToolCall{id: id, name: name}
+	s.tools = append(s.tools, call)
+	return call
 }
 
 func writeSSE(w io.Writer, data any) error {
@@ -729,43 +832,80 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			}
 
 		case "toolUseEvent":
-			var payload struct {
-				ToolUseID string `json:"toolUseId"`
-				Content   string `json:"content"`
-				Name      string `json:"name"`
-			}
-			if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+			// Kiro fragments one tool call across frames: the first carries only
+			// name+toolUseId, the middle frames carry slices of the JSON
+			// arguments under `input`, and a final `stop: true` frame closes it.
+			// Emitting per frame is what produced `arguments: "{}"`.
+			var raw any
+			if err := json.Unmarshal(frame.Payload, &raw); err != nil {
 				continue
 			}
-
-			if payload.Content != "" {
-				chunk := map[string]any{
-					"id":      responseID,
-					"object":  "chat.completion.chunk",
-					"created": created,
-					"choices": []map[string]any{{
-						"index": 0,
-						"delta": map[string]any{
-							"tool_calls": []map[string]any{{
-								"index": state.toolCallIndex,
-								"id":    payload.ToolUseID,
-								"type":  "function",
-								"function": map[string]any{
-									"name":      payload.Name,
-									"arguments": payload.Content,
-								},
-							}},
-						},
-					}},
+			values := []any{raw}
+			if list, ok := raw.([]any); ok {
+				values = list
+			}
+			for _, item := range values {
+				value, ok := item.(map[string]any)
+				if !ok {
+					continue
 				}
-				state.toolCallIndex++
-				if err := writeSSE(w, chunk); err != nil {
-					return err
+				name, _ := value["name"].(string)
+				name = strings.TrimSpace(name)
+				if name == "" {
+					continue
 				}
-				if flusher != nil {
-					flusher.Flush()
+				toolUseID, _ := value["toolUseId"].(string)
+				if strings.TrimSpace(toolUseID) == "" {
+					toolUseID = fmt.Sprintf("call_%d_%d", created, len(state.tools)+1)
+				}
+				call := state.tool(toolUseID, name)
+				switch input := value["input"].(type) {
+				case string:
+					call.inputs.WriteString(input)
+				case map[string]any:
+					if encoded, err := json.Marshal(input); err == nil {
+						call.inputs.Write(encoded)
+					}
 				}
 			}
+		}
+	}
+	// Tool calls are only complete once the stream ends, so emit them here with
+	// the fully reassembled arguments.
+	for _, call := range state.tools {
+		if call.emitted {
+			continue
+		}
+		arguments := strings.TrimSpace(call.inputs.String())
+		if arguments == "" {
+			arguments = "{}"
+		}
+		chunk := map[string]any{
+			"id":      responseID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": state.toolCallIndex,
+						"id":    call.id,
+						"type":  "function",
+						"function": map[string]any{
+							"name":      call.name,
+							"arguments": arguments,
+						},
+					}},
+				},
+			}},
+		}
+		call.emitted = true
+		state.toolCallIndex++
+		if err := writeSSE(w, chunk); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
 		}
 	}
 
@@ -801,6 +941,38 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 	})
 
 	return readErr
+}
+
+// sseCollectWriter is an http.ResponseWriter that keeps only the body. It lets
+// a handler that must emit SSE internally be reused for a non-streaming
+// request, whose frames are folded afterwards. The header and status are
+// discarded: the non-streaming path owns the real response headers.
+type sseCollectWriter struct {
+	buf bytes.Buffer
+}
+
+func (w *sseCollectWriter) Header() http.Header         { return http.Header{} }
+func (w *sseCollectWriter) WriteHeader(int)             {}
+func (w *sseCollectWriter) Write(b []byte) (int, error) { return w.buf.Write(b) }
+
+// handleKiroNonStream answers a `stream:false` request. Kiro's gateway speaks
+// only EventStream, so the frames are produced exactly as they are for a
+// streaming client and then folded into one chat.completion. Without this the
+// client received `Content-Type: text/event-stream` and a body its
+// JSON.parse could not read (issue #41).
+func handleKiroNonStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
+	collect := &sseCollectWriter{}
+	// A clean end of stream surfaces as io.EOF once the last frame is
+	// consumed, which is the normal case here and not a failure; anything
+	// else is a real read error and must not be answered as a completion.
+	if err := handleKiroStream(collect, req, upstream); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	folded, ok := sseToOpenAIJSON(collect.buf.Bytes())
+	if !ok {
+		return proxy.UpstreamFailure(http.StatusBadGateway, proxy.NoCompletionInStream)
+	}
+	return jsonResponse(req.Ctx, w, bytes.NewReader(folded), req.TranslateResp, req.ResponseBuf)
 }
 
 // ---- CommandCode NDJSON → OpenAI SSE ----

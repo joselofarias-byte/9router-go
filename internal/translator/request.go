@@ -80,6 +80,15 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 			return nil, nil
 		}
 
+		var singleBlock ClaudeContentBlock
+		if err := json.Unmarshal(msg.Content, &singleBlock); err == nil && singleBlock.Text != "" {
+			rem := systemReminderText(singleBlock.Text)
+			if rem != "" {
+				return []OpenAIMessage{{Role: "user", Content: rem}}, nil
+			}
+			return nil, nil
+		}
+
 		var contentBlocks []ClaudeContentBlock
 		if err := json.Unmarshal(msg.Content, &contentBlocks); err == nil {
 			var textParts []string
@@ -107,7 +116,10 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	}
 
 	var blocks []ClaudeContentBlock
-	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+	var singleBlock ClaudeContentBlock
+	if err := json.Unmarshal(msg.Content, &singleBlock); err == nil && (singleBlock.Type != "" || singleBlock.Text != "") {
+		blocks = []ClaudeContentBlock{singleBlock}
+	} else if err := json.Unmarshal(msg.Content, &blocks); err != nil {
 		return nil, err
 	}
 
@@ -135,6 +147,14 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					ImageUrl: &OpenAIImageUrl{URL: url},
 				})
 			}
+		case "document":
+			if block.Source != nil && block.Source.Type == "base64" {
+				url := fmt.Sprintf("data:%s;base64,%s", block.Source.MediaType, block.Source.Data)
+				textParts = append(textParts, OpenAIContentBlock{
+					Type: "file",
+					File: &OpenAIFile{FileData: url},
+				})
+			}
 		case "tool_use":
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   block.ID,
@@ -146,6 +166,7 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 			})
 		case "tool_result":
 			var resultContent string
+			var resultImages []OpenAIContentBlock
 			if err := json.Unmarshal(block.Content, &resultContent); err != nil {
 				var contentArr []ClaudeContentBlock
 				if err2 := json.Unmarshal(block.Content, &contentArr); err2 == nil {
@@ -153,6 +174,17 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					for _, c := range contentArr {
 						if c.Type == "text" {
 							parts = append(parts, c.Text)
+						} else if c.Type == "image" && c.Source != nil && c.Source.Type == "base64" {
+							mediaType := c.Source.MediaType
+							if mediaType == "" {
+								mediaType = "image/png"
+							}
+							resultImages = append(resultImages, OpenAIContentBlock{
+								Type: "image_url",
+								ImageUrl: &OpenAIImageUrl{
+									URL: "data:" + mediaType + ";base64," + c.Source.Data,
+								},
+							})
 						}
 					}
 					resultContent = strings.Join(parts, "\n")
@@ -165,6 +197,13 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 				ToolCallID: block.ToolUseID,
 				Content:    resultContent,
 			})
+			if len(resultImages) > 0 {
+				textParts = append(textParts, OpenAIContentBlock{
+					Type: "text",
+					Text: fmt.Sprintf("[Image from tool result %s]", block.ToolUseID),
+				})
+				textParts = append(textParts, resultImages...)
+			}
 		}
 	}
 
@@ -202,7 +241,45 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	return nil, nil
 }
 
+// EnsureToolCallIDs validates and repairs tool_call_id on assistant tool_calls and tool messages.
+// It pairs orphaned or id-less tool messages with pending assistant tool calls (PR #4090).
+func EnsureToolCallIDs(messages []OpenAIMessage) []OpenAIMessage {
+	var pendingToolCallIds []string
+	toolSeq := 0
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for k := range msg.ToolCalls {
+				tc := &msg.ToolCalls[k]
+				if tc.ID == "" {
+					tc.ID = fmt.Sprintf("call_%d_%d", toolSeq, k)
+				}
+				pendingToolCallIds = append(pendingToolCallIds, tc.ID)
+			}
+			toolSeq++
+		} else if msg.Role == "tool" {
+			if msg.ToolCallID != "" {
+				for idx, id := range pendingToolCallIds {
+					if id == msg.ToolCallID {
+						pendingToolCallIds = append(pendingToolCallIds[:idx], pendingToolCallIds[idx+1:]...)
+						break
+					}
+				}
+			} else {
+				if len(pendingToolCallIds) > 0 {
+					msg.ToolCallID = pendingToolCallIds[0]
+					pendingToolCallIds = pendingToolCallIds[1:]
+				} else {
+					msg.ToolCallID = fmt.Sprintf("call_tool_%d", i)
+				}
+			}
+		}
+	}
+	return messages
+}
+
 func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
+	messages = EnsureToolCallIDs(messages)
 	result := make([]OpenAIMessage, len(messages))
 	copy(result, messages)
 	for i := 0; i < len(result); i++ {
@@ -400,6 +477,13 @@ func SanitizeClaudePassthrough(body []byte) []byte {
 	changed := false
 
 	// First pass: drop foreign server_tool_use and collect their ids
+	// Wrap bare content block objects into single-element array (parity with decolua/9router v0.5.75 #8a81085)
+	for _, mRaw := range messagesRaw {
+		if msgMap, ok := mRaw.(map[string]any); ok {
+			normalizeMessageContent(msgMap)
+		}
+	}
+
 	for _, mRaw := range messagesRaw {
 		msgMap, ok := mRaw.(map[string]any)
 		if !ok {
@@ -572,53 +656,177 @@ func LastCacheableToolIndex(tools []any) int {
 
 // AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
 // Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
+func normalizeMessageContent(msgMap map[string]any) {
+	if c, ok := msgMap["content"].(map[string]any); ok {
+		delete(c, "cache_control")
+		msgMap["content"] = []any{c}
+	}
+}
+
+func countCacheControlBlocks(req map[string]any) int {
+	n := 0
+	if sys, ok := req["system"].([]any); ok {
+		for _, b := range sys {
+			if m, ok := b.(map[string]any); ok && m["cache_control"] != nil {
+				n++
+			}
+		}
+	}
+	if tools, ok := req["tools"].([]any); ok {
+		for _, t := range tools {
+			if m, ok := t.(map[string]any); ok && m["cache_control"] != nil {
+				n++
+			}
+		}
+	}
+	if msgs, ok := req["messages"].([]any); ok {
+		for _, m := range msgs {
+			if mRaw, ok := m.(map[string]any); ok {
+				if content, ok := mRaw["content"].([]any); ok {
+					for _, b := range content {
+						if bm, ok := b.(map[string]any); ok && bm["cache_control"] != nil {
+							n++
+						}
+					}
+				}
+			}
+		}
+	}
+	return n
+}
+
+func capCacheControlBlocks(req map[string]any) {
+	var headMarkers []map[string]any
+	var restMarkers []map[string]any
+
+	// Head marker 1: last system block
+	if sys, ok := req["system"].([]any); ok && len(sys) > 0 {
+		if lastSys, ok := sys[len(sys)-1].(map[string]any); ok && lastSys["cache_control"] != nil {
+			headMarkers = append(headMarkers, lastSys)
+		}
+	}
+	// Head marker 2: last cacheable tool
+	if tools, ok := req["tools"].([]any); ok {
+		lastToolIdx := LastCacheableToolIndex(tools)
+		if lastToolIdx >= 0 && lastToolIdx < len(tools) {
+			if lastTool, ok := tools[lastToolIdx].(map[string]any); ok && lastTool["cache_control"] != nil {
+				headMarkers = append(headMarkers, lastTool)
+			}
+		}
+	}
+
+	// Collect non-head markers from system, tools, and messages
+	if sys, ok := req["system"].([]any); ok {
+		for i := 0; i < len(sys)-1; i++ {
+			if m, ok := sys[i].(map[string]any); ok && m["cache_control"] != nil {
+				restMarkers = append(restMarkers, m)
+			}
+		}
+	}
+	if tools, ok := req["tools"].([]any); ok {
+		lastToolIdx := LastCacheableToolIndex(tools)
+		for i, t := range tools {
+			if i != lastToolIdx {
+				if m, ok := t.(map[string]any); ok && m["cache_control"] != nil {
+					restMarkers = append(restMarkers, m)
+				}
+			}
+		}
+	}
+	if msgs, ok := req["messages"].([]any); ok {
+		for _, m := range msgs {
+			if mRaw, ok := m.(map[string]any); ok {
+				if content, ok := mRaw["content"].([]any); ok {
+					for _, b := range content {
+						if bm, ok := b.(map[string]any); ok && bm["cache_control"] != nil {
+							restMarkers = append(restMarkers, bm)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	keep := 4 - len(headMarkers)
+	if keep < 0 {
+		keep = 0
+	}
+	// Keep the tail-most `keep` markers from restMarkers, delete earlier ones
+	excess := len(restMarkers) - keep
+	if excess > 0 {
+		for i := range excess {
+			delete(restMarkers[i], "cache_control")
+		}
+	}
+}
+
+// AnchorClaudeCache ensures prompt-caching breakpoints land on system/tool head anchors
+// and at most 4 cache_control markers are dispatched (parity with #3567 / #8a81085a).
 func AnchorClaudeCache(body []byte) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body
 	}
-	toolsRaw, ok := req["tools"].([]any)
-	if !ok || len(toolsRaw) == 0 {
-		return body
-	}
-	last := LastCacheableToolIndex(toolsRaw)
-	changed := false
-	for i, t := range toolsRaw {
-		m, ok := t.(map[string]any)
-		if !ok {
-			continue
+
+	// 1. Normalize bare content objects in messages
+	if msgs, ok := req["messages"].([]any); ok {
+		for _, m := range msgs {
+			if mRaw, ok := m.(map[string]any); ok {
+				normalizeMessageContent(mRaw)
+			}
 		}
-		_, hasCache := m["cache_control"]
-		if i == last {
-			// Ensure last cacheable has 1h breakpoint
-			want := map[string]any{"type": "ephemeral", "ttl": "1h"}
-			if !hasCache {
-				m["cache_control"] = want
-				changed = true
-			} else {
-				// Normalize existing to 1h if not already
-				if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
-					m["cache_control"] = want
-					changed = true
+	}
+
+	// 2. Strip cache_control from deferred tools, anchor last cacheable tool
+	if toolsRaw, ok := req["tools"].([]any); ok && len(toolsRaw) > 0 {
+		last := LastCacheableToolIndex(toolsRaw)
+		for i, t := range toolsRaw {
+			if m, ok := t.(map[string]any); ok {
+				if v, exists := m["defer_loading"]; exists && v == true {
+					delete(m, "cache_control")
+				}
+				if i == last {
+					want := map[string]any{"type": "ephemeral", "ttl": "1h"}
+					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+						m["cache_control"] = want
+					}
+				} else if _, had := m["cache_control"]; had {
+					delete(m, "cache_control")
 				}
 			}
-		} else {
-			if hasCache {
-				delete(m, "cache_control")
-				changed = true
-			}
-			// Also strip cache_control that client incorrectly put on deferred tool
-			if _, had := m["cache_control"]; had {
-				delete(m, "cache_control")
-				changed = true
+		}
+	}
+
+	// 3. Head anchor for system prompt
+	if sys, ok := req["system"].([]any); ok && len(sys) > 0 {
+		lastSys := len(sys) - 1
+		for i, sb := range sys {
+			if m, ok := sb.(map[string]any); ok {
+				if i == lastSys {
+					want := map[string]any{"type": "ephemeral", "ttl": "1h"}
+					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+						m["cache_control"] = want
+					}
+				}
 			}
 		}
 	}
-	if !changed {
+
+	// 4. Budget guard: if already >= 4 markers, cap and return
+	if countCacheControlBlocks(req) >= 4 {
+		capCacheControlBlocks(req)
+		if out, err := json.Marshal(req); err == nil {
+			return out
+		}
 		return body
 	}
-	if out, err := json.Marshal(req); err == nil {
-		return out
+
+	// 5. Ensure total cache_control blocks <= 4
+	capCacheControlBlocks(req)
+
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
 	}
-	return body
+	return out
 }

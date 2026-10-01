@@ -13,7 +13,28 @@ const (
 
 type signatureEntry struct {
 	signature string
+	family    string
 	expiresAt time.Time
+}
+
+// SignatureFamily returns the normalized model family ("claude", "gemini", or original)
+// so signatures are not replayed to incompatible model families (upstream parity with bc3be0cb).
+func SignatureFamily(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return ""
+	}
+	if strings.Contains(m, "claude") {
+		return "claude"
+	}
+	if strings.Contains(m, "gemini") {
+		return "gemini"
+	}
+	return m
+}
+
+func isFamilyCompatible(entryFamily, targetFamily string) bool {
+	return entryFamily == "" || targetFamily == "" || entryFamily == targetFamily
 }
 
 type thoughtSignatureStore struct {
@@ -51,12 +72,16 @@ func (s *thoughtSignatureStore) pruneExpiredLocked(now time.Time) {
 	}
 }
 
-// StoreGeminiThoughtSignature stores a thought signature for a tool_call_id with optional session namespace.
-func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string) {
+// StoreGeminiThoughtSignature stores a thought signature for a tool_call_id with optional session namespace and model family.
+func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model ...string) {
 	if toolCallID == "" || signature == "" {
 		return
 	}
 
+	var family string
+	if len(model) > 0 && model[0] != "" {
+		family = SignatureFamily(model[0])
+	}
 	now := time.Now()
 	exp := now.Add(memoryTTL)
 
@@ -89,17 +114,22 @@ func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string) {
 		}
 		globalThoughtSigStore.entries[k] = signatureEntry{
 			signature: signature,
+			family:    family,
 			expiresAt: exp,
 		}
 	}
 }
 
-// GetGeminiThoughtSignature retrieves a thought signature by tool_call_id (checking session namespace first).
-func GetGeminiThoughtSignature(toolCallID, sessionID string) string {
+// GetGeminiThoughtSignature retrieves a thought signature by tool_call_id (checking session namespace first and matching model family).
+func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) string {
 	if toolCallID == "" {
 		return ""
 	}
 
+	var targetFamily string
+	if len(model) > 0 && model[0] != "" {
+		targetFamily = SignatureFamily(model[0])
+	}
 	cleanID := toolCallID
 	if idx := strings.LastIndex(toolCallID, "__ts__"); idx != -1 {
 		cleanID = toolCallID[:idx]
@@ -112,26 +142,25 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string) string {
 
 	// 1. Session-scoped check
 	if sessionID != "" {
-		if entry, ok := globalThoughtSigStore.entries[sessionID+":"+toolCallID]; ok && now.Before(entry.expiresAt) {
+		if entry, ok := globalThoughtSigStore.entries[sessionID+":"+toolCallID]; ok && now.Before(entry.expiresAt) && isFamilyCompatible(entry.family, targetFamily) {
 			return entry.signature
 		}
 		if cleanID != toolCallID {
-			if entry, ok := globalThoughtSigStore.entries[sessionID+":"+cleanID]; ok && now.Before(entry.expiresAt) {
+			if entry, ok := globalThoughtSigStore.entries[sessionID+":"+cleanID]; ok && now.Before(entry.expiresAt) && isFamilyCompatible(entry.family, targetFamily) {
 				return entry.signature
 			}
 		}
 	}
 
 	// 2. Global toolCallID check
-	if entry, ok := globalThoughtSigStore.entries[toolCallID]; ok && now.Before(entry.expiresAt) {
+	if entry, ok := globalThoughtSigStore.entries[toolCallID]; ok && now.Before(entry.expiresAt) && isFamilyCompatible(entry.family, targetFamily) {
 		return entry.signature
 	}
 	if cleanID != toolCallID {
-		if entry, ok := globalThoughtSigStore.entries[cleanID]; ok && now.Before(entry.expiresAt) {
+		if entry, ok := globalThoughtSigStore.entries[cleanID]; ok && now.Before(entry.expiresAt) && isFamilyCompatible(entry.family, targetFamily) {
 			return entry.signature
 		}
 	}
-
 	return ""
 }
 
@@ -139,6 +168,6 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string) string {
 func ClearGeminiThoughtSignatures() {
 	globalThoughtSigStore.mu.Lock()
 	defer globalThoughtSigStore.mu.Unlock()
-	globalThoughtSigStore.entries = make(map[string]signatureEntry)
-	globalThoughtSigStore.order = make([]string, 0, maxMemorySignatures)
+	clear(globalThoughtSigStore.entries)
+	globalThoughtSigStore.order = globalThoughtSigStore.order[:0]
 }

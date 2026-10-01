@@ -59,6 +59,10 @@ func (p *GeminiPart) UnmarshalJSON(data []byte) error {
 type GeminiFunctionCall struct {
 	Name string         `json:"name"`
 	Args map[string]any `json:"args"`
+	// ID correlates a call with its response. Gemini rejects a functionResponse
+	// whose id does not match an open call, so the terminal-turn guard below has
+	// to be able to echo it.
+	ID string `json:"id,omitempty"`
 }
 
 // DefaultThinkingSignature is the hardcoded thought signature the Next.js
@@ -72,6 +76,7 @@ const DefaultThinkingSignature = "EuwGCukGAXLI2nxwZIq54WWSoL/YN0P3TsDZ7zRnLi8g0S
 
 type GeminiFunctionResp struct {
 	Name     string          `json:"name"`
+	ID       string          `json:"id,omitempty"`
 	Response *GeminiFuncResp `json:"response,omitempty"`
 }
 
@@ -96,9 +101,9 @@ type GeminiTool struct {
 }
 
 type GeminiFunctionDecl struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Parameters  interface{} `json:"parameters,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
 }
 
 // GeminiRequest is the full Gemini API request body.
@@ -145,15 +150,21 @@ type GeminiStreamChunk struct {
 // TranslateOpenAIToGemini converts an OpenAI-compatible request body to Gemini native format.
 func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	var oreq struct {
-		Model           string         `json:"model"`
-		Messages        jsontext.Value `json:"messages"`
-		Temperature     *float64       `json:"temperature,omitempty"`
-		MaxTokens       *int           `json:"max_tokens,omitempty"`
-		TopP            *float64       `json:"top_p,omitempty"`
-		TopK            *int           `json:"top_k,omitempty"`
-		Stream          bool           `json:"stream,omitempty"`
-		Tools           jsontext.Value `json:"tools,omitempty"`
-		ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+		Model               string         `json:"model"`
+		Messages            jsontext.Value `json:"messages"`
+		Temperature         *float64       `json:"temperature,omitempty"`
+		MaxTokens           *int           `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int           `json:"max_completion_tokens,omitempty"`
+		TopP                *float64       `json:"top_p,omitempty"`
+		TopK                *int           `json:"top_k,omitempty"`
+		Stream              bool           `json:"stream,omitempty"`
+		Tools               jsontext.Value `json:"tools,omitempty"`
+		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+		Thinking            *struct {
+			Type         string `json:"type"`
+			BudgetTokens int    `json:"budget_tokens"`
+		} `json:"thinking,omitempty"`
+		ThinkingBudget *int `json:"thinking_budget,omitempty"`
 	}
 	if err := json.Unmarshal(openaiBody, &oreq); err != nil {
 		return nil, fmt.Errorf("parse OpenAI request: %w", err)
@@ -164,7 +175,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	// Parse messages
 	var msgs []struct {
 		Role             string           `json:"role"`
-		Content          interface{}      `json:"content"`
+		Content          any              `json:"content"`
 		ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 		ToolCallID       string           `json:"tool_call_id,omitempty"`
 		ReasoningContent string           `json:"reasoning_content,omitempty"`
@@ -190,16 +201,14 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		}
 	}
 
+	var systemParts []GeminiPart
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "system":
 			content := extractContentString(msg.Content)
 			if strings.TrimSpace(content) != "" {
-				req.SystemInstruction = &GeminiContent{
-					Parts: []GeminiPart{{Text: content}},
-				}
+				systemParts = append(systemParts, GeminiPart{Text: content})
 			}
-
 		case "user":
 			parts := convertContentToGeminiParts(msg.Content)
 			if len(parts) > 0 {
@@ -214,9 +223,9 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			if contentStr, ok := msg.Content.(string); ok && contentStr != "" {
 				parts = append(parts, GeminiPart{Text: contentStr})
 				hasText = true
-			} else if contentArr, ok := msg.Content.([]interface{}); ok {
+			} else if contentArr, ok := msg.Content.([]any); ok {
 				for _, item := range contentArr {
-					if m, ok := item.(map[string]interface{}); ok {
+					if m, ok := item.(map[string]any); ok {
 						if text, ok := m["text"].(string); ok && text != "" {
 							parts = append(parts, GeminiPart{Text: text})
 							hasText = true
@@ -242,7 +251,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 				}
 				ts := extractThoughtSig(tc.ID)
 				if ts == "" {
-					ts = GetGeminiThoughtSignature(tc.ID, "")
+					ts = GetGeminiThoughtSignature(tc.ID, "", oreq.Model)
 				}
 				if ts == "" && !firstFunctionCallSeen {
 					ts = DefaultThinkingSignature
@@ -292,9 +301,20 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 					Response: &GeminiFuncResp{Result: resultValue},
 				},
 			}}
+			parts = append(parts, geminiToolMediaParts(msg.Content)...)
 			req.Contents = append(req.Contents, GeminiContent{Role: "user", Parts: parts})
 		}
 	}
+	if len(systemParts) > 0 {
+		req.SystemInstruction = &GeminiContent{
+			Role:  "user",
+			Parts: systemParts,
+		}
+	}
+
+	// Normalize Gemini contents: merge adjacent same-role messages, strip empty parts,
+	// and ensure first turn is "user" (parity with decolua/9router v0.5.75 #e7b5f09).
+	req.Contents = NormalizeGeminiContents(req.Contents)
 
 	// Tools
 	if len(oreq.Tools) > 0 {
@@ -323,23 +343,44 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	}
 
 	// Generation config
-	genConfig := make(map[string]interface{})
+	genConfig := make(map[string]any)
 	if oreq.Temperature != nil {
 		genConfig["temperature"] = *oreq.Temperature
 	}
-	if oreq.MaxTokens != nil {
-		genConfig["maxOutputTokens"] = *oreq.MaxTokens
-	}
+
 	if oreq.TopP != nil {
 		genConfig["topP"] = *oreq.TopP
 	}
 	if oreq.TopK != nil {
 		genConfig["topK"] = *oreq.TopK
 	}
+	maxTokens := oreq.MaxTokens
+	if maxTokens == nil {
+		maxTokens = oreq.MaxCompletionTokens
+	}
+
+	thinkingBudget := 0
 	if oreq.ReasoningEffort != "" {
-		genConfig["thinkingConfig"] = map[string]interface{}{
-			"thinkingBudget": effortToBudget(oreq.ReasoningEffort),
+		thinkingBudget = effortToBudget(oreq.ReasoningEffort)
+	} else if oreq.Thinking != nil && oreq.Thinking.BudgetTokens > 0 {
+		thinkingBudget = oreq.Thinking.BudgetTokens
+	} else if oreq.ThinkingBudget != nil && *oreq.ThinkingBudget > 0 {
+		thinkingBudget = *oreq.ThinkingBudget
+	}
+
+	if thinkingBudget > 0 {
+		genConfig["thinkingConfig"] = map[string]any{
+			"thinkingBudget":  thinkingBudget,
+			"includeThoughts": true,
 		}
+		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT
+		if maxTokens == nil || *maxTokens <= thinkingBudget {
+			adjustedMax := thinkingBudget + thinkingHeadroomTokens
+			maxTokens = &adjustedMax
+		}
+	}
+	if maxTokens != nil {
+		genConfig["maxOutputTokens"] = *maxTokens
 	}
 	if len(genConfig) > 0 {
 		configJSON, err := json.Marshal(genConfig)
@@ -480,14 +521,14 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 			ReasoningTokens: reasoningTokens,
 		},
 	}
-	resp := map[string]interface{}{
+	resp := map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   "gemini",
-		"choices": []map[string]interface{}{{
+		"choices": []map[string]any{{
 			"index": 0,
-			"message": map[string]interface{}{
+			"message": map[string]any{
 				"role":              "assistant",
 				"content":           openaiContent,
 				"reasoning_content": reasoningContent,
@@ -495,11 +536,11 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 			},
 			"finish_reason": claudeStop,
 		}},
-		"usage": map[string]interface{}{
+		"usage": map[string]any{
 			"prompt_tokens":     inputTokens,
 			"completion_tokens": outputTokens,
 			"cached_tokens":     cachedTokens,
-			"completion_tokens_details": map[string]interface{}{
+			"completion_tokens_details": map[string]any{
 				"reasoning_tokens": reasoningTokens,
 			},
 		},
@@ -507,10 +548,10 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 
 	// Remove empty fields
 	if reasoningContent == "" {
-		delete(resp["choices"].([]map[string]interface{})[0]["message"].(map[string]interface{}), "reasoning_content")
+		delete(resp["choices"].([]map[string]any)[0]["message"].(map[string]any), "reasoning_content")
 	}
 	if len(toolCalls) == 0 {
-		delete(resp["choices"].([]map[string]interface{})[0]["message"].(map[string]interface{}), "tool_calls")
+		delete(resp["choices"].([]map[string]any)[0]["message"].(map[string]any), "tool_calls")
 	}
 
 	out, err := json.Marshal(resp)
@@ -543,20 +584,20 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 		state.Model = "gemini"
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 
 	// First chunk setup
 	if !state.MessageStartSent {
 		state.MessageStartSent = true
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"id":      state.MessageId,
 			"object":  "chat.completion.chunk",
 			"created": time.Now().Unix(),
 			"model":   state.Model,
-			"choices": []map[string]interface{}{
+			"choices": []map[string]any{
 				{
 					"index": 0,
-					"delta": map[string]interface{}{
+					"delta": map[string]any{
 						"role": "assistant",
 					},
 					"finish_reason": nil,
@@ -573,7 +614,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				if part.ThoughtSignature != "" {
 					state.LastThoughtSignature = part.ThoughtSignature
 				}
-				delta := map[string]interface{}{}
+				delta := map[string]any{}
 				if part.Text != "" && (part.Thought == nil || !*part.Thought) {
 					delta["content"] = part.Text
 				}
@@ -592,15 +633,15 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						sig = state.LastThoughtSignature
 					}
 					if sig != "" {
-						StoreGeminiThoughtSignature(id, sig, state.MessageId)
+						StoreGeminiThoughtSignature(id, sig, state.MessageId, state.Model)
 						id += "__ts__" + sig
 					}
-					delta["tool_calls"] = []map[string]interface{}{
+					delta["tool_calls"] = []map[string]any{
 						{
 							"index": 0,
 							"id":    id,
 							"type":  "function",
-							"function": map[string]interface{}{
+							"function": map[string]any{
 								"name":      fnName,
 								"arguments": string(args),
 							},
@@ -608,12 +649,12 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					}
 				}
 				if len(delta) > 0 {
-					results = append(results, map[string]interface{}{
+					results = append(results, map[string]any{
 						"id":      state.MessageId,
 						"object":  "chat.completion.chunk",
 						"created": time.Now().Unix(),
 						"model":   state.Model,
-						"choices": []map[string]interface{}{
+						"choices": []map[string]any{
 							{
 								"index":         0,
 								"delta":         delta,
@@ -655,19 +696,19 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				CachedTokens:     cachedTokens,
 			}
 
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"id":      state.MessageId,
 				"object":  "chat.completion.chunk",
 				"created": time.Now().Unix(),
 				"model":   state.Model,
-				"choices": []map[string]interface{}{
+				"choices": []map[string]any{
 					{
 						"index":         0,
-						"delta":         map[string]interface{}{},
+						"delta":         map[string]any{},
 						"finish_reason": openAIStop,
 					},
 				},
-				"usage": map[string]interface{}{
+				"usage": map[string]any{
 					"prompt_tokens":     inputTokens,
 					"completion_tokens": outputTokens,
 					"cached_tokens":     cachedTokens,
@@ -690,13 +731,13 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 			CachedTokens:     cachedTokens,
 		}
 		if len(geminiChunk.Candidates) == 0 {
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"id":      state.MessageId,
 				"object":  "chat.completion.chunk",
 				"created": time.Now().Unix(),
 				"model":   state.Model,
-				"choices": []interface{}{},
-				"usage": map[string]interface{}{
+				"choices": []any{},
+				"usage": map[string]any{
 					"prompt_tokens":     inputTokens,
 					"completion_tokens": outputTokens,
 					"cached_tokens":     cachedTokens,
@@ -725,14 +766,14 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 // ─── Helpers ───
 
 // extractContentString extracts a string from OpenAI message content (string or array).
-func extractContentString(content interface{}) string {
+func extractContentString(content any) string {
 	switch v := content.(type) {
 	case string:
 		return v
-	case []interface{}:
+	case []any:
 		var parts []string
 		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
+			if m, ok := item.(map[string]any); ok {
 				if text, ok := m["text"].(string); ok && text != "" {
 					parts = append(parts, text)
 				}
@@ -745,21 +786,21 @@ func extractContentString(content interface{}) string {
 }
 
 // convertContentToGeminiParts converts OpenAI message content to Gemini parts.
-func convertContentToGeminiParts(content interface{}) []GeminiPart {
+func convertContentToGeminiParts(content any) []GeminiPart {
 	switch v := content.(type) {
 	case string:
 		if v == "" {
 			return nil
 		}
 		return []GeminiPart{{Text: v}}
-	case []interface{}:
+	case []any:
 		var parts []GeminiPart
 		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
+			if m, ok := item.(map[string]any); ok {
 				if text, ok := m["text"].(string); ok && text != "" {
 					parts = append(parts, GeminiPart{Text: text})
 				}
-				if img, ok := m["image_url"].(map[string]interface{}); ok {
+				if img, ok := m["image_url"].(map[string]any); ok {
 					if url, ok := img["url"].(string); ok {
 						if strings.HasPrefix(url, "data:") {
 							// Parse data URL: data:mimeType;base64,data
@@ -779,7 +820,7 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 						}
 					}
 				}
-				if audio, ok := m["input_audio"].(map[string]interface{}); ok {
+				if audio, ok := m["input_audio"].(map[string]any); ok {
 					if data, ok := audio["data"].(string); ok && data != "" {
 						format, _ := audio["format"].(string)
 						mimeType := "audio/" + format
@@ -793,7 +834,7 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 						})
 					}
 				}
-				if audio, ok := m["audio_url"].(map[string]interface{}); ok {
+				if audio, ok := m["audio_url"].(map[string]any); ok {
 					if url, ok := audio["url"].(string); ok && strings.HasPrefix(url, "data:") {
 						if semi := strings.Index(url, ";"); semi > 5 {
 							mimeType := url[5:semi]
@@ -806,7 +847,7 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 						}
 					}
 				}
-				if file, ok := m["file"].(map[string]interface{}); ok {
+				if file, ok := m["file"].(map[string]any); ok {
 					if fileData, ok := file["file_data"].(string); ok && strings.HasPrefix(fileData, "data:") {
 						if semi := strings.Index(fileData, ";"); semi > 5 {
 							mimeType := fileData[5:semi]
@@ -824,4 +865,109 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 		return parts
 	}
 	return nil
+}
+
+// geminiToolMediaParts picks the binary blocks out of a tool result so they can
+// ride along with the functionResponse. A browser or screenshot tool returns
+// binary, and Gemini only lets the model look at bytes that arrive as an
+// inlineData part — stringifying the screenshot into the result payload hides
+// the very pixels the model was called to read. Text is deliberately left out:
+// it already travels inside functionResponse.response.result.
+func geminiToolMediaParts(content any) []GeminiPart {
+	all := convertContentToGeminiParts(content)
+	var media []GeminiPart
+	for _, p := range all {
+		if p.InlineData != nil || p.FileData != nil {
+			media = append(media, p)
+		}
+	}
+	return media
+}
+
+// NormalizeGeminiContents merges adjacent same-role messages, strips empty
+// parts, and brackets the conversation with user turns — parity with
+// open-sse/translator/formats/gemini.js. Gemini rejects a contents array that
+// does not start on a user turn, and equally one that ends on a model turn: a
+// prefill, a truncated stream, or tool calls the client never answered all
+// arrive that way and would 400 without the guards.
+func NormalizeGeminiContents(contents []GeminiContent) []GeminiContent {
+	out := make([]GeminiContent, 0, len(contents)+2)
+	for _, c := range contents {
+		if c.Role == "" || len(c.Parts) == 0 {
+			continue
+		}
+		var validParts []GeminiPart
+		for _, p := range c.Parts {
+			if isGeminiPartEmpty(p) {
+				continue
+			}
+			validParts = append(validParts, p)
+		}
+		if len(validParts) == 0 {
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].Role == c.Role {
+			out[len(out)-1].Parts = append(out[len(out)-1].Parts, validParts...)
+		} else {
+			out = append(out, GeminiContent{
+				Role:  c.Role,
+				Parts: validParts,
+			})
+		}
+	}
+	if len(out) == 0 {
+		return out
+	}
+
+	if out[0].Role != "user" {
+		out = append([]GeminiContent{{
+			Role:  "user",
+			Parts: []GeminiPart{{Text: "..."}},
+		}}, out...)
+	}
+	if last := out[len(out)-1]; last.Role == "model" {
+		out = append(out, GeminiContent{Role: "user", Parts: geminiTerminalUserParts(last.Parts)})
+	}
+	return out
+}
+
+// geminiTerminalUserParts answers a terminal model turn: one functionResponse
+// per unanswered functionCall, carrying the call's id so Gemini can match it,
+// or a plain nudge when the model was talking rather than calling a tool.
+func geminiTerminalUserParts(modelParts []GeminiPart) []GeminiPart {
+	var calls []*GeminiFunctionCall
+	for _, p := range modelParts {
+		if p.FunctionCall != nil {
+			calls = append(calls, p.FunctionCall)
+		}
+	}
+	if len(calls) == 0 {
+		return []GeminiPart{{Text: "Continue."}}
+	}
+
+	responses := make([]GeminiPart, 0, len(calls))
+	for _, call := range calls {
+		name := call.Name
+		if name == "" {
+			name = "tool"
+		}
+		responses = append(responses, GeminiPart{
+			FunctionResponse: &GeminiFunctionResp{
+				Name:     name,
+				ID:       call.ID,
+				Response: &GeminiFuncResp{Result: "Continue."},
+			},
+		})
+	}
+	return responses
+}
+
+func isGeminiPartEmpty(p GeminiPart) bool {
+	return p.Text == "" &&
+		p.Thought == nil &&
+		p.ThoughtSignature == "" &&
+		p.FunctionCall == nil &&
+		p.FunctionResponse == nil &&
+		p.InlineData == nil &&
+		p.FileData == nil
 }
