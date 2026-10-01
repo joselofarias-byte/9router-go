@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"9router/proxy/internal/controlplane/capacity"
+	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/log"
 	"context"
 	json "encoding/json/v2"
@@ -8,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +39,9 @@ func (h *ChatHandler) handleAccountFallback(
 	endpoint string,
 ) error {
 	if pinnedConnectionID != "" {
+		if !h.accountRouteEligible(ctx, provider, model, pinnedConnectionID) {
+			return fmt.Errorf("pinned connection unavailable")
+		}
 		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
 		if err != nil {
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
@@ -61,9 +67,29 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
+	// Snapshot quota ranking once, preserving priority among unknown peers.
+	ids := make([]string, 0, len(allConns))
+	for _, c := range allConns {
+		ids = append(ids, c.ID)
+	}
+	ranks := map[string]int{}
+	for i, id := range capacity.OrderAccounts(provider, model, ids) {
+		ranks[id] = i
+	}
+	sort.SliceStable(allConns, func(i, j int) bool { return ranks[allConns[i].ID] < ranks[allConns[j].ID] })
+
 	var excludeIDs []string
 	var lastErr error
 	for _, c := range allConns {
+		if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+			continue
+		}
+		if provider == "antigravity" && IsAntigravityModelBlocked(c.ID, model) {
+			continue
+		}
+		if !h.accountRouteEligible(ctx, provider, model, c.ID) {
+			continue
+		}
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
@@ -125,6 +151,13 @@ func (h *ChatHandler) tryForwardWithConnection(
 	translateResponse bool,
 	endpoint string,
 ) error {
+	account := connectionID
+	if cfg, ok := providers.KnownProviders[provider]; ok && cfg.NoAuth && (account == "default" || account == "" || account == "noauth") {
+		account = routing.VirtualNoAuthAccountID(provider)
+	}
+	if !h.accountRouteEligible(ctx, provider, model, account) {
+		return fmt.Errorf("connection no longer eligible")
+	}
 	ctx = translator.WithUsageCapture(ctx)
 
 	providerCfg, err := h.getProviderConfig(provider, connData)

@@ -122,3 +122,41 @@ Para verificar solo el catálogo oficial sin claves ni inferencia:
 OPENROUTER_CATALOG_LIVE=1 go test ./internal/controlplane/discovery \
   -run TestOpenRouterOfficialCatalogLive -v
 ```
+
+## Puente de cuota reportada y disponibilidad (orden 007)
+
+El registro `capacity` adapta el contrato del PR #28. Mantiene una observación
+por proveedor, cuenta y modelo upstream exacto; el nodo de routing conserva además
+el `catalogModel` completo, sin normalizar ni truncar IDs. No suma porcentajes.
+El diagnóstico del candidato expone `Quota.Status`: `available`, `unknown`,
+`stale` o `exhausted`. El porcentaje de una observación stale es histórico,
+no saldo actual. Los candidatos agotados o en cooldown se excluyen tanto en
+Fabric como en selección de conexiones y en el control previo al envío.
+
+Una observación caduca a los 10 minutos o al llegar su reset, lo primero que
+ocurra. Un reset transcurrido permite reintento con estado stale: no acredita
+reposición de saldo. Cero fresco sin reset sigue agotado hasta caducar. Unknown
+puede ser un fallback de precio gratuito confirmado; no significa ilimitado,
+no recibe crédito de cuota conocida ni autoriza modelos pagos. La clasificación
+de precio y los filtros de capabilities siguen siendo independientes.
+
+Solo metadata explícita enlaza cuentas a un `Scope{Project, Organization}`.
+Antigravity conserva el proyecto proporcionado a su refresco existente, de forma
+conservadora; `SetScope` permite enlazar otras fuentes cuando acrediten su scope.
+La observación más reciente reemplaza el saldo compartido; nunca se suman cuentas.
+Los identificadores de scope no salen en diagnóstico y no contienen credenciales.
+No se descubren scopes de OpenRouter/Codex por inferencia o nombre de cuenta.
+
+429 y los strike blocks existentes alimentan un cooldown separado del saldo
+reportado. En tráfico virtual gratuito el `retryAfter` RFC3339 ya presente en el
+cuerpo puede alargar el cooldown mínimo de un minuto; no crea saldo ni reset
+oficial. El tipo de error heredado no conserva el header HTTP Retry-After: este
+puente no afirma soportarlo. Una respuesta positiva concurrente o un refresco de
+cuota no borra ese cooldown. Con scope explícito, se aplica también a cuentas
+hermanas del mismo proveedor/modelo, impidiendo usar otra cuenta para saltarlo.
+
+El estado permanece en memoria; reiniciar pierde cuota y cooldown. No hay
+reservas de tokens ni contabilidad exacta entre pedidos concurrentes; una cuota
+positiva es un hint de selección, no garantía de que el pedido quepa. Sin una
+fuente de cuota del proveedor, se conserva unknown. Las pruebas son fixtures
+locales, no inferencia autenticada ni verificación de cuotas reales del usuario.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/controlplane/availability"
+	"9router/proxy/internal/controlplane/capacity"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/providers"
@@ -75,6 +76,10 @@ func recordVirtualFreeTraffic(ctx context.Context, provider, wireModel, connecti
 			switch upstream.StatusCode {
 			case http.StatusTooManyRequests, http.StatusPaymentRequired:
 				category, cooldown = providers.ErrQuota, time.Minute
+				if until, parseErr := time.Parse(time.RFC3339, extractRetryAfter(upstream.Body)); parseErr == nil && time.Until(until) > cooldown {
+					cooldown = time.Until(until)
+				}
+				capacity.ObserveCooldown(provider, account, wireModel, cooldown)
 			case http.StatusUnauthorized, http.StatusForbidden:
 				category, cooldown = providers.ErrAuth, 5*time.Minute
 			case http.StatusNotFound:
@@ -105,4 +110,62 @@ func recordVirtualFreeTraffic(ctx context.Context, provider, wireModel, connecti
 		globalAvailability.Observe(availability.Key{Provider: provider, Model: pm.ModelID, Account: account}, success, string(category), cooldown, latencyMs, ttftMs)
 		globalTrustManager.RecordObservation(provider, pm.ModelID, account, success, category)
 	}
+}
+
+// Recheck the exact account before forwarding: model-level free entries dedupe
+// accounts, so an eligible sibling must not resurrect a blocked connection.
+func (h *ChatHandler) accountRouteEligible(ctx context.Context, provider, wire, account string) bool {
+	if !capacity.Eligible(capacity.Inspect(provider, account, wire)) {
+		return false
+	}
+	if _, free := ctx.Value(freeProfileContextKey{}).(string); !free {
+		return true
+	}
+	state := registry.GetActiveState()
+	if state == nil {
+		return false
+	}
+	for _, pm := range state.ProviderModels[provider] {
+		if pm == nil || !pm.IsActive || !routing.IsFreePricing(pm.PricingMode) {
+			continue
+		}
+		upstream := pm.UpstreamModel
+		if upstream == "" {
+			upstream = pm.ModelID
+		}
+		if upstream == wire && globalAvailability.Available(availability.Key{Provider: provider, Model: pm.ModelID, Account: account}) {
+			return true
+		}
+	}
+	return false
+}
+
+// Legacy connection selection also honors health for the exact free catalog
+// identities; unrelated explicit paid routes keep their existing behavior.
+func accountCapacityAvailable(provider, wire, account string) bool {
+	if !capacity.Eligible(capacity.Inspect(provider, account, wire)) {
+		return false
+	}
+	state := registry.GetActiveState()
+	if state == nil {
+		return true
+	}
+	matched := false
+	for _, pm := range state.ProviderModels[provider] {
+		if pm == nil || !pm.IsActive || !routing.IsFreePricing(pm.PricingMode) {
+			continue
+		}
+		upstream := pm.UpstreamModel
+		if upstream == "" {
+			upstream = pm.ModelID
+		}
+		if upstream != wire {
+			continue
+		}
+		matched = true
+		if globalAvailability.Available(availability.Key{Provider: provider, Model: pm.ModelID, Account: account}) {
+			return true
+		}
+	}
+	return !matched
 }
