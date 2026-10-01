@@ -58,6 +58,17 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 }
 
 func TestHandleFreebuffInitiate_Success(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/cli/code" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	original := freebuffAuthBaseURL
+	freebuffAuthBaseURL = upstream.URL
+	t.Cleanup(func() { freebuffAuthBaseURL = original })
 	handler := NewOAuthHandler(nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/oauth/freebuff/initiate", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
@@ -75,7 +86,7 @@ func TestHandleFreebuffInitiate_Success(t *testing.T) {
 	}
 
 	loginURL, _ := res["loginUrl"].(string)
-	if !strings.HasPrefix(loginURL, "https://freebuff.com/login?auth_code=") {
+	if !strings.HasPrefix(loginURL, upstream.URL+"/login?auth_code=") {
 		t.Errorf("unexpected loginUrl: %v", loginURL)
 	}
 	authCode, _ := res["authCode"].(string)

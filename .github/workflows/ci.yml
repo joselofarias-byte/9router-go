@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, sync/upstream-2026-10-01]
 
 permissions:
   contents: read
@@ -52,6 +52,13 @@ jobs:
       # asserted here instead of trusted.
       - name: Build
         run: go build -ldflags="-s -w" -o /tmp/9router-go ./cmd/9router-go/
+
+      - name: Build Termux arm64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: android
+          GOARCH: arm64
+        run: go build -ldflags="-s -w" -o /tmp/9router-go-termux-arm64 ./cmd/9router-go/
 
       - name: Assert PGO is applied
         run: |

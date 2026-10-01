@@ -310,6 +310,11 @@ func TestHandleAudioVoices_elevenlabs(t *testing.T) {
 	handler := chat.NewChatHandler(nil)
 	req := httptest.NewRequest("GET", "/v1/audio/voices?provider=elevenlabs", nil)
 	rec := httptest.NewRecorder()
+	cfg := providers.KnownProviders["elevenlabs"]
+	original := cfg
+	cfg.VoicesURL = upstream.URL
+	providers.KnownProviders["elevenlabs"] = cfg
+	t.Cleanup(func() { providers.KnownProviders["elevenlabs"] = original })
 	handler.Client = upstream.Client()
 	handler.HandleAudioVoices(rec, req)
 

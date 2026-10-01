@@ -276,6 +276,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 	}
 	apiKey = NormalizeProviderToken(provider, apiKey)
+	providerCfg = providers.LocalAuthConfig(providerCfg, apiKey)
 
 	// Token savers + provider-format normalization:
 	// - /v1/messages (claudeNative): body stays Claude format; savers inject
@@ -382,7 +383,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)
 	}()
 
-	httpClient := h.getClientForConnection(connData)
+	httpClient, err := h.ClientForUpstream(providerCfg, providerCfg.BaseURL, connData)
+	if err != nil {
+		return err
+	}
 	sessionID := handlerutil.GetSessionID(ctx)
 
 	if exec := executor.Get(provider); exec != nil {

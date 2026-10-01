@@ -390,6 +390,18 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 
 // (GET /models, falling back to a minimal chat request).
 func validateProviderKey(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
+	if provider == "ollama-local" {
+		return validateOllamaLocal(ctx, psd)
+	}
+	if cfg.LocalOnly {
+		target := psdStr(psd, "baseUrl")
+		if target == "" {
+			target = cfg.BaseURL
+		}
+		if err := providers.AssertLoopbackURL(target); err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+	}
 	if cfg.NoAuth {
 		return validateOutcome{valid: true, supported: true}
 	}
@@ -574,6 +586,9 @@ func validateOllamaLocal(ctx context.Context, psd map[string]any) validateOutcom
 	host := strings.TrimSuffix(strings.TrimSpace(psdStr(psd, "baseUrl")), "/")
 	if host == "" {
 		host = "http://localhost:11434"
+	}
+	if err := providers.AssertLoopbackURL(host); err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
 	}
 	status, _, err := validateProbeDo(ctx, http.MethodGet, host+"/api/tags", nil, nil)
 	if err != nil {

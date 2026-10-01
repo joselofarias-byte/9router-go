@@ -91,7 +91,7 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		WriteResolveError(w, err)
 		return
 	}
 
@@ -108,7 +108,10 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
-		augmented, comboStrategy := h.applyCapacityAdapter(modelInfo.ComboModels, requiredCaps, modelInfo.Strategy, reqBody.Model)
+		augmented, comboStrategy := modelInfo.ComboModels, modelInfo.Strategy
+		if !modelInfo.VirtualFree {
+			augmented, comboStrategy = h.applyCapacityAdapter(augmented, requiredCaps, comboStrategy, reqBody.Model)
+		}
 		if modelInfo.Strategy == "fusion" {
 			bodyJSON, err := json.Marshal(workingBody)
 			if err != nil {
@@ -118,7 +121,7 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 			h.handleFusion(ctx, w, bodyJSON, augmented, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
-		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit)
+		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, modelInfo.VirtualFree)
 		return
 	}
 

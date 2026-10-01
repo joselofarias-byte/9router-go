@@ -1,7 +1,16 @@
 package providers
 
+import "strings"
+
 // ProviderAliasMap maps short aliases to canonical provider IDs.
 var ProviderAliasMap = map[string]string{
+	"gguf":         "llamacpp",
+	"lc":           "llamacpp",
+	"llama":        "llamacpp",
+	"llama-cpp":    "llamacpp",
+	"llama-server": "llamacpp",
+	"llama.cpp":    "llamacpp",
+
 	"b-ai":           "bai",
 	"agnes-ai":       "agnes",
 	"atria-asi":      "atria",
@@ -73,6 +82,9 @@ var ProviderAliasMap = map[string]string{
 	"pplx-agent":     "perplexity-agent",
 	"pplx-responses": "perplexity-agent",
 	"pw":             "perplexity-web",
+	"workbuddy":      "codebuddy-intl",
+	"wb":             "codebuddy-intl",
+	"ocg":            "opencode-go",
 	"qd":             "qoder",
 	"qdcn":           "qoder-cn",
 	"runway":         "runwayml",
@@ -103,7 +115,7 @@ var ProviderAliasMap = map[string]string{
 
 // ResolveAlias returns the canonical provider ID for an alias, or the alias itself if not found.
 func ResolveAlias(alias string) string {
-	if canonical, ok := ProviderAliasMap[alias]; ok {
+	if canonical, ok := ProviderAliasMap[strings.ToLower(strings.TrimSpace(alias))]; ok {
 		return canonical
 	}
 	return alias

@@ -104,14 +104,19 @@ func resolveProviderAlias(alias string) string {
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 	if !strings.Contains(entry, "/") {
-		combo, err := h.Repo.GetComboByName(entry)
-		if err == nil && combo != nil && combo.Models != "" {
+		if h.Repo == nil {
+			return nil
+		}
+		if combo, err := h.Repo.GetComboByName(entry); err == nil && combo != nil && combo.Models != "" {
 			var subModels []string
 			if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
 				first := h.resolveModelEntry(subModels[0])
 				if first != nil {
 					first.ComboModels = subModels
-					first.Strategy = combo.Strategy
+					strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
+					first.Strategy = strat
+					first.StickyLimit = sticky
+					first.JudgeModel = judge
 					return first
 				}
 			}
@@ -119,13 +124,29 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 		return nil
 	}
 	parts := strings.SplitN(entry, "/", 2)
-	provider := resolveProviderAlias(parts[0])
-	if _, ok := providers.KnownProviders[provider]; !ok {
-		if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
+	prefix := parts[0]
+	model := parts[1]
+
+	if info := h.resolvePrefixProvider(prefix, model); info != nil {
+		return info
+	}
+
+	provider := resolveProviderAlias(prefix)
+	if provider != prefix {
+		if info := h.resolvePrefixProvider(provider, model); info != nil {
 			return info
 		}
+		if h.Repo != nil {
+			if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
+				conns, _ := h.Repo.GetProviderConnections(provider, true)
+				if len(conns) == 0 {
+					return &ModelInfo{Provider: node.ID, Model: model}
+				}
+			}
+		}
 	}
-	return &ModelInfo{Provider: provider, Model: parts[1]}
+
+	return &ModelInfo{Provider: provider, Model: model}
 }
 
 // flattenComboModels recursively expands combo-name entries into concrete
@@ -402,7 +423,7 @@ func (h *ChatHandler) resolveComboModel(combo *models.Combo) (*ModelInfo, error,
 		return nil, nil, false
 	}
 	firstInfo.ComboModels = flattened
-	firstInfo.Strategy = combo.Strategy
+	firstInfo.Strategy, firstInfo.StickyLimit, firstInfo.JudgeModel = h.resolveComboRouting(combo.Name, combo.Strategy)
 	return firstInfo, nil, true
 }
 
@@ -503,34 +524,72 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
 		parts := strings.SplitN(modelStr, "/", 2)
-		providerAlias := parts[0]
+		prefix := parts[0]
 		model := parts[1]
-		provider := resolveProviderAlias(providerAlias)
 
-		if _, ok := providers.KnownProviders[provider]; !ok {
+		// Check custom prefix provider node first (before built-in alias resolution shadows it, e.g. "oa" or "cc")
+		if info := h.resolvePrefixProvider(prefix, model); info != nil {
+			return info, nil
+		}
+
+		provider := resolveProviderAlias(prefix)
+		if provider != prefix {
 			if info := h.resolvePrefixProvider(provider, model); info != nil {
 				return info, nil
+			}
+			// If the alias-resolved provider has no active connections, check if the prefix
+			// matches a providerNode so errors point to the intended custom node ID.
+			if h.Repo != nil {
+				if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
+					conns, _ := h.Repo.GetProviderConnections(provider, true)
+					if len(conns) == 0 {
+						return &ModelInfo{Provider: node.ID, Model: model}, nil
+					}
+				}
 			}
 		}
 		return &ModelInfo{Provider: provider, Model: model}, nil
 	}
 
 	// 2. Check if it's a model alias (e.g., "gpt-4o" -> "openai/gpt-4o")
-	aliasTarget, err := h.Repo.GetModelAlias(modelStr)
-	if err == nil && aliasTarget != "" {
-		if strings.Contains(aliasTarget, "/") {
-			parts := strings.SplitN(aliasTarget, "/", 2)
-			provider := resolveProviderAlias(parts[0])
-			if _, ok := providers.KnownProviders[provider]; !ok {
-				if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
+	if h.Repo != nil {
+		aliasTarget, err := h.Repo.GetModelAlias(modelStr)
+		if err == nil && aliasTarget != "" {
+			if strings.Contains(aliasTarget, "/") {
+				parts := strings.SplitN(aliasTarget, "/", 2)
+				prefix := parts[0]
+				model := parts[1]
+
+				if info := h.resolvePrefixProvider(prefix, model); info != nil {
 					return info, nil
 				}
+
+				provider := resolveProviderAlias(prefix)
+				if provider != prefix {
+					if info := h.resolvePrefixProvider(provider, model); info != nil {
+						return info, nil
+					}
+					if h.Repo != nil {
+						if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
+							conns, _ := h.Repo.GetProviderConnections(provider, true)
+							if len(conns) == 0 {
+								return &ModelInfo{Provider: node.ID, Model: model}, nil
+							}
+						}
+					}
+				}
+				return &ModelInfo{
+					Provider: provider,
+					Model:    model,
+				}, nil
 			}
-			return &ModelInfo{
-				Provider: provider,
-				Model:    parts[1],
-			}, nil
 		}
+	}
+
+	// Upstream PR #4135: route bare codex-auto-review to the Codex provider
+	// Outside Repo guard so it resolves with nil Repo / empty DB (static catalog).
+	if modelStr == "codex-auto-review" {
+		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
 	}
 
 	// 3. Check if it's a combo name
@@ -555,38 +614,41 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
-	// Next.js treats bare alias as provider with default model for search/media endpoints.
-	if canonical := resolveProviderAlias(modelStr); canonical != modelStr {
-		if _, ok := providers.KnownProviders[canonical]; ok {
-			if conns, err := h.Repo.GetProviderConnections(canonical, true); err == nil && len(conns) > 0 {
-				return &ModelInfo{Provider: canonical, Model: ""}, nil
-			}
-		}
-	}
-	if _, ok := providers.KnownProviders[modelStr]; ok {
-		if conns, err := h.Repo.GetProviderConnections(modelStr, true); err == nil && len(conns) > 0 {
-			return &ModelInfo{Provider: modelStr, Model: ""}, nil
-		}
-	}
-	// Also check prefix provider nodes for bare alias (e.g., custom prefixes)
+	// Check custom prefix provider nodes first for bare alias
 	if info := h.resolvePrefixProvider(modelStr, ""); info != nil {
 		return info, nil
 	}
+	if h.Repo != nil {
+		if canonical := resolveProviderAlias(modelStr); canonical != modelStr {
+			if _, ok := providers.KnownProviders[canonical]; ok {
+				if conns, err := h.Repo.GetProviderConnections(canonical, true); err == nil && len(conns) > 0 {
+					return &ModelInfo{Provider: canonical, Model: ""}, nil
+				}
+			}
+		}
+		if _, ok := providers.KnownProviders[modelStr]; ok {
+			if conns, err := h.Repo.GetProviderConnections(modelStr, true); err == nil && len(conns) > 0 {
+				return &ModelInfo{Provider: modelStr, Model: ""}, nil
+			}
+		}
 
-	// 4. Check common providers as a fallback
-	for _, provider := range []string{"openai", "anthropic", "deepseek"} {
-		conns, err := h.Repo.GetProviderConnections(provider, true)
-		if err == nil && len(conns) > 0 {
-			return &ModelInfo{Provider: provider, Model: modelStr}, nil
+		// 4. Check common providers as a fallback
+		for _, provider := range []string{"openai", "anthropic", "deepseek"} {
+			conns, err := h.Repo.GetProviderConnections(provider, true)
+			if err == nil && len(conns) > 0 {
+				return &ModelInfo{Provider: provider, Model: modelStr}, nil
+			}
 		}
 	}
-
 	return nil, fmt.Errorf("could not resolve model: %s", modelStr)
 }
 
 // resolvePrefixProvider checks if a provider name is a providerNode prefix.
 // If so, it finds the matching connection and returns a pinned ModelInfo.
 func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelInfo {
+	if h.Repo == nil {
+		return nil
+	}
 	node, _, err := h.Repo.GetProviderNodeByPrefix(prefix)
 	if err != nil || node == nil {
 		return nil
@@ -602,4 +664,41 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 		Model:        model,
 		ConnectionID: conn.ID,
 	}
+}
+
+func (h *ChatHandler) resolveComboRouting(comboName string, fallbackStrategy string) (strategy string, stickyLimit int, judgeModel string) {
+	strategy = fallbackStrategy
+	if strategy == "" {
+		strategy = "fallback"
+	}
+	stickyLimit = 1
+
+	if h.Repo == nil {
+		return strategy, stickyLimit, ""
+	}
+
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return strategy, stickyLimit, ""
+	}
+
+	if cs, ok := settings.ComboStrategies[comboName]; ok {
+		if cs.Strategy != "" {
+			strategy = cs.Strategy
+		}
+		if cs.StickyLimit > 0 {
+			stickyLimit = cs.StickyLimit
+		}
+		judgeModel = cs.JudgeModel
+		return strategy, stickyLimit, judgeModel
+	}
+
+	if settings.ComboStrategy != "" {
+		strategy = settings.ComboStrategy
+	}
+	if settings.ComboStickyRoundRobinLimit > 0 {
+		stickyLimit = settings.ComboStickyRoundRobinLimit
+	}
+
+	return strategy, stickyLimit, ""
 }

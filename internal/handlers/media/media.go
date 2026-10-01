@@ -74,10 +74,17 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 
 	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
 	}
 
+	if modelInfo.VirtualFree {
+		modelInfo, err = h.ChatH.SelectVirtualFreeEntry(modelInfo)
+		if err != nil {
+			chat.WriteResolveError(w, err)
+			return
+		}
+	}
 	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
@@ -91,7 +98,7 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
+	if apiKey == "" && !providerCfg.NoAuth {
 		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
 		return
 	}
@@ -106,10 +113,14 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	client, err := h.prepareMediaClient(req, providerCfg, apiKey, embeddingsURL, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 
 	start := time.Now()
-	resp, err := h.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
 		return
@@ -187,8 +198,15 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Request, body []byte, model string) {
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
+	}
+	if modelInfo.VirtualFree {
+		modelInfo, err = h.ChatH.SelectVirtualFreeEntry(modelInfo)
+		if err != nil {
+			chat.WriteResolveError(w, err)
+			return
+		}
 	}
 	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil || connData == nil {
@@ -243,7 +261,11 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	client, err := h.prepareMediaClient(req, providerCfg, apiKey, targetURL, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	for k, v := range providerCfg.StaticHeaders {
 		if req.Header.Get(k) == "" {
 			req.Header.Set(k, v)
@@ -252,7 +274,6 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 	if modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-zen" {
 		req.Header.Set("x-opencode-session", proxy.GenerateOpenCodeSessionID())
 	}
-	client := h.ChatH.GetClientForConnection(connData)
 	resp, err := client.Do(req)
 	if err != nil {
 		// Transport-level failure only (proxy block, DNS, reset): retry once
@@ -345,7 +366,7 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 
 	modelInfo, err := h.ChatH.ResolveModel(req.Model)
 	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
 	}
 	_, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
@@ -359,7 +380,7 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" {
+	if apiKey == "" && !providerCfg.NoAuth {
 		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
 		return
 	}
@@ -590,7 +611,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
 		log.Warn("media", "resolve model failed", "endpoint", endpoint, "model", model, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		chat.WriteResolveError(w, err)
 		return
 	}
 	log.Debug("media", "forward request", "endpoint", endpoint, "model", model, "provider", modelInfo.Provider, "resolvedModel", modelInfo.Model)
@@ -599,7 +620,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if len(modelInfo.ComboModels) > 0 {
 		var lastErr string
 		lastStatus := http.StatusBadGateway
+		triedEligible := false
 		for _, entry := range modelInfo.ComboModels {
+			if !h.ChatH.AllowVirtualFreeHop(modelInfo.VirtualFree, entry) {
+				continue
+			}
+			triedEligible = true
 			subInfo, err := h.ChatH.ResolveModel(entry)
 			if err != nil {
 				continue
@@ -660,7 +686,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			apiKey := chat.ExtractAPIKey(connData)
-			if apiKey == "" {
+			if apiKey == "" && !providerCfg.NoAuth {
 				lastErr = "no API key"
 				continue
 			}
@@ -696,8 +722,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			for k, v := range r.Header {
 				req.Header[k] = v
 			}
-			handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-			client := h.ChatH.GetClientForConnection(connData)
+			client, err := h.prepareMediaClient(req, providerCfg, apiKey, targetURL, connData)
+			if err != nil {
+				lastErr = err.Error()
+				continue
+			}
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
@@ -731,6 +760,10 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			w.WriteHeader(resp.StatusCode)
 			io.Copy(w, resp.Body)
 			h.Repo.UpdateConnectionLastUsed(conn.ID)
+			return
+		}
+		if modelInfo.VirtualFree && !triedEligible {
+			chat.WriteResolveError(w, chat.ErrFreeRouteUnavailable)
 			return
 		}
 		handlerutil.WriteJSONError(w, lastStatus, fmt.Sprintf("all combo models failed: %s", lastErr))
@@ -833,7 +866,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			log.Warn("media", "multipart model rewrite skipped", "endpoint", endpoint, "error", err)
 		}
 	}
-	client := h.ChatH.GetClientForConnection(connData)
+	var client *http.Client
 
 	connID := ""
 	if conn != nil {
@@ -932,7 +965,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	for k, v := range providerCfg.StaticHeaders {
 		req.Header.Set(k, v)
 	}
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	client, err = h.prepareMediaClient(req, providerCfg, apiKey, targetURL, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	connIDStr := ""
 	if conn != nil {
 		connIDStr = conn.ID[:min(8, len(conn.ID))]
@@ -1056,4 +1093,22 @@ func buildEmbeddingsURL(baseURL string) string {
 		return strings.Replace(baseURL, "/chat/completions", "/embeddings", 1)
 	}
 	return strings.TrimRight(baseURL, "/") + "/embeddings"
+}
+
+func (h *MediaHandler) prepareMediaClient(req *http.Request, cfg *providers.ProviderConfig, apiKey, targetURL string, connData *chat.ConnectionData) (*http.Client, error) {
+	cfg = providers.LocalAuthConfig(cfg, apiKey)
+	if cfg != nil && cfg.LocalOnly && cfg.NoAuth {
+		// The inbound gateway key was copied onto this request. Do not forward it.
+		req.Header.Del("Authorization")
+		req.Header.Del("X-Api-Key")
+	} else {
+		header := ""
+		scheme := ""
+		if cfg != nil {
+			header = cfg.AuthHeader
+			scheme = cfg.AuthScheme
+		}
+		handlerutil.SetAuthHeader(req, apiKey, header, scheme)
+	}
+	return h.ChatH.ClientForUpstream(cfg, targetURL, connData)
 }

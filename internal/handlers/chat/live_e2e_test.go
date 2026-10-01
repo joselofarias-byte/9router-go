@@ -19,6 +19,9 @@ import (
 )
 
 func getRealUserDB(t *testing.T) (*db.Repo, func()) {
+	if os.Getenv("NINEROUTER_LIVE_E2E") != "1" {
+		t.Skip("live provider tests require explicit NINEROUTER_LIVE_E2E=1")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot get user home dir")

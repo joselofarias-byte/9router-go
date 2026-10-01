@@ -302,7 +302,7 @@ func TestHandleValidateProvider_CloudflareRequiresAccountID(t *testing.T) {
 func TestHandleValidateProvider_OllamaLocalUsesHostFromProviderData(t *testing.T) {
 	calls := staticProbeStub(t, http.StatusOK)
 
-	rec, out := postValidate(t, `{"provider":"ollama-local","apiKey":"","providerSpecificData":{"baseUrl":"http://192.168.1.10:11434/"}}`)
+	rec, out := postValidate(t, `{"provider":"ollama-local","apiKey":"","providerSpecificData":{"baseUrl":"http://127.0.0.1:11434/"}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -310,7 +310,7 @@ func TestHandleValidateProvider_OllamaLocalUsesHostFromProviderData(t *testing.T
 		t.Fatalf("expected one probe, got %d", len(*calls))
 	}
 	probe := (*calls)[0]
-	if probe.url != "http://192.168.1.10:11434/api/tags" {
+	if probe.url != "http://127.0.0.1:11434/api/tags" {
 		t.Errorf("unexpected ollama url %s", probe.url)
 	}
 	if probe.headers.Get("Authorization") != "" {
@@ -709,5 +709,13 @@ func TestHandleValidateProvider_CustomOpenAINode_InvalidKeyRejection(t *testing.
 	}
 	if out["error"] != "Invalid API key" {
 		t.Errorf("expected 'Invalid API key', got %v", out["error"])
+	}
+}
+
+func TestHandleValidateProvider_OllamaLocalRejectsLANBeforeProbe(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+	_, out := postValidate(t, `{"provider":"ollama-local","providerSpecificData":{"baseUrl":"http://192.168.1.10:11434"}}`)
+	if len(*calls) != 0 || out["valid"] != false {
+		t.Fatalf("local-only validation must reject LAN before probing: calls=%d outcome=%v", len(*calls), out)
 	}
 }

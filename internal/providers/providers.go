@@ -117,6 +117,7 @@ func WithHeader(headers map[string]string, key, value string) map[string]string 
 
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
+	"orcarouter": {BaseURL: "https://orcarouter.ai/v1/chat/completions", AuthHeader: "Authorization", AuthScheme: "bearer"},
 	"openai": {
 		BaseURL:    "https://api.openai.com/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -488,10 +489,21 @@ var KnownProviders = map[string]ProviderConfig{
 			"x-cli-environment":      "cli",
 		},
 	},
+	"llamacpp": {
+		BaseURL:       "http://127.0.0.1:8080/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		NoAuth:        true,
+		DefaultAPIKey: "local",
+		LocalOnly:     true,
+	},
 	"ollama-local": {
-		BaseURL:    "http://localhost:11434/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:       "http://127.0.0.1:11434/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		NoAuth:        true,
+		DefaultAPIKey: "local",
+		LocalOnly:     true,
 	},
 	"minimax-cn": {
 		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
