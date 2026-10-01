@@ -21,14 +21,15 @@ type ModelInfo struct {
 	// VirtualFree is set only for the built-in free / free-best pool.
 	// Fallback hops re-check that each entry is still free and connected.
 	// An explicit user alias or combo leaves this false, even when its name is free.
-	VirtualFree bool
+	VirtualFree    bool
+	VirtualProfile string
 }
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey                 string                 `json:"apiKey"`
-	AccessToken            string                 `json:"accessToken"`
-	BaseURL                string                 `json:"baseUrl,omitempty"`
+	APIKey      string `json:"apiKey"`
+	AccessToken string `json:"accessToken"`
+	BaseURL     string `json:"baseUrl,omitempty"`
 	// LocalOnly opts this connection into the loopback lock even when the
 	// provider id is a custom OpenAI-compatible node. It carries no credentials.
 	LocalOnly              bool                   `json:"localOnly,omitempty"`

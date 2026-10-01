@@ -52,6 +52,10 @@ func SetupRoutes(r interface {
 	r.Get("/api/v1/models/*", chatH.HandleModelLookup)
 	r.Get("/api/models/catalog-sync", chatH.HandleCatalogSyncStatus)
 	r.Post("/api/models/catalog-sync", chatH.HandleCatalogSyncTrigger)
+	// Fabric diagnostics use the same protected group as inference routes.
+	r.Get("/api/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/api/admin/explain-route", chatH.HandleAdminExplainRoute)
+	r.Post("/api/admin/health-check", chatH.HandleAdminHealthCheck)
 	r.Post("/chat/completions", chatH.HandleChatCompletions)
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)

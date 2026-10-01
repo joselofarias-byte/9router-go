@@ -198,12 +198,7 @@ func stripModelContextMarker(modelStr string) string {
 // both names then fall back through the rest of that free-only chain.
 // Matching trims space and ignores case.
 func isVirtualFreeRoute(modelStr string) bool {
-	switch canonicalVirtualName(modelStr) {
-	case "free", "free-best":
-		return true
-	default:
-		return false
-	}
+	return routing.IsFreeProfile(modelStr)
 }
 
 func canonicalVirtualName(modelStr string) string {
@@ -216,7 +211,12 @@ func canonicalVirtualName(modelStr string) string {
 // The error return is fail-closed: callers must not continue into the
 // openai/anthropic/deepseek fallback with the virtual name.
 func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
+	return h.resolveDynamicFreeProfile("free-best")
+}
+
+func (h *ChatHandler) resolveDynamicFreeProfile(profile string) (*ModelInfo, error) {
 	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
+	candidates = routing.FilterProfile(registry.GetActiveState(), candidates, profile)
 	if len(candidates) == 0 {
 		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
 	}
@@ -248,6 +248,7 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	first.ComboModels = resolved
 	first.Strategy = "fallback"
 	first.VirtualFree = true
+	first.VirtualProfile = canonicalVirtualName(profile)
 	return first, nil
 }
 
@@ -288,7 +289,7 @@ func (h *ChatHandler) SelectVirtualFreeEntry(info *ModelInfo) (*ModelInfo, error
 		return info, nil
 	}
 	for _, entry := range info.ComboModels {
-		if !h.freeEntryStillEligible(entry) {
+		if !h.profileEntryStillEligible(info.VirtualProfile, entry) {
 			log.Warn("combo", "skip free hop no longer eligible", "entry", entry)
 			continue
 		}
@@ -297,6 +298,7 @@ func (h *ChatHandler) SelectVirtualFreeEntry(info *ModelInfo) (*ModelInfo, error
 			continue
 		}
 		picked.VirtualFree = true
+		picked.VirtualProfile = info.VirtualProfile
 		picked.Strategy = info.Strategy
 		picked.ComboModels = info.ComboModels
 		return picked, nil
@@ -425,7 +427,7 @@ func (h *ChatHandler) concreteAliasTarget(target string) *ModelInfo {
 // already run. Alias wins over combo, matching the exact-case order.
 func (h *ChatHandler) resolveFoldedVirtualOverride(modelStr string) (*ModelInfo, error, bool) {
 	canonical := canonicalVirtualName(modelStr)
-	if canonical != "free" && canonical != "free-best" {
+	if !routing.IsFreeProfile(canonical) {
 		return nil, nil, false
 	}
 
@@ -551,7 +553,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		if info, overrideErr, ok := h.resolveFoldedVirtualOverride(modelStr); ok {
 			return info, overrideErr
 		}
-		return h.resolveDynamicFreeBest()
+		return h.resolveDynamicFreeProfile(modelStr)
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
