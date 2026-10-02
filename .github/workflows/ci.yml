@@ -60,6 +60,13 @@ jobs:
           GOARCH: arm64
         run: go build -ldflags="-s -w" -o /tmp/9router-go-termux-arm64 ./cmd/9router-go/
 
+      - name: Upload Termux arm64 test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: 9router-go-termux-arm64-pr35
+          path: /tmp/9router-go-termux-arm64
+          retention-days: 7
+
       - name: Assert PGO is applied
         run: |
           go version -m /tmp/9router-go | grep -q -- '-pgo=' || {
