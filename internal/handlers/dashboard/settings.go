@@ -123,46 +123,42 @@ func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	passphrase := r.Header.Get(backupPassphraseHeader)
+	if err := validateBackupPassphrase(passphrase); err != nil {
+		writePlainError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	payload, err := h.exportDatabase()
 	if err != nil {
 		writePlainError(w, http.StatusInternalServerError, "Failed to export database")
 		return
 	}
-	if r.URL.Query().Get("format") == "zip" || strings.Contains(r.Header.Get("Accept"), "application/zip") {
-		jsonBytes, err := json.Marshal(payload)
-		if err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to encode database backup")
-			return
-		}
-		var buf bytes.Buffer
-		zw := zip.NewWriter(&buf)
-		f, err := zw.Create("9router-backup.json")
-		if err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to create zip archive")
-			return
-		}
-		if _, err := f.Write(jsonBytes); err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to write backup to zip")
-			return
-		}
-		if err := zw.Close(); err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to finalize zip")
-			return
-		}
-		nowStr := time.Now().Format("2006-01-02")
-		w.Header().Set("Content-Type", "application/zip")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="9router-backup-%s.zip"`, nowStr))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(buf.Bytes())
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		writePlainError(w, http.StatusInternalServerError, "Failed to encode database backup")
+		return
+	}
+	defer clear(jsonBytes)
+
+	encrypted, err := encryptBackup(jsonBytes, passphrase)
+	if err != nil {
+		writePlainError(w, http.StatusInternalServerError, "Failed to encrypt database backup")
 		return
 	}
 
-	handlerutil.WriteJSON(w, http.StatusOK, payload)
+	nowStr := time.Now().Format("2006-01-02-150405")
+	w.Header().Set("Content-Type", backupContentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="9router-backup-%s.9rbak"`, nowStr))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(encrypted)
 }
 
 // HandleImportDatabase handles POST /api/settings/database (backup restore).
 func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
@@ -171,7 +167,34 @@ func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.R
 
 	var payload map[string]any
 
-	// Support zip archives (PK\x03\x04 header)
+	if isEncryptedBackup(body) {
+		// Authenticate the dashboard caller before doing the deliberately
+		// expensive Argon2id derivation. Trusted local CLI calls still need the
+		// backup passphrase, but not a second dashboard-password prompt.
+		if !trustedRequest(r) && !h.verifyDashboardPassword(r.Header.Get(passwordHeader)) {
+			writePlainError(w, http.StatusUnauthorized, "Invalid password")
+			return
+		}
+		plaintext, err := decryptBackup(body, r.Header.Get(backupPassphraseHeader))
+		if err != nil {
+			writePlainError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		defer clear(plaintext)
+		if err := json.Unmarshal(plaintext, &payload); err != nil || payload == nil {
+			writePlainError(w, http.StatusBadRequest, "Invalid encrypted database payload")
+			return
+		}
+		if err := h.importDatabase(payload); err != nil {
+			writePlainError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
+		return
+	}
+
+	// Legacy plaintext JSON/ZIP remains import-only so existing backups do not
+	// become unusable. New exports above are always encrypted .9rbak files.
 	if len(body) >= 4 && body[0] == 'P' && body[1] == 'K' && body[2] == 3 && body[3] == 4 {
 		zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 		if err != nil {
@@ -218,9 +241,6 @@ func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.R
 		writePlainError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// upstream re-applies the outbound proxy env here; the Go runtime has no
-	// equivalent yet (no outboundProxyUrl handling), so nothing to re-apply.
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
 }
