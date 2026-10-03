@@ -36,11 +36,22 @@ func TestBuiltinFreeAdapterIncludesZeroCredentialRoutes(t *testing.T) {
 
 	for _, want := range []string{
 		"mimo-free/mimo-auto",
-		"opencode/jev-1.13-free",
 		"opencode/muse-spark-1.3-contributor-free",
 	} {
 		if !found[want] {
 			t.Errorf("missing built-in free route %s", want)
 		}
+	}
+	if found["opencode/jev-1.13-free"] {
+		t.Error("systemone model jev-1.13-free leaked into the chat free pool")
+	}
+}
+
+func TestIsChatProviderModelRejectsSystemOne(t *testing.T) {
+	if isChatProviderModel("opencode", "jev-1.13-free") {
+		t.Fatal("jev-1.13-free is systemone, not chat")
+	}
+	if !isChatProviderModel("opencode", "muse-spark-1.3-contributor-free") {
+		t.Fatal("muse-spark contributor free should remain chat-capable")
 	}
 }
