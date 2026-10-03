@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -251,6 +252,13 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
 	}
 
+	// Keep the Control Plane score as the base (trust/risk/free policy), then
+	// add a bounded health adjustment from the last few hours of real traffic.
+	// A known-good model rises above equal peers; a recent failing model sinks,
+	// but the health bonus is intentionally too small to erase a large risk
+	// penalty from the base score.
+	models = h.rankFreeRouteEntriesByRecentHealth(models, freeRouteBaseScores(state, candidates))
+
 	var first *ModelInfo
 	resolved := make([]string, 0, len(models))
 	for _, entry := range models {
@@ -334,26 +342,178 @@ func freeRouteEntries(state *registry.RegistryState, candidates []routing.RouteN
 	}
 	models := make([]string, 0, len(candidates))
 	seen := make(map[string]bool, len(candidates))
-	for _, c := range candidates {
-		pm, ok := eligibleFreeProviderModel(state, c)
-		if !ok {
-			continue
-		}
-		model := pm.UpstreamModel
-		if model == "" {
-			model = pm.ModelID
-		}
-		if c.ProviderID == "" || model == "" {
-			continue
-		}
-		entry := c.ProviderID + "/" + model
-		if seen[entry] {
+	for _, candidate := range candidates {
+		entry, ok := freeRouteCandidateEntry(state, candidate)
+		if !ok || seen[entry] {
 			continue
 		}
 		seen[entry] = true
 		models = append(models, entry)
 	}
 	return models
+}
+
+func freeRouteCandidateEntry(state *registry.RegistryState, candidate routing.RouteNode) (string, bool) {
+	pm, ok := eligibleFreeProviderModel(state, candidate)
+	if !ok {
+		return "", false
+	}
+	model := pm.UpstreamModel
+	if model == "" {
+		model = pm.ModelID
+	}
+	if candidate.ProviderID == "" || model == "" {
+		return "", false
+	}
+	return candidate.ProviderID + "/" + model, true
+}
+
+func freeRouteBaseScores(state *registry.RegistryState, candidates []routing.RouteNode) map[string]float64 {
+	out := make(map[string]float64, len(candidates))
+	for _, candidate := range candidates {
+		entry, ok := freeRouteCandidateEntry(state, candidate)
+		if !ok {
+			continue
+		}
+		if current, exists := out[entry]; !exists || candidate.Score.Total > current {
+			out[entry] = candidate.Score.Total
+		}
+	}
+	return out
+}
+
+const (
+	freeRouteHealthHistoryLimit = 300
+	freeRouteHealthWindow       = 6 * time.Hour
+)
+
+type freeRouteRecentHealth struct {
+	samples          int
+	successes        int
+	latencySamples   int
+	successLatencyMs int64
+	latestAt         time.Time
+	latestSuccess    bool
+}
+
+func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseScores map[string]float64) []string {
+	if h == nil || h.Repo == nil || len(models) < 2 {
+		return models
+	}
+	rows, err := h.Repo.GetRecentRoutingRequestMetrics(freeRouteHealthHistoryLimit)
+	if err != nil {
+		rows = nil
+	}
+
+	cutoff := time.Now().UTC().Add(-freeRouteHealthWindow)
+	targets := make(map[string]bool, len(models))
+	for _, entry := range models {
+		targets[entry] = true
+	}
+	health := make(map[string]*freeRouteRecentHealth, len(models))
+
+	for _, row := range rows {
+		entry := row.Provider + "/" + row.Model
+		if !targets[entry] {
+			continue
+		}
+		stamp, err := time.Parse(time.RFC3339Nano, row.Timestamp)
+		if err != nil || stamp.Before(cutoff) {
+			continue
+		}
+
+		var detail struct {
+			Latency struct {
+				Total int64 `json:"total"`
+			} `json:"latency"`
+			Response struct {
+				Status int `json:"status"`
+			} `json:"response"`
+		}
+		_ = json.Unmarshal([]byte(row.Data), &detail)
+
+		success := strings.EqualFold(row.Status, "success")
+		if !success && !routingFailureCountsForHealth(detail.Response.Status) {
+			continue
+		}
+
+		stat := health[entry]
+		if stat == nil {
+			stat = &freeRouteRecentHealth{}
+			health[entry] = stat
+		}
+		stat.samples++
+		if success {
+			stat.successes++
+			if detail.Latency.Total > 0 {
+				stat.latencySamples++
+				stat.successLatencyMs += detail.Latency.Total
+			}
+		}
+		if stamp.After(stat.latestAt) {
+			stat.latestAt = stamp
+			stat.latestSuccess = success
+		}
+	}
+
+	ordered := append([]string(nil), models...)
+	effective := make(map[string]float64, len(ordered))
+	for _, entry := range ordered {
+		effective[entry] = baseScores[entry] + freeRouteHealthAdjustment(health[entry])
+		if _, quarantined := virtualFreeModelQuarantined(entry); quarantined {
+			effective[entry] -= 1000
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return effective[ordered[i]] > effective[ordered[j]]
+	})
+
+	if len(ordered) > 0 && ordered[0] != models[0] {
+		log.Info("routing", "virtual free health rerank",
+			"from", models[0], "to", ordered[0],
+			"base", baseScores[ordered[0]], "health_adjustment", freeRouteHealthAdjustment(health[ordered[0]]))
+	}
+	return ordered
+}
+
+func routingFailureCountsForHealth(status int) bool {
+	if status == StatusClientClosedRequest {
+		return false
+	}
+	if status == 0 || status == http.StatusUnauthorized || status == http.StatusForbidden ||
+		status == http.StatusNotFound || status == http.StatusRequestTimeout ||
+		status == http.StatusTooManyRequests || status >= 500 {
+		return true
+	}
+	return false
+}
+
+func freeRouteHealthAdjustment(stat *freeRouteRecentHealth) float64 {
+	if stat == nil || stat.samples == 0 {
+		return 0
+	}
+
+	successRate := float64(stat.successes) / float64(stat.samples)
+	adjustment := (successRate - 0.5) * 30 // -15 .. +15
+
+	if stat.latestSuccess {
+		adjustment += 8
+	} else {
+		adjustment -= 12
+	}
+
+	if stat.latencySamples > 0 && stat.successLatencyMs > 0 {
+		avgLatency := stat.successLatencyMs / int64(stat.latencySamples)
+		switch {
+		case avgLatency <= 1500:
+			adjustment += 5
+		case avgLatency <= 3500:
+			adjustment += 3
+		case avgLatency <= 7000:
+			adjustment += 1
+		}
+	}
+	return adjustment
 }
 
 func eligibleFreeProviderModel(state *registry.RegistryState, c routing.RouteNode) (*registry.ProviderModel, bool) {
