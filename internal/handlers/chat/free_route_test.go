@@ -451,6 +451,41 @@ func TestRankFreeRouteEntriesByRecentHealth(t *testing.T) {
 	}
 }
 
+func TestRankFreeRouteEntriesBreaksEqualHealthScoreByLatency(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Both successful models receive the same +23 health adjustment because
+	// both latencies are above the 7s bonus threshold. The tie must therefore
+	// be resolved by the actual measured average latency, not the shuffled
+	// candidate order.
+	models := []string{"opencode/slow-free", "opencode/faster-free"}
+	base := map[string]float64{
+		"opencode/slow-free":   30,
+		"opencode/faster-free": 30,
+	}
+
+	if err := repo.InsertRequestDetail(
+		"health-slow", "opencode", "slow-free", "", "success",
+		`{"latency":{"total":22000},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.InsertRequestDetail(
+		"health-faster", "opencode", "faster-free", "", "success",
+		`{"latency":{"total":14000},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.rankFreeRouteEntriesByRecentHealth(models, base)
+	if got[0] != "opencode/faster-free" {
+		t.Fatalf("latency tie-break did not prefer faster proven model: %#v", got)
+	}
+}
+
 func TestRankFreeRouteEntriesHealthCannotEraseLargeBaseRiskGap(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
