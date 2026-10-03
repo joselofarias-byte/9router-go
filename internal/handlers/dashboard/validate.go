@@ -390,6 +390,18 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 
 // (GET /models, falling back to a minimal chat request).
 func validateProviderKey(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
+	if provider == "ollama-local" {
+		return validateOllamaLocal(ctx, psd)
+	}
+	if cfg.LocalOnly {
+		target := psdStr(psd, "baseUrl")
+		if target == "" {
+			target = cfg.BaseURL
+		}
+		if err := providers.AssertLoopbackURL(target); err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+	}
 	if cfg.NoAuth {
 		return validateOutcome{valid: true, supported: true}
 	}
@@ -416,6 +428,8 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validatePerplexityWeb(ctx, apiKey)
 	case "qoder", "qoder-cn":
 		return validateQoder(ctx, provider, apiKey, psd)
+	case "v1m":
+		return validateV1M(ctx, apiKey)
 	}
 
 	if isAnthropicProbe(cfg) {
@@ -518,6 +532,29 @@ func validateCloudflareAI(ctx context.Context, cfg providers.ProviderConfig, api
 	return out
 }
 
+// validateV1M probes v1m's only endpoint. The registry ships no /models for
+// it, so the cheapest call that proves the key works is a one-token System One
+// evaluation; a rejected body still proves the credential, so only 401/403
+// count as invalid.
+func validateV1M(ctx context.Context, apiKey string) validateOutcome {
+	payload, _ := json.Marshal(map[string]any{
+		"model":     v1mProbeModel,
+		"state":     "probe",
+		"questions": map[string]any{"probe": map[string]string{"type": "noul"}},
+	})
+	status, _, err := validateProbeDo(ctx, http.MethodPost, v1mProbeURL, map[string]string{
+		"Authorization": "Bearer " + apiKey,
+		"Content-Type":  "application/json",
+	}, payload)
+	if err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
+	}
+	return validateOutcome{
+		valid:     status != http.StatusUnauthorized && status != http.StatusForbidden,
+		supported: true,
+	}
+}
+
 // cloudflareAccountFromBaseURL extracts the account id baked into the registry
 // BaseURL from a CLOUDFLARE_ACCOUNT_ID env var, if any.
 func cloudflareAccountFromBaseURL(baseURL string) string {
@@ -574,6 +611,9 @@ func validateOllamaLocal(ctx context.Context, psd map[string]any) validateOutcom
 	host := strings.TrimSuffix(strings.TrimSpace(psdStr(psd, "baseUrl")), "/")
 	if host == "" {
 		host = "http://localhost:11434"
+	}
+	if err := providers.AssertLoopbackURL(host); err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
 	}
 	status, _, err := validateProbeDo(ctx, http.MethodGet, host+"/api/tags", nil, nil)
 	if err != nil {

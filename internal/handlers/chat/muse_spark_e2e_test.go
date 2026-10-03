@@ -1,3 +1,5 @@
+//go:build live_e2e
+
 package chat
 
 import (

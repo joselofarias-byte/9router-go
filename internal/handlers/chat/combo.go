@@ -429,7 +429,9 @@ func keysString(m map[string]bool) string {
 
 // handleComboFallback iterates through combo model entries, trying each one.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
-func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
+func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, freePool ...bool) {
+	virtualFree := len(freePool) > 0 && freePool[0]
+	sawEligibleFreeHop := false
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var retry passRetry
@@ -472,8 +474,18 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 
 		for _, entry := range models {
+			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+				continue
+			}
+			sawEligibleFreeHop = true
+			if virtualFree {
+				log.Info("routing", "virtual free hop attempt", "entry", entry)
+			}
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
+				if virtualFree {
+					log.Warn("routing", "virtual free hop unresolved", "entry", entry)
+				}
 				continue
 			}
 
@@ -569,6 +581,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						continue
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
+					log.Warn("fallback", "upstream failed without structured status", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID, "error", fwdErr)
 					if isKnownNoAuth {
 						break
 					}
@@ -591,6 +604,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 	}
 
+	if virtualFree && !sawEligibleFreeHop {
+		if !cw.IsCommitted() {
+			writeFreeRouteUnavailable(cw)
+		}
+		return
+	}
 	if lastErr != nil {
 		if cw.IsCommitted() {
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
@@ -607,7 +626,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 // handleMessagesComboFallback iterates through combo models for the Claude endpoint.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
-func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int) {
+func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, freePool ...bool) {
+	virtualFree := len(freePool) > 0 && freePool[0]
+	sawEligibleFreeHop := false
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var retry passRetry
@@ -645,6 +666,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 
 		for _, entry := range models {
+			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+				continue
+			}
+			sawEligibleFreeHop = true
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
@@ -754,6 +779,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 	}
 
+	if virtualFree && !sawEligibleFreeHop {
+		if !cw.IsCommitted() {
+			writeFreeRouteUnavailable(cw)
+		}
+		return
+	}
 	if lastErr != nil {
 		if cw.IsCommitted() {
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)

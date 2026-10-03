@@ -38,6 +38,8 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 	switch provider {
 	case "opencode", "opencode-go":
 		return isOpencodeResponsesModel(cleanResponsesModel(model))
+	case "muse":
+		return true
 	default:
 		return false
 	}

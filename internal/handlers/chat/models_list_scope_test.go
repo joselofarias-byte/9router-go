@@ -128,7 +128,7 @@ func TestHandleModels_ConnectedModeFreshInstall(t *testing.T) {
 		if idx := strings.Index(m.ID, "/"); idx >= 0 {
 			prefix = m.ID[:idx]
 		}
-		if !providers.IsNoAuthProvider(prefix) {
+		if m.OwnedBy != "fabric" && !providers.IsNoAuthProvider(prefix) {
 			t.Errorf("connected mode listed %q whose provider is not noAuth", m.ID)
 		}
 	}

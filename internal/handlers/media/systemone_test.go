@@ -3,6 +3,7 @@ package media
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -87,7 +88,7 @@ func TestHandleSystemone_Opencode_Mock(t *testing.T) {
 }
 
 func TestHandleSystemone_Live_Opencode(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || os.Getenv("NINEROUTER_LIVE_E2E") != "1" {
 		t.Skip("skipping live test in short mode")
 	}
 	sqlDB, cleanup := setupEmbeddingsTestDB(t)

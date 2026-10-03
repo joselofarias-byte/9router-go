@@ -2,7 +2,11 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 func mimoBody(t *testing.T, model, effort string) []byte {
@@ -107,5 +111,53 @@ func TestInjectMimoMarker_StillInjectsMarker(t *testing.T) {
 	first, _ := messages[0].(map[string]any)
 	if first["role"] != "system" || first["content"] != mimoSystemMarker {
 		t.Errorf("first message = %v, want the anti-abuse system marker", first)
+	}
+}
+
+
+type mimoRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f mimoRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestGetMimoJWTUsesProvidedHTTPClient(t *testing.T) {
+	mimoJWTMu.Lock()
+	oldJWT, oldExp := mimoJWT, mimoJWTExp
+	mimoJWT = ""
+	mimoJWTExp = time.Time{}
+	mimoJWTMu.Unlock()
+	t.Cleanup(func() {
+		mimoJWTMu.Lock()
+		mimoJWT, mimoJWTExp = oldJWT, oldExp
+		mimoJWTMu.Unlock()
+	})
+
+	var called bool
+	client := &http.Client{Transport: mimoRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if r.URL.String() != mimoBootstrapURL {
+			t.Fatalf("bootstrap URL = %q", r.URL.String())
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"jwt":"test-mimo-jwt"}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	jwt, err := getMimoJWT(client)
+	if err != nil {
+		t.Fatalf("getMimoJWT: %v", err)
+	}
+	if !called {
+		t.Fatal("provided HTTP client was not used")
+	}
+	if jwt != "test-mimo-jwt" {
+		t.Fatalf("jwt = %q", jwt)
 	}
 }

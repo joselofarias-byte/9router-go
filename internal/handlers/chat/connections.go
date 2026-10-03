@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -308,6 +309,11 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 
 	if connData != nil && connData.BaseURL != "" {
 		if cfg, ok := providers.KnownProviders[provider]; ok {
+			if cfg.LocalOnly {
+				if err := providers.AssertLoopbackURL(connData.BaseURL); err != nil {
+					return nil, fmt.Errorf("provider %s is local-only: %w", provider, err)
+				}
+			}
 			cloned := cfg
 			cloned.BaseURL = connData.BaseURL
 			baseCfg = &cloned
@@ -336,16 +342,52 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 					baseURL = strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 				}
 			}
+			nodeType := ""
+			if node.Type != nil {
+				nodeType = *node.Type
+			}
+			localAPI := providers.IsLocalAPIType(nodeData.APIType) || providers.IsLocalAPIType(nodeType)
 			baseCfg = &providers.ProviderConfig{
 				BaseURL:    baseURL,
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
+				NoAuth:     localAPI,
+				LocalOnly:  localAPI,
+			}
+			if localAPI {
+				baseCfg.DefaultAPIKey = "local"
 			}
 		}
 	}
 
 	if baseCfg == nil {
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
+	}
+
+	// An explicit connection flag locks a custom node the same way llamacpp is locked.
+	if connData != nil && connData.LocalOnly {
+		baseCfg.LocalOnly = true
+		if providers.IsPlaceholderLocalKey(extractAPIKey(connData)) {
+			baseCfg.NoAuth = true
+			if baseCfg.DefaultAPIKey == "" {
+				baseCfg.DefaultAPIKey = "local"
+			}
+		}
+	}
+
+	// Local-only providers never inherit an edge relay. A loopback URL on any
+	// provider is also left alone: rewriting it to a cloud relay would upload
+	// the prompt off-device to reach a server that is on this machine.
+	if baseCfg.LocalOnly {
+		if err := providers.AssertLoopbackURL(baseCfg.BaseURL); err != nil {
+			return nil, fmt.Errorf("provider %s is local-only: %w", provider, err)
+		}
+		if baseCfg.FetchURL != "" {
+			if err := providers.AssertLoopbackURL(baseCfg.FetchURL); err != nil {
+				return nil, fmt.Errorf("provider %s fetch URL is not local: %w", provider, err)
+			}
+		}
+		return baseCfg, nil
 	}
 
 	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
@@ -372,6 +414,10 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 
 		if relayURL != "" && !internalproxy.ShouldBypassNoProxy(baseCfg.BaseURL, noProxy) {
+			if providers.IsLoopbackURL(baseCfg.BaseURL) {
+				log.Warn("routing", "skipping edge relay for loopback upstream", "provider", provider)
+				return baseCfg, nil
+			}
 			cloned := *baseCfg
 			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
 			cloned.BaseURL = relayURL
@@ -617,4 +663,17 @@ func (h *ChatHandler) selectByRecency(conns []*models.ProviderConnection, sticky
 		}
 	}
 	return rotated
+}
+
+func (h *ChatHandler) ClientForUpstream(cfg *providers.ProviderConfig, targetURL string, connData *ConnectionData) (*http.Client, error) {
+	if cfg != nil && cfg.LocalOnly {
+		if err := providers.AssertLoopbackURL(targetURL); err != nil {
+			return nil, fmt.Errorf("provider is local-only: %w", err)
+		}
+		return internalproxy.DirectLoopbackClient(h.Client), nil
+	}
+	if providers.IsLoopbackURL(targetURL) {
+		return internalproxy.DirectLoopbackClient(h.Client), nil
+	}
+	return h.getClientForConnection(connData), nil
 }

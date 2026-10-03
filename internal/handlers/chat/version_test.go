@@ -143,6 +143,10 @@ func TestHandleTriggerUpdate_UpToDate(t *testing.T) {
 }
 
 func TestHandleChangelog(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("CHANGELOG.md", []byte("# Changelog\n\nFixture release notes"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	handler := NewChatHandler(nil, nil)
 	req := httptest.NewRequest("GET", "/api/changelog", nil)
 	rec := httptest.NewRecorder()

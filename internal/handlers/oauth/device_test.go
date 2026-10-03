@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,6 +61,11 @@ func TestKimiHeaders_deviceId(t *testing.T) {
 }
 
 func TestHandleDevicePoll_PendingDoesNotInsert(t *testing.T) {
+	original := deviceClient
+	deviceClient = &http.Client{Transport: devicePollFixture(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"authorization_pending"}`)), Request: r}, nil
+	})}
+	t.Cleanup(func() { deviceClient = original })
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
 	repo := db.NewRepo(database)
@@ -86,3 +92,7 @@ func TestHandleDevicePoll_PendingDoesNotInsert(t *testing.T) {
 		t.Errorf("expected 0 connections inserted while pending, got %d", count)
 	}
 }
+
+type devicePollFixture func(*http.Request) (*http.Response, error)
+
+func (f devicePollFixture) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

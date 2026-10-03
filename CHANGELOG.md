@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fork order 008 / upstream integration #30: reconcile virtual free routing, NoAuth llama.cpp/local dial guards, media auth and resolution errors with upstream capacity adapters, retry bookkeeping and provider isolation. Keep live provider tests opt-in and ElevenLabs voices tests on a local fixture.
+
 ## [v1.9.6] - 2026-10-01
 
 ### 🐛 Pre-release review: 5 blocker yang lolos semua gate (#70)

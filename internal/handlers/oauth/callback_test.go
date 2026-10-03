@@ -19,7 +19,7 @@ func TestHandleCallbackPage_ok(t *testing.T) {
 	if !strings.Contains(ct, "text/html") {
 		t.Errorf("expected text/html, got %q", ct)
 	}
-	for _, want := range []string{"OAuth callback", `id="code"`, "Copy", "paste"} {
+	for _, want := range []string{"OAuth callback", `id="code"`, "Authorization code", "Copy code", "Code or callback URL"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("callback page missing %q", want)
 		}
@@ -46,5 +46,23 @@ func TestHandleCallbackPage_methodNotAllowed(t *testing.T) {
 	handler.HandleCallbackPage(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+
+func TestHandleCallbackPage_noMixedIndonesianUI(t *testing.T) {
+	handler := NewOAuthHandler(nil)
+	req := httptest.NewRequest("GET", "/callback?code=abc123&state=s1", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleCallbackPage(rec, req)
+
+	body := rec.Body.String()
+	for _, banned := range []string{"Tersalin", "Memproses", "Koneksi diproses", "Gagal", "terdeteksi"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("callback page still contains mixed-language UI %q", banned)
+		}
+	}
+	if strings.Contains(body, "window.close()") {
+		t.Error("callback page must not auto-close before mobile users can recover the code")
 	}
 }

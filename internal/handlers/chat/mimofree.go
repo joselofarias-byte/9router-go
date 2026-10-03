@@ -70,7 +70,7 @@ func generateMimoFingerprint() string {
 // It bootstraps a JWT if needed, injects the anti-abuse system message marker,
 // and forwards the request to the MiMo free endpoint.
 func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, body []byte, isStream bool, metrics *streamMetrics) error {
-	jwt, err := getMimoJWT()
+	jwt, err := getMimoJWT(h.Client)
 	if err != nil {
 		return fmt.Errorf("mimo bootstrap: %w", err)
 	}
@@ -109,7 +109,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 		mimoJWTExp = time.Time{}
 		mimoJWTMu.Unlock()
 
-		jwt, err = getMimoJWT()
+		jwt, err = getMimoJWT(h.Client)
 		if err != nil {
 			return fmt.Errorf("mimo re-bootstrap: %w", err)
 		}
@@ -147,7 +147,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 }
 
 // getMimoJWT returns a valid JWT, bootstrapping one if necessary.
-func getMimoJWT() (string, error) {
+func getMimoJWT(client *http.Client) (string, error) {
 	mimoJWTMu.Lock()
 	defer mimoJWTMu.Unlock()
 
@@ -161,7 +161,15 @@ func getMimoJWT() (string, error) {
 		return "", fmt.Errorf("bootstrap marshal: %w", err)
 	}
 
-	resp, err := http.Post(mimoBootstrapURL, "application/json", bytes.NewReader(bootstrapBody))
+	if client == nil {
+		client = http.DefaultClient
+	}
+	bootstrapReq, err := http.NewRequest(http.MethodPost, mimoBootstrapURL, bytes.NewReader(bootstrapBody))
+	if err != nil {
+		return "", fmt.Errorf("bootstrap request build: %w", err)
+	}
+	bootstrapReq.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	resp, err := client.Do(bootstrapReq)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap request: %w", err)
 	}

@@ -70,7 +70,7 @@ func TestSetupRoutes_OAuthEndpointsMounted(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"POST", "/api/oauth/freebuff/initiate"},
+		{"GET", "/api/oauth/freebuff/initiate"},
 		{"POST", "/api/oauth/freebuff/poll"},
 		{"GET", "/api/oauth/freebuff/session"},
 		{"POST", "/api/oauth/freebuff/session/switch"},

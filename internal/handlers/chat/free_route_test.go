@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"9router/proxy/internal/controlplane/discovery"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/db"
@@ -340,7 +341,7 @@ func TestHandleModels_ExplicitFreeNameKeepsVirtualSibling(t *testing.T) {
 	defer cleanup()
 	models, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		"user-free", "Free", "fallback", string(models), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z"); err != nil {
+		"user-free", "Free", "llm", string(models), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z"); err != nil {
 		t.Fatalf("seed combo: %v", err)
 	}
 
@@ -360,7 +361,7 @@ func TestHandleModels_ExplicitFreeNameKeepsVirtualSibling(t *testing.T) {
 	for _, m := range resp.Data {
 		found[m.ID] = m.OwnedBy
 	}
-	if found["Free"] != "system" {
+	if found["Free"] != "combo" {
 		t.Fatalf("explicit Free combo missing: %#v", found)
 	}
 	if _, dup := found["free"]; dup {
@@ -725,5 +726,47 @@ func assertExactPool(t *testing.T, info *ModelInfo, want []string) {
 		if !got[entry] {
 			t.Fatalf("pool = %#v, missing %s", got, entry)
 		}
+	}
+}
+
+
+func TestResolveModel_FreeBestBuiltinPoolIncludesMimoFree(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if err := db.RunMigrations(database); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if err := registry.InitRegistry(database); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
+
+	discovery.NewOrchestrator(database, []discovery.Adapter{
+		discovery.NewBuiltinFreeAdapter(),
+	}).RunSync(t.Context())
+
+	h := NewChatHandler(db.NewRepo(database))
+	info, err := h.resolveModel("free-best")
+	if err != nil {
+		t.Fatalf("resolve free-best: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, entry := range info.ComboModels {
+		got[entry] = true
+	}
+
+	for _, want := range []string{
+		"opencode/muse-spark-1.3-contributor-free",
+		"opencode/muse-spark-1.2-contributor-free",
+		"mimo-free/mimo-auto",
+	} {
+		if !got[want] {
+			t.Errorf("free-best missing %s in %#v", want, info.ComboModels)
+		}
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("free-best builtin pool = %#v, want exactly 3 entries", info.ComboModels)
 	}
 }

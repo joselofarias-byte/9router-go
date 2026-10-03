@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +150,7 @@ func TestTTS_Nvidia_Transform(t *testing.T) {
 }
 
 func TestLiveTTS_Google(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || os.Getenv("NINEROUTER_LIVE_E2E") != "1" {
 		t.Skip("skipping live test in short mode")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -164,7 +165,7 @@ func TestLiveTTS_Google(t *testing.T) {
 }
 
 func TestLiveTTS_Edge(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || os.Getenv("NINEROUTER_LIVE_E2E") != "1" {
 		t.Skip("skipping live test in short mode")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
