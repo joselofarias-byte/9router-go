@@ -45,6 +45,9 @@ func TestBuiltinFreeAdapterIncludesZeroCredentialRoutes(t *testing.T) {
 	if found["opencode/jev-1.13-free"] {
 		t.Error("systemone model jev-1.13-free leaked into the chat free pool")
 	}
+	if found["opencode-zen/mimo-v2.5-free"] {
+		t.Error("opencode-zen leaked into free-best before its multi-transport executor is ready")
+	}
 }
 
 func TestIsChatProviderModelRejectsSystemOne(t *testing.T) {
@@ -53,5 +56,15 @@ func TestIsChatProviderModelRejectsSystemOne(t *testing.T) {
 	}
 	if !isChatProviderModel("opencode", "muse-spark-1.3-contributor-free") {
 		t.Fatal("muse-spark contributor free should remain chat-capable")
+	}
+}
+
+
+func TestNoAuthFreeProviderReady(t *testing.T) {
+	if !noAuthFreeProviderReady("opencode") || !noAuthFreeProviderReady("mimo-free") {
+		t.Fatal("known ready free chat providers were rejected")
+	}
+	if noAuthFreeProviderReady("opencode-zen") {
+		t.Fatal("opencode-zen must stay fail-closed until its executor is reconciled")
 	}
 }
