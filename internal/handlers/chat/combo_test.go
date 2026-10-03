@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/controlplane/registry"
 )
 
 func TestApplyComboStrategy_capacity(t *testing.T) {
@@ -190,6 +192,90 @@ func TestExportedWrappers(t *testing.T) {
 	reordered := ReorderByCapabilities(models, nil)
 	if len(reordered) != 2 {
 		t.Errorf("ReorderByCapabilities: expected 2 models, got %d", len(reordered))
+	}
+}
+
+
+func TestUnsupportedVirtualFreeModelError(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"opencode unsupported", `{"type":"error","error":{"type":"ModelError","message":"Model minimax-m3-free is not supported"}}`, true},
+		{"model not found", `{"error":{"code":"model_not_found","message":"model not found"}}`, true},
+		{"generic unauthorized", `{"error":{"message":"invalid API key"}}`, false},
+		{"rate limit", `{"error":{"message":"model quota exhausted","code":429}}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ue := &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(tt.body)}
+			if got := unsupportedVirtualFreeModelError(ue); got != tt.want {
+				t.Fatalf("unsupportedVirtualFreeModelError = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVirtualFreeModelQuarantineExpiresAndClearsOnCatalogRefresh(t *testing.T) {
+	entry := "opencode/test-free"
+	virtualFreeModelQuarantine.Delete(entry)
+	t.Cleanup(func() {
+		virtualFreeModelQuarantine.Delete(entry)
+		_ = registry.InitRegistry(nil)
+	})
+
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatal(err)
+	}
+	state := registry.GetActiveState()
+	quarantinedAt := time.Now().UTC().Add(-time.Minute)
+	state.ProviderModels["opencode"] = map[string]*registry.ProviderModel{
+		"test-free": {
+			ProviderID:    "opencode",
+			ModelID:       "test-free",
+			UpstreamModel: "test-free",
+			IsActive:      true,
+			UpdatedAt:     quarantinedAt.Add(-time.Second),
+		},
+	}
+
+	virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{
+		quarantinedAt: quarantinedAt,
+		until:         time.Now().UTC().Add(time.Minute),
+	})
+	if _, ok := virtualFreeModelQuarantined(entry); !ok {
+		t.Fatal("fresh quarantine was not active")
+	}
+
+	state.ProviderModels["opencode"]["test-free"].UpdatedAt = time.Now().UTC()
+	if _, ok := virtualFreeModelQuarantined(entry); ok {
+		t.Fatal("catalog refresh did not clear quarantine")
+	}
+
+	virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{
+		quarantinedAt: time.Now().UTC().Add(-time.Hour),
+		until:         time.Now().UTC().Add(-time.Second),
+	})
+	if _, ok := virtualFreeModelQuarantined(entry); ok {
+		t.Fatal("expired quarantine stayed active")
+	}
+}
+
+func TestQuarantineUnsupportedVirtualFreeModel(t *testing.T) {
+	entry := "opencode/minimax-m3-free"
+	virtualFreeModelQuarantine.Delete(entry)
+	t.Cleanup(func() { virtualFreeModelQuarantine.Delete(entry) })
+
+	ue := &upstreamError{
+		StatusCode: http.StatusUnauthorized,
+		Body:       []byte(`{"type":"error","error":{"type":"ModelError","message":"Model minimax-m3-free is not supported"}}`),
+	}
+	if !quarantineUnsupportedVirtualFreeModel(entry, ue) {
+		t.Fatal("explicit unsupported-model error was not quarantined")
+	}
+	if _, ok := virtualFreeModelQuarantined(entry); !ok {
+		t.Fatal("new quarantine is not active")
 	}
 }
 
