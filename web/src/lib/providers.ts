@@ -7,6 +7,7 @@ export interface ProviderCatalogItem {
   color: string
   icon: string
   noAuth?: boolean
+  passthroughModels?: boolean
   priority?: number
   mediaPriority?: number
   hiddenKinds?: string[]
@@ -338,6 +339,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "authModes": ["oauth", "apikey"],
     "authType": "apikey",
     "priority": 120,
+    "passthroughModels": true,
     "serviceKinds": [
       "llm"
     ]
