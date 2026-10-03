@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.9",
+  "latestVersion": "1.9.6",
   "downloadUrl": "",
-  "releaseNotes": "Fork build: upstream 1.8.9 plus the validated minimal Fabric control plane. Automatic binary replacement is intentionally fail-closed until this fork publishes its own release assets. Use the CI-validated Termux artifact or explicitly configure UPDATE_URL/UPDATE_REPO for a trusted update source."
+  "releaseNotes": "Fork test build: 1.9.6-fabric with reconciled upstream routing, validated free/local contracts, Termux ARM64 CI artifact, and Android DNS fallback. Automatic binary replacement remains fail-closed until this fork publishes release assets; use the CI-validated Termux artifact for physical testing."
 }
