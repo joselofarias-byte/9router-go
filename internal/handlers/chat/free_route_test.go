@@ -409,6 +409,124 @@ func TestResolveModel_FreeBestConcurrentExcludesPaid(t *testing.T) {
 	}
 }
 
+func TestRankFreeRouteEntriesByRecentHealth(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	models := []string{
+		"opencode/bad-free",
+		"opencode/unknown-free",
+		"opencode/good-free",
+	}
+	base := map[string]float64{
+		"opencode/bad-free":     40,
+		"opencode/unknown-free": 40,
+		"opencode/good-free":    40,
+	}
+
+	if err := repo.InsertRequestDetail(
+		"health-bad", "opencode", "bad-free", "", "error",
+		`{"latency":{"total":250},"response":{"status":502}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.InsertRequestDetail(
+		"health-good", "opencode", "good-free", "", "success",
+		`{"latency":{"total":900},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.rankFreeRouteEntriesByRecentHealth(models, base)
+	want := []string{
+		"opencode/good-free",
+		"opencode/unknown-free",
+		"opencode/bad-free",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("health order = %#v, want %#v", got, want)
+	}
+}
+
+func TestRankFreeRouteEntriesHealthCannotEraseLargeBaseRiskGap(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	models := []string{"safe/unknown-free", "risky/proven-free"}
+	base := map[string]float64{
+		"safe/unknown-free": 60,
+		"risky/proven-free": 30,
+	}
+	if err := repo.InsertRequestDetail(
+		"health-risky-success", "risky", "proven-free", "", "success",
+		`{"latency":{"total":500},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.rankFreeRouteEntriesByRecentHealth(models, base)
+	if got[0] != "safe/unknown-free" {
+		t.Fatalf("health bonus erased base risk gap: %#v", got)
+	}
+}
+
+func TestRankFreeRouteEntriesIgnoresStaleAndClientRequestFailures(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	models := []string{"opencode/a-free", "opencode/b-free"}
+	base := map[string]float64{"opencode/a-free": 40, "opencode/b-free": 40}
+
+	if err := repo.InsertRequestDetail(
+		"health-stale", "opencode", "a-free", "", "error",
+		`{"latency":{"total":100},"response":{"status":502}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-freeRouteHealthWindow - time.Minute).Format("2006-01-02T15:04:05.000Z")
+	if _, err := database.Exec(`UPDATE requestDetails SET timestamp = ? WHERE id = ?`, old, "health-stale"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.InsertRequestDetail(
+		"health-400", "opencode", "a-free", "", "error",
+		`{"latency":{"total":100},"response":{"status":400}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.rankFreeRouteEntriesByRecentHealth(models, base)
+	if !reflect.DeepEqual(got, models) {
+		t.Fatalf("stale/request-specific failures changed order: %#v", got)
+	}
+}
+
+func TestRankFreeRouteEntriesPushesQuarantinedModelToBack(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	entry := "opencode/a-free"
+	virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{
+		quarantinedAt: time.Now().UTC(),
+		until:         time.Now().UTC().Add(time.Minute),
+	})
+	defer virtualFreeModelQuarantine.Delete(entry)
+
+	models := []string{entry, "opencode/b-free"}
+	base := map[string]float64{entry: 50, "opencode/b-free": 40}
+	got := h.rankFreeRouteEntriesByRecentHealth(models, base)
+	if got[0] != "opencode/b-free" {
+		t.Fatalf("quarantined model stayed in front: %#v", got)
+	}
+}
+
 func TestFreeRouteEntries_RejectsPaidInactiveAndDisconnected(t *testing.T) {
 	state := &registry.RegistryState{
 		Providers: map[string]*registry.Provider{
