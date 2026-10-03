@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net"
@@ -14,6 +15,8 @@ import (
 	"go.uber.org/fx"
 
 	"9router/proxy/internal/config"
+	"9router/proxy/internal/controlplane/discovery"
+	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/oauth"
@@ -37,6 +40,7 @@ type ServerParams struct {
 
 	Lifecycle fx.Lifecycle
 	Config    *config.Config
+	DB        *sql.DB
 	Repo      *db.Repo
 	Handler   http.Handler
 	CLIParams CLIParams
@@ -57,6 +61,31 @@ func ProvideServer(p ServerParams) *http.Server {
 
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			// The modular Fx startup replaced the legacy main() bootstrap in
+			// upstream-reconcile. Keep Fabric's registry alive before the first
+			// request; otherwise free/free-best sees a nil state even though the
+			// ordinary model catalog has already synchronized.
+			if err := registry.InitRegistry(p.DB); err != nil {
+				log.Printf("[config] registry init warning: %v", err)
+			}
+
+			adapters := []discovery.Adapter{
+				discovery.NewBuiltinFreeAdapter(),
+				discovery.NewModelsDevAdapter(nil),
+				discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
+				discovery.NewClineFreeAdapter(nil),
+			}
+			if unoAPIKey := os.Getenv("UNOROUTER_API_KEY"); unoAPIKey != "" {
+				adapters = append(adapters, discovery.NewUnoRouterAdapter(nil, unoAPIKey))
+			} else {
+				log.Printf("[config] unorouter adapter skipped (UNOROUTER_API_KEY not set)")
+			}
+			if orcaBaseURL, orcaAPIKey := os.Getenv("ORCAROUTER_BASE_URL"), os.Getenv("ORCAROUTER_API_KEY"); orcaBaseURL != "" && orcaAPIKey != "" {
+				adapters = append(adapters, discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey))
+			}
+			orchestrator := discovery.NewOrchestrator(p.DB, adapters)
+			orchestrator.Start(shutdown.Context())
+
 			autoUpdate := p.CLIParams.AutoUpdate
 			if !autoUpdate && p.Repo != nil {
 				if settings, sErr := p.Repo.GetSettings(); sErr == nil && settings != nil {
