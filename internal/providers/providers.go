@@ -523,8 +523,20 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		Format:     "openai-responses",
 	},
+	// Command Code Provider API is OpenAI-compatible on every paid plan except
+	// Go. Go is CLI-only and the API returns 403 upgrade_required, so this
+	// provider must never be treated as proof that a $1 Go subscription is
+	// routable through 9router-go.
 	"commandcode": {
-		BaseURL:    "https://api.commandcode.ai/alpha/generate",
+		BaseURL:    "https://api.commandcode.ai/provider/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	// ZansLab publishes an OpenAI-compatible /v1/chat/completions gateway and
+	// a separate Anthropic /v1/messages protocol. 9router-go uses the OpenAI
+	// surface here so it can reuse the standard proxy path.
+	"zanslab": {
+		BaseURL:    "https://zanslab.id/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
