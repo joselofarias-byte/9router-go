@@ -100,6 +100,44 @@ func TestFetchAntigravityProjectID_outcomes(t *testing.T) {
 	}
 }
 
+func TestFetchAntigravityProjectID_UsesIDEProjectDiscoveryHeaders(t *testing.T) {
+	var seen []http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Clone())
+		if strings.Contains(r.URL.Path, "loadCodeAssist") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"allowedTiers":[{"id":"standard-tier","isDefault":true}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"done":true,"response":{"cloudaicompanionProject":{"id":"proj-ide"}}}`))
+	}))
+	defer srv.Close()
+
+	oldL, oldO := loadCodeAssistURL, onboardUserURL
+	loadCodeAssistURL, onboardUserURL = srv.URL+"/loadCodeAssist", srv.URL+"/onboardUser"
+	defer func() { loadCodeAssistURL, onboardUserURL = oldL, oldO }()
+
+	pid, auth, noProj := fetchAntigravityProjectID(context.Background(), srv.Client(), "test-token")
+	if pid != "proj-ide" || auth || noProj {
+		t.Fatalf("unexpected discovery result: pid=%q auth=%v noProject=%v", pid, auth, noProj)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected load + onboard requests, got %d", len(seen))
+	}
+	for i, h := range seen {
+		if got := h.Get("User-Agent"); got != antigravityIDEUserAgent {
+			t.Errorf("request %d User-Agent = %q, want %q", i+1, got, antigravityIDEUserAgent)
+		}
+		if got := h.Get("X-Goog-Api-Client"); got != "" {
+			t.Errorf("request %d unexpectedly sent X-Goog-Api-Client=%q", i+1, got)
+		}
+		if got := h.Get("Client-Metadata"); got != "" {
+			t.Errorf("request %d unexpectedly sent Client-Metadata=%q", i+1, got)
+		}
+	}
+}
+
 func TestProjectNoCache(t *testing.T) {
 	projectNoCache.Delete("test-conn")
 	if projectProbeCached("test-conn") {
