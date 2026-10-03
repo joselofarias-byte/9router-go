@@ -730,7 +730,7 @@ func assertExactPool(t *testing.T, info *ModelInfo, want []string) {
 }
 
 
-func TestResolveModel_FreeBestBuiltinPoolIncludesMimoFree(t *testing.T) {
+func TestResolveModel_FreeBestBuiltinPoolExcludesRetiredMimoFree(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -759,14 +759,16 @@ func TestResolveModel_FreeBestBuiltinPoolIncludesMimoFree(t *testing.T) {
 	for _, want := range []string{
 		"opencode/muse-spark-1.3-contributor-free",
 		"opencode/muse-spark-1.2-contributor-free",
-		"mimo-free/mimo-auto",
 	} {
 		if !got[want] {
 			t.Errorf("free-best missing %s in %#v", want, info.ComboModels)
 		}
 	}
 
-	if len(got) != 3 {
-		t.Fatalf("free-best builtin pool = %#v, want exactly 3 entries", info.ComboModels)
+	if got["mimo-free/mimo-auto"] {
+		t.Fatalf("retired mimo-auto leaked into builtin free-best pool: %#v", info.ComboModels)
+	}
+	if len(got) != 2 {
+		t.Fatalf("free-best builtin pool = %#v, want exactly 2 entries", info.ComboModels)
 	}
 }

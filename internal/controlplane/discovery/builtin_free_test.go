@@ -35,7 +35,6 @@ func TestBuiltinFreeAdapterIncludesZeroCredentialRoutes(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"mimo-free/mimo-auto",
 		"opencode/muse-spark-1.3-contributor-free",
 	} {
 		if !found[want] {
@@ -61,8 +60,11 @@ func TestIsChatProviderModelRejectsSystemOne(t *testing.T) {
 
 
 func TestNoAuthFreeProviderReady(t *testing.T) {
-	if !noAuthFreeProviderReady("opencode") || !noAuthFreeProviderReady("mimo-free") {
-		t.Fatal("known ready free chat providers were rejected")
+	if !noAuthFreeProviderReady("opencode") {
+		t.Fatal("known ready free chat provider was rejected")
+	}
+	if noAuthFreeProviderReady("mimo-free") {
+		t.Fatal("retired mimo-auto free lane must not be seeded")
 	}
 	if noAuthFreeProviderReady("opencode-zen") {
 		t.Fatal("opencode-zen must stay fail-closed until its executor is reconciled")

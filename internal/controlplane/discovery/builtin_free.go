@@ -11,8 +11,8 @@ import (
 // BuiltinFreeAdapter exposes the credential-free models that are already
 // compiled into 9router's provider registry to Fabric's free-only policy.
 // These are not guessed from pricing: the provider itself is NoAuth and the
-// model is explicitly labelled free, except mimo-free whose whole endpoint is
-// the product's dedicated free lane.
+// model is explicitly labelled free. Network discovery can add additional
+// currently-free lanes after startup.
 type BuiltinFreeAdapter struct{}
 
 func NewBuiltinFreeAdapter() *BuiltinFreeAdapter { return &BuiltinFreeAdapter{} }
@@ -34,7 +34,7 @@ func (a *BuiltinFreeAdapter) Discover(ctx context.Context) ([]Candidate, error) 
 			if !isChatProviderModel(providerID, modelID) {
 				continue
 			}
-			if providerID != "mimo-free" && !explicitFreeModelID(modelID) {
+			if !explicitFreeModelID(modelID) {
 				continue
 			}
 			out = append(out, Candidate{
@@ -62,7 +62,7 @@ func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 			if !isChatProviderModel(providerID, modelID) {
 				continue
 			}
-			if providerID == "mimo-free" || explicitFreeModelID(modelID) {
+			if explicitFreeModelID(modelID) {
 				ids = append(ids, providerID)
 				break
 			}
@@ -80,7 +80,7 @@ func noAuthFreeProviderReady(providerID string) bool {
 	// /responses) is reconciled from upstream; otherwise Fabric advertises
 	// free models that the generic forwarder cannot fingerprint/route safely.
 	switch providerID {
-	case "opencode", "mimo-free", "llamacpp":
+	case "opencode", "llamacpp":
 		return true
 	default:
 		return false
