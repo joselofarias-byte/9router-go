@@ -1,0 +1,1 @@
+ClampPositive returns 0 for positive n because the condition is n > 0. The comparison is inverted; it should be n < 0.

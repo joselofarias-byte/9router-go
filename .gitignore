@@ -38,3 +38,6 @@ stitch-screenshots/
 # them as embedded gitlinks. A worktree caught in a commit has to be undone
 # with `git rm --cached` before it reaches the remote.
 .worktrees/
+
+# Free-coding measurement output. Regenerate locally; do not commit runs.
+.free-coding-out/
