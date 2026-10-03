@@ -20,6 +20,8 @@ import (
 var loadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 var onboardUserURL = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
 
+const antigravityIDEUserAgent = "antigravity/ide/2.11.0 darwin/arm64"
+
 var lcaMetadata = map[string]any{
 	"ideType":    9, // ANTIGRAVITY
 	"platform":   2, // DARWIN_ARM64
@@ -113,10 +115,14 @@ func cacheProjectMissing(connID string) {
 //
 // FetchAntigravityProjectID probes Google's onboarding RPCs for a projectID.
 func FetchAntigravityProjectID(ctx context.Context, client *http.Client, accessToken string) (pid string, authFailed, noProject bool) {
-	return fetchAntigravityProjectID(ctx, client, accessToken)
+	return fetchCloudCodeProjectID(ctx, client, accessToken, "antigravity")
 }
 
 func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessToken string) (pid string, authFailed, noProject bool) {
+	return fetchCloudCodeProjectID(ctx, client, accessToken, "antigravity")
+}
+
+func fetchCloudCodeProjectID(ctx context.Context, client *http.Client, accessToken, provider string) (pid string, authFailed, noProject bool) {
 	payload, err := json.Marshal(map[string]any{"metadata": lcaMetadata})
 	if err != nil {
 		log.Error("antigravity", "loadCodeAssist marshal failed", "error", err)
@@ -127,17 +133,10 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 		log.Error("antigravity", "loadCodeAssist request failed", "error", err)
 		return "", false, false
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", "google-api-nodejs-client/9.15.1")
-	req.Header.Set("X-Goog-Api-Client", "google-cloud-sdk vscode_cloudshelleditor/0.1")
-
-	clientMetadata, err := json.Marshal(lcaMetadata)
-	if err != nil {
-		log.Error("antigravity", "marshal metadata failed", "error", err)
+	if err := setCloudCodeDiscoveryHeaders(req, accessToken, provider); err != nil {
+		log.Error("antigravity", "discovery headers failed", "error", err)
 		return "", false, false
 	}
-	req.Header.Set("Client-Metadata", string(clientMetadata))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -190,10 +189,10 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 		}
 	}
 
-	return onboardAntigravityUser(ctx, client, accessToken, tierID)
+	return onboardAntigravityUser(ctx, client, accessToken, tierID, provider)
 }
 
-func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToken, tierID string) (pid string, authFailed, noProject bool) {
+func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToken, tierID, provider string) (pid string, authFailed, noProject bool) {
 	maxAttempts := getOnboardMaxAttempts()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		payload, err := json.Marshal(map[string]any{
@@ -215,20 +214,13 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 			}
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("User-Agent", "google-api-nodejs-client/9.15.1")
-		req.Header.Set("X-Goog-Api-Client", "google-cloud-sdk vscode_cloudshelleditor/0.1")
-
-		clientMetadata, err := json.Marshal(lcaMetadata)
-		if err != nil {
-			log.Error("antigravity", "marshal metadata failed", "error", err)
+		if err := setCloudCodeDiscoveryHeaders(req, accessToken, provider); err != nil {
+			log.Error("antigravity", "discovery headers failed", "error", err)
 			if !probeBackoffWait(ctx, attempt) {
 				return "", false, false
 			}
 			continue
 		}
-		req.Header.Set("Client-Metadata", string(clientMetadata))
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -283,6 +275,29 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 		}
 	}
 	return "", false, false
+}
+
+func setCloudCodeDiscoveryHeaders(req *http.Request, accessToken, provider string) error {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	if provider == "antigravity" {
+		// Match the real Antigravity IDE project-discovery requests. Unlike
+		// Gemini CLI, Antigravity does not send X-Goog-Api-Client or
+		// Client-Metadata on loadCodeAssist/onboardUser.
+		req.Header.Set("User-Agent", antigravityIDEUserAgent)
+		return nil
+	}
+
+	// Gemini CLI keeps the Cloud Code headers used by its client family.
+	req.Header.Set("User-Agent", "google-api-nodejs-client/9.15.1")
+	req.Header.Set("X-Goog-Api-Client", "google-cloud-sdk vscode_cloudshelleditor/0.1")
+	clientMetadata, err := json.Marshal(lcaMetadata)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Client-Metadata", string(clientMetadata))
+	return nil
 }
 
 func extractProjectID(val any) string {
