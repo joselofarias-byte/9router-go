@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 )
 
 func main() {
+	configureAndroidDNS()
 	app := &cli.App{
 		Name:  "9router-go",
 		Usage: "AI API proxy gateway with token saver features",
@@ -151,6 +155,49 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// configureAndroidDNS replaces Go's unusable localhost DNS fallback on
+// CGO-disabled Android builds. Android does not normally expose its netd DNS
+// configuration through /etc/resolv.conf, so the pure-Go resolver otherwise
+// falls back to [::1]:53 / 127.0.0.1:53 and every provider lookup fails.
+//
+// NINEROUTER_DNS accepts a comma-separated override (host or host:port).
+// The defaults are only applied on Android and do not affect desktop builds.
+func configureAndroidDNS() {
+	if runtime.GOOS != "android" {
+		return
+	}
+
+	raw := strings.TrimSpace(os.Getenv("NINEROUTER_DNS"))
+	servers := []string{"1.1.1.1:53", "8.8.8.8:53"}
+	if raw != "" {
+		servers = servers[:0]
+		for _, item := range strings.Split(raw, ",") {
+			server := strings.TrimSpace(item)
+			if server == "" {
+				continue
+			}
+			if _, _, err := net.SplitHostPort(server); err != nil {
+				server = net.JoinHostPort(server, "53")
+			}
+			servers = append(servers, server)
+		}
+		if len(servers) == 0 {
+			servers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+		}
+	}
+
+	var next atomic.Uint32
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			index := int(next.Add(1)-1) % len(servers)
+			dialer := net.Dialer{Timeout: 5 * time.Second}
+			return dialer.DialContext(ctx, network, servers[index])
+		},
+	}
+	log.Printf("[config] Android DNS fallback enabled servers=%s", strings.Join(servers, ","))
 }
 
 // foregroundOrBackground is the flag-free entry point: with --background (or
