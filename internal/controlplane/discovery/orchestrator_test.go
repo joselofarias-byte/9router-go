@@ -182,6 +182,34 @@ func TestOrchestrator_SameSourceUnknownReplacesFree(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_DifferentSourceCannotDeactivateModelsDevSnapshot(t *testing.T) {
+	db := openDiscoveryDB(t)
+
+	modelsDev := &scriptedAdapter{
+		id: "models.dev",
+		rounds: [][]Candidate{{
+			{ProviderID: "opencode", ModelID: "mimo-v2.6-flash-free", PricingMode: "free", UpstreamModel: "mimo-v2.6-flash-free"},
+		}},
+	}
+	NewOrchestrator(db, []Adapter{modelsDev}).RunSync(context.Background())
+
+	builtin := &scriptedAdapter{
+		id:    "builtin-free",
+		scope: []string{"opencode"},
+		rounds: [][]Candidate{{
+			{ProviderID: "opencode", ModelID: "muse-spark-1.3-contributor-free", PricingMode: "free", UpstreamModel: "muse-spark-1.3-contributor-free"},
+		}},
+	}
+	NewOrchestrator(db, []Adapter{builtin}).RunSync(context.Background())
+
+	if mode, active := modelPricing(t, "opencode", "mimo-v2.6-flash-free"); mode != "free" || !active {
+		t.Fatalf("startup seed deactivated models.dev snapshot: mode=%s active=%v", mode, active)
+	}
+	if mode, active := modelPricing(t, "opencode", "muse-spark-1.3-contributor-free"); mode != "free" || !active {
+		t.Fatalf("builtin seed missing after sync: mode=%s active=%v", mode, active)
+	}
+}
+
 func TestOrchestrator_FailedAdapterKeepsPreviousFreeModels(t *testing.T) {
 	db := openDiscoveryDB(t)
 	okAdapter := &scriptedAdapter{
