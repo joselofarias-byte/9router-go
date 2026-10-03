@@ -116,6 +116,18 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 	handlerutil.WriteJSON(w, http.StatusOK, sanitizeSettings(updated))
 }
 
+func backupPassphraseFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if passphrase := backupPassphraseFromRequest(r); passphrase != "" {
+		return passphrase
+	}
+	// Compatibility path for the current dashboard UI: its re-auth password is
+	// used only as the KDF input for this request and is never persisted.
+	return r.Header.Get(passwordHeader)
+}
+
 // HandleExportDatabase handles GET /api/settings/database (backup download).
 func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.Request) {
 	if !trustedRequest(r) && !h.verifyDashboardPassword(r.Header.Get(passwordHeader)) {
@@ -175,7 +187,7 @@ func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.R
 			writePlainError(w, http.StatusUnauthorized, "Invalid password")
 			return
 		}
-		plaintext, err := decryptBackup(body, r.Header.Get(backupPassphraseHeader))
+		plaintext, err := decryptBackup(body, backupPassphraseFromRequest(r))
 		if err != nil {
 			writePlainError(w, http.StatusBadRequest, err.Error())
 			return
