@@ -58,6 +58,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
+	ctx, profileErr := withRequestPromptProfile(ctx, r)
+	if profileErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, profileErr.Error())
+		return
+	}
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -180,6 +185,13 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx, profileErr := withRequestPromptProfile(ctx, r)
+	if profileErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, profileErr.Error())
+		return
+	}
+
 	translateResponse := true
 	var workingBody map[string]any
 	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
@@ -207,7 +219,6 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	workingBody["stream"] = reqBody.Stream
-	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	// Store requested model for streaming echo (PR #3693) and for [1m] marker handling
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
