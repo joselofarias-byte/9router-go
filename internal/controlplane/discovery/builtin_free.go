@@ -28,6 +28,12 @@ func (a *BuiltinFreeAdapter) Discover(ctx context.Context) ([]Candidate, error) 
 			continue
 		}
 		for _, modelID := range providers.ProviderModels[providerID] {
+			// Fabric's chat pool must never ingest media/special-service models.
+			// In particular, OpenCode's jev-1.13-free is kind=systemone and
+			// answers /v1/systemone rather than /v1/chat/completions.
+			if !isChatProviderModel(providerID, modelID) {
+				continue
+			}
 			if providerID != "mimo-free" && !explicitFreeModelID(modelID) {
 				continue
 			}
@@ -53,6 +59,9 @@ func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 			continue
 		}
 		for _, modelID := range providers.ProviderModels[providerID] {
+			if !isChatProviderModel(providerID, modelID) {
+				continue
+			}
 			if providerID == "mimo-free" || explicitFreeModelID(modelID) {
 				ids = append(ids, providerID)
 				break
@@ -60,6 +69,23 @@ func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 		}
 	}
 	return ids
+}
+
+
+func isChatProviderModel(providerID, modelID string) bool {
+	kinds := providers.ProviderModelKinds[providerID]
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, id := range []string{strings.TrimSpace(modelID), canonicalDiscoveryModelID(modelID)} {
+		if id == "" {
+			continue
+		}
+		if kind := strings.TrimSpace(kinds[id]); kind != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalDiscoveryModelID(modelID string) string {
