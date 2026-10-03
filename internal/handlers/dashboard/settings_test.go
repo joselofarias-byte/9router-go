@@ -18,8 +18,6 @@ import (
 // setupSettingsTestDB extends the shared dashboard schema with the tables the
 // backup export walks (providerNodes/proxyPools are created elsewhere in prod).
 // DATA_DIR is isolated per test so the CLI-token files never touch ~/.9router.
-const testBackupPassphrase = "test-backup-passphrase-123"
-
 func setupSettingsTestDB(t *testing.T) (*db.Repo, func()) {
 	t.Helper()
 	t.Setenv("DATA_DIR", t.TempDir())
@@ -143,26 +141,13 @@ func TestHandleExportDatabase_RequiresPassword(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Invalid password") {
 		t.Errorf("expected Next-style error body, got %s", rec.Body.String())
 	}
-	// Local CLI token skips dashboard-password re-auth, but encryption still
-	// requires a backup passphrase.
+	// Local CLI token skips password re-auth (Next parity).
 	req = httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 without backup passphrase, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
-	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	req.Header.Set(backupPassphraseHeader, testBackupPassphrase)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 with backup passphrase, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !isEncryptedBackup(rec.Body.Bytes()) {
-		t.Fatal("export was not encrypted")
+		t.Fatalf("expected 200 for CLI token, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -193,28 +178,16 @@ func TestHandleExportImportDatabase_RoundTrip(t *testing.T) {
 	// Export with the CLI token.
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	req.Header.Set(backupPassphraseHeader, testBackupPassphrase)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("export failed: %d %s", rec.Code, rec.Body.String())
 	}
 	exported := rec.Body.Bytes()
-	if !isEncryptedBackup(exported) {
-		t.Fatal("export must use encrypted 9rbak format")
-	}
-	if strings.Contains(string(exported), "sk-test") || strings.Contains(string(exported), "sk-cli-1") {
-		t.Fatal("plaintext credentials leaked into encrypted backup bytes")
-	}
-	plaintext, err := decryptBackup(exported, testBackupPassphrase)
-	if err != nil {
-		t.Fatalf("decrypt export: %v", err)
-	}
-	defer clear(plaintext)
 
 	var payload map[string]any
-	if err := json.Unmarshal(plaintext, &payload); err != nil {
-		t.Fatalf("decode decrypted export: %v", err)
+	if err := json.Unmarshal(exported, &payload); err != nil {
+		t.Fatalf("decode export: %v", err)
 	}
 	connections, _ := payload["providerConnections"].([]any)
 	if len(connections) != 1 {
@@ -258,8 +231,7 @@ func TestHandleExportImportDatabase_RoundTrip(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(exported))
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	req.Header.Set(backupPassphraseHeader, testBackupPassphrase)
-	req.Header.Set("Content-Type", backupContentType)
+	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -309,39 +281,45 @@ func TestHandleExportImportDatabase_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestHandleExportImportDatabase_ZipFormat(t *testing.T) {
+func TestHandleExportImportDatabase_EncryptedRoundTrip(t *testing.T) {
 	repo, cleanup := setupSettingsTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
 
+	const passphrase = "backup recovery phrase 2026"
+	const apiKey = "sk-encrypted-backup-secret"
+	const refreshToken = "refresh-token-encrypted-secret"
+
 	if _, err := repo.RawDB().Exec(
-		`INSERT INTO providerConnections (id, provider, authType, isActive, priority, data, createdAt, updatedAt)
-		 VALUES ('conn-zip', 'deepseek', 'apikey', 1, 1, '{"apiKey":"sk-zip","model":"deepseek-chat"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		`INSERT INTO providerConnections (id, provider, authType, name, isActive, priority, data, createdAt, updatedAt)
+		 VALUES ('conn-encrypted', 'antigravity', 'oauth', 'Encrypted account', 1, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		`{"apiKey":"`+apiKey+`","refreshToken":"`+refreshToken+`","accessToken":"access-secret"}`,
 	); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	// Even callers asking for the old zip format now receive encrypted bytes.
-	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=zip", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=encrypted", nil)
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	req.Header.Set(backupPassphraseHeader, testBackupPassphrase)
+	req.Header.Set(backupPassphraseHeader, passphrase)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("export failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("encrypted export failed: %d %s", rec.Code, rec.Body.String())
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != backupContentType {
-		t.Errorf("Content-Type = %q, want %q", ct, backupContentType)
+	if got := rec.Header().Get("Content-Type"); got != encryptedBackupMIME {
+		t.Fatalf("content type = %q, want %q", got, encryptedBackupMIME)
 	}
-	encrypted := rec.Body.Bytes()
-	if !isEncryptedBackup(encrypted) {
-		t.Fatal("format=zip produced a non-encrypted backup")
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), ".9rb") {
+		t.Fatalf("encrypted backup filename missing .9rb: %q", rec.Header().Get("Content-Disposition"))
 	}
-	if len(encrypted) >= 2 && encrypted[0] == 'P' && encrypted[1] == 'K' {
-		t.Fatal("format=zip leaked a plaintext zip archive")
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("encrypted export cache control = %q", rec.Header().Get("Cache-Control"))
 	}
-	if strings.Contains(string(encrypted), "sk-zip") {
-		t.Fatal("credential visible in encrypted backup bytes")
+	encrypted := append([]byte(nil), rec.Body.Bytes()...)
+	for _, secret := range []string{apiKey, refreshToken, "access-secret"} {
+		if bytes.Contains(encrypted, []byte(secret)) {
+			t.Fatalf("encrypted backup leaked %q in plaintext", secret)
+		}
 	}
 
 	if _, err := repo.RawDB().Exec(`DELETE FROM providerConnections`); err != nil {
@@ -350,14 +328,131 @@ func TestHandleExportImportDatabase_ZipFormat(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(encrypted))
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	req.Header.Set(backupPassphraseHeader, testBackupPassphrase)
-	req.Header.Set("Content-Type", backupContentType)
+	req.Header.Set(backupPassphraseHeader, passphrase)
+	req.Header.Set("Content-Type", encryptedBackupMIME)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("import encrypted backup failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("encrypted import failed: %d %s", rec.Code, rec.Body.String())
 	}
 
+	var restored string
+	if err := repo.RawDB().QueryRow(
+		`SELECT data FROM providerConnections WHERE id='conn-encrypted'`,
+	).Scan(&restored); err != nil {
+		t.Fatalf("query restored encrypted account: %v", err)
+	}
+	for _, secret := range []string{apiKey, refreshToken, "access-secret"} {
+		if !strings.Contains(restored, secret) {
+			t.Fatalf("restored account lost %q: %s", secret, restored)
+		}
+	}
+}
+
+func TestHandleExportDatabase_EncryptedRequiresRecoveryPassphrase(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=encrypted", nil)
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing recovery passphrase status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "passphrase") {
+		t.Fatalf("missing passphrase error not explained: %s", rec.Body.String())
+	}
+}
+
+func TestHandleImportDatabase_EncryptedRejectsWrongRecoveryPassphrase(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	if _, err := repo.RawDB().Exec(
+		`INSERT INTO providerConnections (id, provider, authType, isActive, priority, data, createdAt, updatedAt)
+		 VALUES ('conn-before', 'openai', 'apikey', 1, 1, '{"apiKey":"sk-before"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=encrypted", nil)
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set(backupPassphraseHeader, "correct recovery phrase")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("encrypted export failed: %d %s", rec.Code, rec.Body.String())
+	}
+	encrypted := append([]byte(nil), rec.Body.Bytes()...)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(encrypted))
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set(backupPassphraseHeader, "wrong recovery phrase!!")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("wrong passphrase status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	var count int
+	if err := repo.RawDB().QueryRow(
+		`SELECT COUNT(*) FROM providerConnections WHERE id='conn-before'`,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("failed decrypt modified live provider connections")
+	}
+}
+
+func TestHandleExportImportDatabase_ZipFormat(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	// Seed initial data
+	if _, err := repo.RawDB().Exec(
+		`INSERT INTO providerConnections (id, provider, authType, isActive, priority, data, createdAt, updatedAt)
+		 VALUES ('conn-zip', 'deepseek', 'apikey', 1, 1, '{"apiKey":"sk-zip","model":"deepseek-chat"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	// Export with format=zip
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=zip", nil)
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export zip failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("expected Content-Type application/zip, got %q", ct)
+	}
+	zipBytes := rec.Body.Bytes()
+	if len(zipBytes) < 4 || zipBytes[0] != 'P' || zipBytes[1] != 'K' {
+		t.Fatalf("expected zip signature PK, got %v", zipBytes[:4])
+	}
+
+	// Wipe
+	if _, err := repo.RawDB().Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("wipe failed: %v", err)
+	}
+
+	// Import the zip archive
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(zipBytes))
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set("Content-Type", "application/zip")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import zip failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify restored
 	var data string
 	if err := repo.RawDB().QueryRow(`SELECT data FROM providerConnections WHERE id='conn-zip'`).Scan(&data); err != nil {
 		t.Fatalf("query restored connection: %v", err)
@@ -366,6 +461,11 @@ func TestHandleExportImportDatabase_ZipFormat(t *testing.T) {
 		t.Errorf("expected restored connection with sk-zip, got %s", data)
 	}
 }
+
+// The backup file lands in the user's Downloads folder and gets shared like
+// any other file, so credentials must not travel in it: the dashboard
+// password hash and the live OIDC client secret are stripped, while ordinary
+// settings still restore. See issue #35.
 func TestHandleExportDatabase_StripsSecrets(t *testing.T) {
 	repo, cleanup := setupSettingsTestDB(t)
 	defer cleanup()
@@ -385,25 +485,16 @@ func TestHandleExportDatabase_StripsSecrets(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
-	req.Header.Set(backupPassphraseHeader, testBackupPassphrase)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("export failed: %d %s", rec.Code, rec.Body.String())
 	}
 	exported := rec.Body.Bytes()
-	if !isEncryptedBackup(exported) {
-		t.Fatal("settings export was not encrypted")
-	}
-	plaintext, err := decryptBackup(exported, testBackupPassphrase)
-	if err != nil {
-		t.Fatalf("decrypt export: %v", err)
-	}
-	defer clear(plaintext)
 
 	var payload map[string]any
-	if err := json.Unmarshal(plaintext, &payload); err != nil {
-		t.Fatalf("decode decrypted export: %v", err)
+	if err := json.Unmarshal(exported, &payload); err != nil {
+		t.Fatalf("decode export: %v", err)
 	}
 	settings, ok := payload["settings"].(map[string]any)
 	if !ok {
