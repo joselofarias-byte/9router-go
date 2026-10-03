@@ -93,9 +93,11 @@ func (a *ModelsDevAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 			pricingMode := "unknown"
 			// models.dev does not publish a pricing field, but a small subset
 			// encodes the free lane in the model id itself (:free, /free,
-			// *-free, *-free-*). Treat only those explicit markers as free;
-			// everything else remains unknown and therefore fails closed.
-			if explicitFreeModelID(modelID) {
+			// *-free, *-free-*). Treat only those explicit markers as free,
+			// and only when the provider registry says the model is chat-capable.
+			// Jev is the important counterexample: jev-1.13-free is a System One
+			// structured-evaluation model, not a chat completion model.
+			if explicitFreeModelID(modelID) && isChatProviderModel(provID, modelID) {
 				pricingMode = "free"
 			}
 
