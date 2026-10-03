@@ -170,10 +170,11 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 		return pid, false, false
 	}
 
-	// No project from loadCodeAssist — default tier exists, so this token has
-	// none mapped yet (provisioning issue, not transient).
-	noProject = true
-
+	// A clean loadCodeAssist response without a project is not a definitive
+	// "no project" verdict: onboardUser is the call that can provision and
+	// return the project. In particular, if onboarding is rate-limited or
+	// temporarily unavailable we must keep the outcome transient so callers do
+	// not cache a false no-project state.
 	// Try onboard user
 	tierID := "legacy-tier"
 	if allowed, ok := data["allowedTiers"].([]any); ok {
@@ -189,8 +190,7 @@ func fetchAntigravityProjectID(ctx context.Context, client *http.Client, accessT
 		}
 	}
 
-	pid, authFailed, onboardNoProject := onboardAntigravityUser(ctx, client, accessToken, tierID)
-	return pid, authFailed, noProject || onboardNoProject
+	return onboardAntigravityUser(ctx, client, accessToken, tierID)
 }
 
 func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToken, tierID string) (pid string, authFailed, noProject bool) {
