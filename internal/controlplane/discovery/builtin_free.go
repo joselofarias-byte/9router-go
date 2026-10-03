@@ -53,7 +53,11 @@ func (a *BuiltinFreeAdapter) Discover(ctx context.Context) ([]Candidate, error) 
 }
 
 func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
-	var ids []string
+	// Keep retired built-in sources in scope for one-way cleanup. Older
+	// snapshots may still contain mimo-free/mimo-auto owned by builtin-free;
+	// with no current candidate, the orchestrator will deactivate it safely.
+	ids := []string{"mimo-free"}
+	seenIDs := map[string]bool{"mimo-free": true}
 	for providerID, cfg := range providers.KnownProviders {
 		if !cfg.NoAuth || !noAuthFreeProviderReady(providerID) {
 			continue
@@ -63,7 +67,10 @@ func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 				continue
 			}
 			if explicitFreeModelID(modelID) {
-				ids = append(ids, providerID)
+				if !seenIDs[providerID] {
+					ids = append(ids, providerID)
+					seenIDs[providerID] = true
+				}
 				break
 			}
 		}
