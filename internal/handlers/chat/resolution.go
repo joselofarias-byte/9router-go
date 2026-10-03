@@ -269,6 +269,7 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	first.ComboModels = resolved
 	first.Strategy = "fallback"
 	first.VirtualFree = true
+	log.Info("routing", "virtual free pool resolved", "entries", strings.Join(resolved, ","), "count", len(resolved))
 	return first, nil
 }
 
