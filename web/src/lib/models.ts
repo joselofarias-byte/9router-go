@@ -2732,7 +2732,9 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     },
     {
       "id": "muse-spark-1.2-contributor",
-      "name": "Muse Spark 1.2 Contributor"
+      "name": "Muse Spark 1.2 Contributor",
+      "targetFormat": "openai-responses",
+      "supportedFormats": ["openai-responses"]
     }
   ],
   "minimax-cn": [
