@@ -7,8 +7,12 @@ package providers
 func init() {
 	caps := Capabilities{Vision: true, Reasoning: true, Tools: true}
 
-	modelCapabilities["deepseek-v4.1-flash"] = caps
-	modelCapabilities["deepseek-flash"] = caps
+	// Add capabilities without clearing upstream thinking declarations.
+	for _, model := range []string{"deepseek-v4.1-flash", "deepseek-flash"} {
+		existing := modelCapabilities[model]
+		existing.Vision, existing.Reasoning, existing.Tools = true, true, true
+		modelCapabilities[model] = existing
+	}
 
 	if providerCapabilities["deepseek"] == nil {
 		providerCapabilities["deepseek"] = map[string]Capabilities{}

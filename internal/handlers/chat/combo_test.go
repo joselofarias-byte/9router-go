@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -346,13 +347,13 @@ func TestAppendUserTurn_noMessages(t *testing.T) {
 }
 
 func TestCollectPanel_allFast(t *testing.T) {
-	calls := []func() *fusionResult{
-		func() *fusionResult { return &fusionResult{ok: true, body: []byte("a")} },
-		func() *fusionResult { return &fusionResult{ok: true, body: []byte("b")} },
-		func() *fusionResult { return &fusionResult{ok: true, body: []byte("c")} },
+	calls := []func(context.Context) *fusionResult{
+		func(context.Context) *fusionResult { return &fusionResult{ok: true, body: []byte("a")} },
+		func(context.Context) *fusionResult { return &fusionResult{ok: true, body: []byte("b")} },
+		func(context.Context) *fusionResult { return &fusionResult{ok: true, body: []byte("c")} },
 	}
 	ft := FusionTuning{MinPanel: 2, StragglerGraceMs: 5000, PanelHardTimeoutMs: 30000}
-	results := collectPanel(calls, ft)
+	results := collectPanel(context.Background(), calls, ft)
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
@@ -364,15 +365,15 @@ func TestCollectPanel_allFast(t *testing.T) {
 }
 
 func TestCollectPanel_oneSlow(t *testing.T) {
-	calls := []func() *fusionResult{
-		func() *fusionResult { return &fusionResult{ok: true, body: []byte("fast")} },
-		func() *fusionResult {
+	calls := []func(context.Context) *fusionResult{
+		func(context.Context) *fusionResult { return &fusionResult{ok: true, body: []byte("fast")} },
+		func(context.Context) *fusionResult {
 			// Simulate slow call — slept in goroutine will still complete before grace
 			return &fusionResult{ok: true, body: []byte("slow")}
 		},
 	}
 	ft := FusionTuning{MinPanel: 1, StragglerGraceMs: 100, PanelHardTimeoutMs: 5000}
-	results := collectPanel(calls, ft)
+	results := collectPanel(context.Background(), calls, ft)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
@@ -380,18 +381,18 @@ func TestCollectPanel_oneSlow(t *testing.T) {
 
 func TestCollectPanel_empty(t *testing.T) {
 	ft := FusionTuning{MinPanel: 2, StragglerGraceMs: 100, PanelHardTimeoutMs: 100}
-	if got := collectPanel(nil, ft); got != nil {
+	if got := collectPanel(context.Background(), nil, ft); got != nil {
 		t.Errorf("expected nil for empty, got %v", got)
 	}
 }
 
 func TestCollectPanel_allFail(t *testing.T) {
-	calls := []func() *fusionResult{
-		func() *fusionResult { return &fusionResult{ok: false, err: fmt.Errorf("fail")} },
-		func() *fusionResult { return &fusionResult{ok: false, err: fmt.Errorf("fail")} },
+	calls := []func(context.Context) *fusionResult{
+		func(context.Context) *fusionResult { return &fusionResult{ok: false, err: fmt.Errorf("fail")} },
+		func(context.Context) *fusionResult { return &fusionResult{ok: false, err: fmt.Errorf("fail")} },
 	}
 	ft := FusionTuning{MinPanel: 2, StragglerGraceMs: 100, PanelHardTimeoutMs: 5000}
-	results := collectPanel(calls, ft)
+	results := collectPanel(context.Background(), calls, ft)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
@@ -405,7 +406,7 @@ func TestCollectPanel_allFail(t *testing.T) {
 func TestResponseBuffer(t *testing.T) {
 	buf := &responseBuffer{header: http.Header{}}
 	buf.Header().Set("Content-Type", "application/json")
-	buf.WriteHeader(200)
+	buf.WriteHeader(http.StatusOK)
 	n, err := buf.Write([]byte(`{"hello":"world"}`))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -413,8 +414,8 @@ func TestResponseBuffer(t *testing.T) {
 	if n != 17 {
 		t.Errorf("wrote %d bytes, want 17", n)
 	}
-	if buf.code != 200 {
-		t.Errorf("status %d, want 200", buf.code)
+	if buf.code != http.StatusOK {
+		t.Errorf("status %d, want %d", buf.code, http.StatusOK)
 	}
 	if buf.body.String() != `{"hello":"world"}` {
 		t.Errorf("body %q, want %q", buf.body.String(), `{"hello":"world"}`)
@@ -598,42 +599,161 @@ func TestApplyComboStrategy_roundRobinTurnAware(t *testing.T) {
 	}
 }
 
-func TestComboRetryAfter(t *testing.T) {
-	past := time.Now().Add(-1 * time.Second)
-	bounded := time.Now().Add(4 * time.Second)
-	tooFar := time.Now().Add(60 * time.Second)
-
+// A rate-limited account must not be retried once the upstream names a window
+// longer than brief429RetryTolerance; only a blip is worth another pass.
+func TestComboPassRetryWait(t *testing.T) {
 	tests := []struct {
-		name       string
-		retryAfter string
+		name        string
+		earliest    time.Duration
+		rateLimited bool
+		wantRetry   bool
 	}{
-		{"empty", ""},
-		{"invalid time", "not-a-time"},
-		{"past", past.Format(time.RFC3339)},
-		{"bounded", bounded.Format(time.RFC3339)},
-		{"exceeds cap", tooFar.Format(time.RFC3339)},
-	}
-	wants := map[string]time.Duration{
-		"empty":        0,
-		"invalid time": 0,
-		"past":         time.Second, // clamped to a minimum 1s wait
-		"bounded":      4 * time.Second,
-		"exceeds cap":  0, // too long -> surface Retry-After header instead
+		{"no retry-after", 0, false, false},
+		{"no retry-after rate limited", 0, true, false},
+		{"short 429 blip", time.Second, true, true},
+		{"429 exactly at tolerance", brief429RetryTolerance, true, true},
+		{"429 just past tolerance", brief429RetryTolerance + time.Millisecond, true, false},
+		{"429 quota window", 2 * time.Minute, true, false},
+		{"short transient failure", time.Second, false, true},
+		{"transient within old cap", comboRetryWaitCap, false, true},
+		{"transient past old cap", comboRetryWaitCap + time.Second, false, false},
 	}
 
 	for _, tt := range tests {
-		got := comboRetryAfter(tt.retryAfter)
-		want := wants[tt.name]
-		switch tt.name {
-		case "bounded":
-			// Allow the ceil() rounding to land on 4s or just either side of it.
-			if got <= 0 || got > comboRetryWaitCap {
-				t.Errorf("%s: comboRetryAfter = %v, want in (0, %v]", tt.name, got, comboRetryWaitCap)
+		t.Run(tt.name, func(t *testing.T) {
+			got := comboPassRetryWait(tt.earliest, tt.rateLimited)
+			if tt.wantRetry && got != tt.earliest {
+				t.Errorf("comboPassRetryWait(%v, %v) = %v, want %v", tt.earliest, tt.rateLimited, got, tt.earliest)
 			}
-		default:
-			if got != want {
-				t.Errorf("%s: comboRetryAfter = %v, want %v", tt.name, got, want)
+			if !tt.wantRetry && got != 0 {
+				t.Errorf("comboPassRetryWait(%v, %v) = %v, want 0 (no repeat pass)", tt.earliest, tt.rateLimited, got)
 			}
+		})
+	}
+}
+
+func TestAugmentModelsWithCapacityAdapter(t *testing.T) {
+	h := NewChatHandler(nil)
+
+	t.Run("No required capabilities returns original models", func(t *testing.T) {
+		models := []string{"deepseek/deepseek-chat"}
+		augmented, strat := h.AugmentModelsWithCapacityAdapter(models, nil)
+		if len(augmented) != 1 || augmented[0] != "deepseek/deepseek-chat" {
+			t.Errorf("expected original models, got %v", augmented)
+		}
+		if strat != "fallback" {
+			t.Errorf("expected fallback strategy, got %s", strat)
+		}
+	})
+
+	t.Run("Model already satisfying vision is not augmented", func(t *testing.T) {
+		models := []string{"ag/gemini-3.8-flash-high"}
+		req := map[string]bool{"vision": true}
+		augmented, _ := h.AugmentModelsWithCapacityAdapter(models, req)
+		if len(augmented) != 1 || augmented[0] != "ag/gemini-3.8-flash-high" {
+			t.Errorf("expected no augmentation, got %v", augmented)
+		}
+	})
+
+	t.Run("Model lacking vision is augmented with vision adapter pool", func(t *testing.T) {
+		models := []string{"deepseek/deepseek-chat"}
+		req := map[string]bool{"vision": true}
+		augmented, _ := h.AugmentModelsWithCapacityAdapter(models, req)
+		if len(augmented) != 2 {
+			t.Fatalf("expected 2 models after augmentation, got %v", augmented)
+		}
+		if augmented[0] != "ag/gemini-3.8-flash-high" {
+			t.Errorf("expected vision adapter model first, got %s", augmented[0])
+		}
+		if augmented[1] != "deepseek/deepseek-chat" {
+			t.Errorf("expected original model as fallback, got %s", augmented[1])
+		}
+	})
+
+	t.Run("Combo without vision is augmented with vision adapter pool", func(t *testing.T) {
+		models := []string{"deepseek/deepseek-chat", "openai/gpt-4"}
+		req := map[string]bool{"vision": true}
+		augmented, _ := h.AugmentModelsWithCapacityAdapter(models, req)
+		if len(augmented) != 3 {
+			t.Fatalf("expected 3 models after augmentation, got %v", augmented)
+		}
+		if augmented[0] != "ag/gemini-3.8-flash-high" {
+			t.Errorf("expected vision adapter model first, got %s", augmented[0])
+		}
+	})
+}
+
+// A combo whose own models cannot serve a request has the capacity-adapter
+// pool prepended to it. That pool must NOT be folded into the combo's own
+// rotation: with strategy round-robin it used to alternate every turn between
+// the combo's model and a provider that is not in the combo at all, which read
+// as traffic leaking out of the combo.
+func TestApplyCapacityAdapter_DoesNotFoldAdapterIntoComboRotation(t *testing.T) {
+	h := NewChatHandler(nil)
+	comboModels := []string{"oc/space-bunny-free"}
+
+	t.Run("vision turn is governed by the adapter strategy, not the combo's", func(t *testing.T) {
+		augmented, strategy := h.applyCapacityAdapter(comboModels, map[string]bool{"vision": true}, "round-robin", "combo-wombo")
+
+		if len(augmented) != 2 || augmented[0] != "ag/gemini-3.8-flash-high" {
+			t.Fatalf("expected the vision adapter model prepended, got %v", augmented)
+		}
+		if strategy == "round-robin" {
+			t.Fatalf("adapter model must not join the combo rotation, got strategy %q", strategy)
+		}
+
+		// Every turn must lead with the only model that can actually serve the
+		// request, and the combo's own model stays as the fallback.
+		for turn := range 4 {
+			rotated := h.applyComboStrategy(strategy, augmented, "combo-wombo", 1, true)
+			if rotated[0] != "ag/gemini-3.8-flash-high" {
+				t.Fatalf("turn %d served by %s, want ag/gemini-3.8-flash-high", turn, rotated[0])
+			}
+			if rotated[len(rotated)-1] != "oc/space-bunny-free" {
+				t.Fatalf("turn %d lost the combo fallback, got %v", turn, rotated)
+			}
+		}
+	})
+
+	t.Run("text-only turn keeps the combo's own strategy and list", func(t *testing.T) {
+		augmented, strategy := h.applyCapacityAdapter(comboModels, map[string]bool{"tools": true}, "round-robin", "combo-wombo")
+
+		if len(augmented) != 1 || augmented[0] != "oc/space-bunny-free" {
+			t.Fatalf("expected an untouched list, got %v", augmented)
+		}
+		if strategy != "round-robin" {
+			t.Fatalf("combo strategy must survive when nothing was injected, got %q", strategy)
+		}
+	})
+}
+
+func TestCollectPanel_CancelAbortsStragglers(t *testing.T) {
+	released := make(chan struct{}, 8)
+	block := func(ctx context.Context) *fusionResult {
+		select {
+		case <-ctx.Done():
+			released <- struct{}{}
+			return &fusionResult{err: ctx.Err()}
+		case <-time.After(5 * time.Second):
+			return &fusionResult{ok: true, body: []byte("slow")}
+		}
+	}
+	calls := []func(context.Context) *fusionResult{block, block, block}
+	ft := FusionTuning{MinPanel: 3, StragglerGraceMs: 100, PanelHardTimeoutMs: 300}
+	start := time.Now()
+	results := collectPanel(context.Background(), calls, ft)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("hard timeout must bound collection, took %v", elapsed)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 slots, got %d", len(results))
+	}
+	// All three stragglers must observe cancel promptly (no 5s hang).
+	for i := 0; i < 3; i++ {
+		select {
+		case <-released:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("straggler %d not aborted after timeout", i)
 		}
 	}
 }

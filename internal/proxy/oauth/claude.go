@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"9router/proxy/internal/providers"
 )
 
 const claudeTokenURL = "https://api.anthropic.com/v1/oauth/token"
@@ -19,7 +21,7 @@ func init() {
 // refreshClaude refreshes an Anthropic Claude OAuth token.
 // Claude uses JSON body encoding for refresh (not form-urlencoded).
 func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
-	body := map[string]interface{}{
+	body := map[string]any{
 		"grant_type":    "refresh_token",
 		"client_id":     claudeClientID,
 		"refresh_token": p.RefreshToken,
@@ -48,7 +50,7 @@ func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("claude read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("claude refresh returned %d: %s", resp.StatusCode, truncateBody(respBody))
+		return nil, fmt.Errorf("claude %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(respBody)})
 	}
 
 	var result struct {
@@ -64,9 +66,14 @@ func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("claude empty access token")
 	}
 
+	refToken := result.RefreshToken
+	if refToken == "" {
+		refToken = p.RefreshToken
+	}
 	return &TokenResult{
-		AccessToken: result.AccessToken,
-		ExpiresIn:   result.ExpiresIn,
-		Scope:       result.Scope,
+		AccessToken:  result.AccessToken,
+		RefreshToken: refToken,
+		ExpiresIn:    result.ExpiresIn,
+		Scope:        result.Scope,
 	}, nil
 }

@@ -1,8 +1,8 @@
 package middleware
 
 import (
-	"context"
 	"9router/proxy/internal/log"
+	"context"
 	"net/http"
 	"strings"
 
@@ -67,8 +67,9 @@ func GetAuthenticatedApiKey(r *http.Request) *models.APIKey {
 }
 
 // ExtractApiKey extracts the client API key from the request.
-// Only header-based auth is accepted — keys in query strings would leak via
-// browser history, referrers, and upstream proxy logs.
+// For standard API routes, only header-based auth is accepted to avoid leaks.
+// For EventSource / SSE stream endpoints (where browsers cannot set custom headers),
+// query parameters `key` or `apiKey` are accepted as a fallback.
 func ExtractApiKey(r *http.Request) string {
 	// 1. Try Authorization header
 	authHeader := r.Header.Get("Authorization")
@@ -82,6 +83,16 @@ func ExtractApiKey(r *http.Request) string {
 	// 2. Try custom X-API-Key header as fallback
 	if xApiKey := r.Header.Get("X-API-Key"); xApiKey != "" {
 		return xApiKey
+	}
+
+	// 3. For EventSource / SSE endpoints, accept query parameter key or apiKey
+	if strings.HasSuffix(r.URL.Path, "/stream") {
+		if qKey := r.URL.Query().Get("key"); qKey != "" {
+			return qKey
+		}
+		if qKey := r.URL.Query().Get("apiKey"); qKey != "" {
+			return qKey
+		}
 	}
 
 	return ""

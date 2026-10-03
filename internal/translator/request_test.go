@@ -186,6 +186,56 @@ func TestFixMissingToolResponsesOpenAI(t *testing.T) {
 	})
 }
 
+func TestEnsureToolCallIDs_MissingIDRepaired(t *testing.T) {
+	t.Run("pairs id-less tool message with pending assistant call (PR #4090)", func(t *testing.T) {
+		msgs := []OpenAIMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []OpenAIToolCall{
+					{ID: "call_abc", Type: "function", Function: OpenAIFunctionCall{Name: "shell", Arguments: "{}"}},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "", // client omitted tool_call_id!
+				Content:    "ok",
+			},
+		}
+
+		got := EnsureToolCallIDs(msgs)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(got))
+		}
+		if got[1].ToolCallID != "call_abc" {
+			t.Errorf("expected tool_call_id to be repaired to 'call_abc', got %q", got[1].ToolCallID)
+		}
+	})
+
+	t.Run("mints deterministic id when both assistant and tool lack id", func(t *testing.T) {
+		msgs := []OpenAIMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []OpenAIToolCall{
+					{ID: "", Type: "function", Function: OpenAIFunctionCall{Name: "shell", Arguments: "{}"}},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "",
+				Content:    "ok",
+			},
+		}
+
+		got := EnsureToolCallIDs(msgs)
+		if got[0].ToolCalls[0].ID == "" {
+			t.Errorf("expected assistant tool call to have minted id, got empty")
+		}
+		if got[1].ToolCallID != got[0].ToolCalls[0].ID {
+			t.Errorf("expected tool message id %q to match assistant call id %q", got[1].ToolCallID, got[0].ToolCalls[0].ID)
+		}
+	})
+}
+
 // --- convertClaudeMessage tool_result edge ---
 
 func TestConvertClaudeMessage_ToolResultArrayContent(t *testing.T) {
@@ -219,6 +269,49 @@ func TestConvertClaudeMessage_ToolResultRawContent(t *testing.T) {
 	}
 	if !strings.Contains(results[0].Content.(string), `{"raw":true}`) {
 		t.Errorf("expected raw JSON content, got %v", results[0].Content)
+	}
+}
+
+func TestConvertClaudeMessage_ToolResultImageHoisting(t *testing.T) {
+	// Image inside tool_result should emit tool message (text) + follow-up user message with image_url (PR #4083)
+	msg := ClaudeMessage{
+		Role: "user",
+		Content: jsontext.Value(`[
+			{
+				"type": "tool_result",
+				"tool_use_id": "call_screenshot_1",
+				"content": [
+					{"type": "text", "text": "Screenshot captured"},
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}}
+				]
+			}
+		]`),
+	}
+
+	results, err := convertClaudeMessage(msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 messages (tool + follow-up user image), got %d", len(results))
+	}
+	// 1. Tool message
+	if results[0].Role != "tool" || results[0].ToolCallID != "call_screenshot_1" || results[0].Content != "Screenshot captured" {
+		t.Errorf("unexpected tool message: %#v", results[0])
+	}
+	// 2. Follow-up user message with image
+	if results[1].Role != "user" {
+		t.Errorf("expected follow-up message to have role 'user', got %s", results[1].Role)
+	}
+	blocks, ok := results[1].Content.([]OpenAIContentBlock)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("expected 2 content blocks in follow-up, got %#v", results[1].Content)
+	}
+	if blocks[0].Text != "[Image from tool result call_screenshot_1]" {
+		t.Errorf("expected tag block, got %s", blocks[0].Text)
+	}
+	if blocks[1].Type != "image_url" || blocks[1].ImageUrl == nil || !strings.Contains(blocks[1].ImageUrl.URL, "base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB") {
+		t.Errorf("expected image_url block with base64 data, got %#v", blocks[1])
 	}
 }
 
@@ -344,7 +437,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
 			t.Fatalf("failed to parse: %v", err)
 		}
@@ -363,7 +456,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
 			t.Fatalf("failed to parse: %v", err)
 		}
@@ -382,7 +475,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
 			t.Fatalf("failed to parse: %v", err)
 		}
@@ -400,7 +493,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to translate: %v", err)
 		}
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
 			t.Fatalf("failed to parse: %v", err)
 		}
@@ -488,5 +581,72 @@ func TestTranslateClaudeToOpenAI_AdaptiveEffortNormalization(t *testing.T) {
 				t.Errorf("got ReasoningEffort %q, want %q", oreq.ReasoningEffort, tt.wantEffort)
 			}
 		})
+	}
+}
+
+func TestTranslateClaudeToOpenAI_DocumentBlock(t *testing.T) {
+	claudeJSON := []byte(`{
+		"model": "claude-opus-4-6-thinking",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "explain this document"},
+				{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK..."}}
+			]
+		}]
+	}`)
+
+	openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+	if err != nil {
+		t.Fatalf("TranslateClaudeToOpenAI failed: %v", err)
+	}
+
+	var oreq OpenAIRequest
+	if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if len(oreq.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(oreq.Messages))
+	}
+
+	var blocks []OpenAIContentBlock
+	rawContent, err := json.Marshal(oreq.Messages[0].Content)
+	if err != nil {
+		t.Fatalf("marshal message content: %v", err)
+	}
+	if err := json.Unmarshal(rawContent, &blocks); err != nil {
+		t.Fatalf("unmarshal content blocks: %v", err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(blocks))
+	}
+	if blocks[0].Type != "text" || blocks[0].Text != "explain this document" {
+		t.Errorf("block 0 mismatch: %#v", blocks[0])
+	}
+	if blocks[1].Type != "file" || blocks[1].File == nil {
+		t.Fatalf("block 1 must be file block, got: %#v", blocks[1])
+	}
+	expectedURL := "data:application/pdf;base64,JVBERi0xLjQK..."
+	if blocks[1].File.FileData != expectedURL {
+		t.Errorf("got FileData %q, want %q", blocks[1].File.FileData, expectedURL)
+	}
+
+	// Also verify that passing this translated OpenAI format to TranslateOpenAIToGemini creates an InlineData part
+	geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+	var geminiReq GeminiRequest
+	if err := json.Unmarshal(geminiBytes, &geminiReq); err != nil {
+		t.Fatalf("unmarshal geminiReq: %v", err)
+	}
+	if len(geminiReq.Contents) != 1 || len(geminiReq.Contents[0].Parts) != 2 {
+		t.Fatalf("expected 2 parts in Gemini contents, got: %#v", geminiReq.Contents)
+	}
+	part2 := geminiReq.Contents[0].Parts[1]
+	if part2.InlineData == nil || part2.InlineData.MimeType != "application/pdf" {
+		t.Errorf("expected InlineData application/pdf, got: %#v", part2.InlineData)
 	}
 }

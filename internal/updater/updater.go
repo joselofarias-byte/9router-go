@@ -22,13 +22,16 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/daemon"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/shutdown"
+	"github.com/samber/lo"
 )
 
 // CurrentVersion is the active 9router-go application version.
 // Can be overridden at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.8.8"
 // Default fallback is read from version.json at init if not overridden.
-var CurrentVersion = "1.8.9"
+var CurrentVersion = "1.9.6"
 
 // DefaultUpdateURL is the primary remote version manifest URL.
 var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
@@ -145,10 +148,7 @@ func GetStatus() *UpdaterStatus {
 
 // CheckUpdate queries remote version sources (manifest or GitHub Releases API) and compares semver.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
-	updateURL := os.Getenv("UPDATE_URL")
-	if updateURL == "" {
-		updateURL = DefaultUpdateURL
-	}
+	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
 
 	// 1. Try manifest URL first
 	info, err := checkManifest(ctx, updateURL)
@@ -161,10 +161,7 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// 2. Fallback to GitHub Releases API
-	repo := os.Getenv("UPDATE_REPO")
-	if repo == "" {
-		repo = DefaultGitHubRepo
-	}
+	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
 	ghURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 	log.Debug("updater", "checking github releases fallback", "repo", repo)
 
@@ -178,7 +175,7 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("check update failed: manifest error (%v), github releases error (%v)", err, ghErr)
+		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", err, ghErr)
 	}
 	return nil, ghErr
 }
@@ -227,7 +224,14 @@ func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
 
 	latestVersion := strings.TrimPrefix(versionStr, "v")
 	current := strings.TrimPrefix(CurrentVersion, "v")
-	hasUpdate := CompareVersions(latestVersion, current) > 0
+	comparison := CompareVersions(latestVersion, current)
+	hasUpdate := comparison > 0
+	// A fork/dev build can legitimately be ahead of the published manifest.
+	// Never describe an older remote version as "Latest version"; that made
+	// 1.9.6-fabric print "Latest version: 1.8.9" while also saying up to date.
+	if comparison < 0 {
+		latestVersion = current
+	}
 
 	platformKey := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
 	downloadURL := ""
@@ -291,7 +295,11 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(CurrentVersion, "v")
-	hasUpdate := CompareVersions(latestVersion, current) > 0
+	comparison := CompareVersions(latestVersion, current)
+	hasUpdate := comparison > 0
+	if comparison < 0 {
+		latestVersion = current
+	}
 
 	downloadURL := matchReleaseAsset(release.Assets, runtime.GOOS, runtime.GOARCH)
 
@@ -695,7 +703,13 @@ func runCheckCycle(ctx context.Context) {
 	}
 }
 
-// RestartSelf safely spawns a fresh process of the updated executable and exits current instance.
+// RestartSelf replaces this process with a fresh one running the updated
+// binary.
+//
+// The replacement is spawned from the after-stop hook rather than here: this
+// process still holds the listening socket, and a child that starts a moment
+// earlier races it for the port. main runs the hook once fxApp.Stop has closed
+// the listener, so the new process always finds the port free.
 func RestartSelf() {
 	execPath, err := os.Executable()
 	if err != nil {
@@ -709,32 +723,41 @@ func RestartSelf() {
 		return
 	}
 
-	cmd := exec.Command(execPath, os.Args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
+	spawn := func() {
+		cmd := exec.Command(execPath, restartArgs()...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		cmd.Env = os.Environ()
 
-	if err := cmd.Start(); err != nil {
-		log.Error("updater", "spawn updated process failed", "error", err)
-		return
+		if err := cmd.Start(); err != nil {
+			log.Error("updater", "spawn updated process failed", "error", err)
+			os.Exit(1)
+		}
+
+		log.Info("updater", "replacement process started, old instance exiting", "pid", cmd.Process.Pid)
+		// Release the handle so the child is never killed with this process
+		// (Windows job control) and does not stay a zombie on POSIX.
+		_ = cmd.Process.Release()
+		os.Exit(0)
 	}
 
-	log.Info("updater", "spawned updated process, shutting down old instance", "pid", cmd.Process.Pid)
+	shutdown.RestartAfterStop(spawn)
+}
 
-	// Signal our own process to shut down gracefully instead of os.Exit(0):
-	// main's signal handler drains in-flight SSE streams and closes the listener
-	// before exiting, so the spawned process can bind the same port without
-	// "address already in use". If we are not the process leader or the signal
-	// path is unavailable (e.g. Windows), fall back to os.Exit(0).
-	if signalSelfShutdown() {
-		// Give main a bounded window to complete graceful shutdown; if it does
-		// not exit in time, force-quit so the new process can take over.
-		time.AfterFunc(5*time.Second, func() { os.Exit(1) })
-		select {}
+// restartArgs drops the background flag: the replacement process is the
+// daemon already, and re-honouring the flag would make it spawn another one.
+func restartArgs() []string {
+	out := make([]string, 0, len(os.Args))
+	for _, a := range os.Args[1:] {
+		if a == daemon.BackgroundFlag || a == daemon.BackgroundAlias ||
+			strings.HasPrefix(a, daemon.BackgroundFlag+"=") ||
+			strings.HasPrefix(a, daemon.BackgroundAlias+"=") {
+			continue
+		}
+		out = append(out, a)
 	}
-
-	os.Exit(0)
+	return out
 }
 
 // CompareVersions compares two semver strings (v1 > v2 -> 1, v1 < v2 -> -1, v1 == v2 -> 0).

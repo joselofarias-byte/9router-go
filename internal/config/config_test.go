@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,8 +98,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 
 	cfg := LoadConfig()
 
-	if cfg.Port != 20128 { // Default port
-		t.Errorf("expected default port 20128, got %d", cfg.Port)
+	if cfg.Port != 20130 { // Default port
+		t.Errorf("expected default port 20130, got %d", cfg.Port)
 	}
 	if cfg.InitialPassword != "" {
 		t.Errorf("expected no default password (operator must set INITIAL_PASSWORD), got %s", cfg.InitialPassword)
@@ -129,13 +130,194 @@ func TestLoadConfigInvalidPort(t *testing.T) {
 
 	os.Setenv("PORT", "abc") // invalid number
 	cfg := LoadConfig()
-	if cfg.Port != 20128 {
-		t.Errorf("expected fallback port 20128 for invalid port, got %d", cfg.Port)
+	if cfg.Port != 20130 {
+		t.Errorf("expected fallback port 20130 for invalid port, got %d", cfg.Port)
 	}
 
 	os.Setenv("PORT", "-1") // negative port
 	cfg2 := LoadConfig()
-	if cfg2.Port != 20128 {
-		t.Errorf("expected fallback port 20128 for negative port, got %d", cfg2.Port)
+	if cfg2.Port != 20130 {
+		t.Errorf("expected fallback port 20130 for negative port, got %d", cfg2.Port)
+	}
+}
+
+func TestLoadConfigFromDotEnv(t *testing.T) {
+	tempDir := t.TempDir()
+	tempDataDir := filepath.Join(tempDir, "data")
+	envContent := `PORT=20140
+DATA_DIR=` + tempDataDir + `
+JWT_SECRET=dotenv-jwt-secret
+INITIAL_PASSWORD=dotenv-initial-password
+API_KEY_SECRET=dotenv-api-key-secret
+MACHINE_ID_SALT=dotenv-salt
+RTK_ENABLED=false
+CAVEMAN_ENABLED=true
+PONYTAIL_ENABLED=true
+`
+	envFile := filepath.Join(tempDir, ".env")
+	if err := os.WriteFile(envFile, []byte(envContent), 0600); err != nil {
+		t.Fatalf("failed to write test .env file: %v", err)
+	}
+
+	v := NewViperWithFile(envFile)
+	cfg := LoadConfigFromViper(v)
+
+	if cfg.Port != 20140 {
+		t.Errorf("expected port 20140 from .env, got %d", cfg.Port)
+	}
+	expectedDb := filepath.Join(tempDataDir, "db", "data.sqlite")
+	if cfg.DatabasePath != expectedDb {
+		t.Errorf("expected db path %s, got %s", expectedDb, cfg.DatabasePath)
+	}
+	if cfg.JWTSecret != "dotenv-jwt-secret" {
+		t.Errorf("expected jwt secret from .env, got %s", cfg.JWTSecret)
+	}
+	if cfg.InitialPassword != "dotenv-initial-password" {
+		t.Errorf("expected initial password from .env, got %s", cfg.InitialPassword)
+	}
+	if cfg.APIKeySecret != "dotenv-api-key-secret" {
+		t.Errorf("expected api key secret from .env, got %s", cfg.APIKeySecret)
+	}
+	if cfg.MachineIDSalt != "dotenv-salt" {
+		t.Errorf("expected machine id salt from .env, got %s", cfg.MachineIDSalt)
+	}
+	if cfg.RTKEnabled != false {
+		t.Errorf("expected rtk false from .env, got %v", cfg.RTKEnabled)
+	}
+	if cfg.CavemanEnabled != true {
+		t.Errorf("expected caveman true from .env, got %v", cfg.CavemanEnabled)
+	}
+	if cfg.PonytailEnabled != true {
+		t.Errorf("expected ponytail true from .env, got %v", cfg.PonytailEnabled)
+	}
+}
+
+func TestEnvPrecedenceOverDotEnv(t *testing.T) {
+	tempDir := t.TempDir()
+	envContent := `PORT=20140
+API_KEY_SECRET=dotenv-secret
+MACHINE_ID_SALT=dotenv-salt
+RTK_ENABLED=false
+CAVEMAN_ENABLED=false
+PONYTAIL_ENABLED=false
+`
+	envFile := filepath.Join(tempDir, ".env")
+	if err := os.WriteFile(envFile, []byte(envContent), 0600); err != nil {
+		t.Fatalf("failed to write test .env file: %v", err)
+	}
+
+	// OS env must take precedence over .env file
+	t.Setenv("PORT", "20188")
+	t.Setenv("API_KEY_SECRET", "os-api-key-secret")
+	t.Setenv("MACHINE_ID_SALT", "os-salt")
+	t.Setenv("RTK_ENABLED", "true")
+	t.Setenv("CAVEMAN_ENABLED", "true")
+	t.Setenv("PONYTAIL_ENABLED", "true")
+
+	v := NewViperWithFile(envFile)
+	cfg := LoadConfigFromViper(v)
+
+	if cfg.Port != 20188 {
+		t.Errorf("expected OS env PORT 20188 to override .env, got %d", cfg.Port)
+	}
+	if cfg.APIKeySecret != "os-api-key-secret" {
+		t.Errorf("expected OS env API_KEY_SECRET to override .env, got %s", cfg.APIKeySecret)
+	}
+	if cfg.MachineIDSalt != "os-salt" {
+		t.Errorf("expected OS env MACHINE_ID_SALT to override .env, got %s", cfg.MachineIDSalt)
+	}
+	if cfg.RTKEnabled != true {
+		t.Errorf("expected OS env RTK_ENABLED true to override .env, got %v", cfg.RTKEnabled)
+	}
+	if cfg.CavemanEnabled != true {
+		t.Errorf("expected OS env CAVEMAN_ENABLED true to override .env, got %v", cfg.CavemanEnabled)
+	}
+	if cfg.PonytailEnabled != true {
+		t.Errorf("expected OS env PONYTAIL_ENABLED true to override .env, got %v", cfg.PonytailEnabled)
+	}
+}
+
+func TestProvideViper(t *testing.T) {
+	v := ProvideViper()
+	if v == nil {
+		t.Fatal("expected ProvideViper to return non-nil instance")
+	}
+	if v.GetInt("PORT") <= 0 {
+		t.Errorf("expected positive default PORT, got %d", v.GetInt("PORT"))
+	}
+	if v.GetString("API_KEY_SECRET") == "" {
+		t.Error("expected non-empty API_KEY_SECRET")
+	}
+	if v.GetString("MACHINE_ID_SALT") == "" {
+		t.Error("expected non-empty MACHINE_ID_SALT")
+	}
+}
+
+func TestLoadConfig_HostAndBindAddr(t *testing.T) {
+	t.Setenv("HOST", "127.0.0.1")
+	cfg := LoadConfig()
+	if cfg.Host != "127.0.0.1" {
+		t.Errorf("expected host 127.0.0.1 from HOST, got %s", cfg.Host)
+	}
+
+	t.Setenv("HOST", "")
+	t.Setenv("BIND_ADDR", "0.0.0.0")
+	cfg2 := LoadConfig()
+	if cfg2.Host != "0.0.0.0" {
+		t.Errorf("expected host 0.0.0.0 from BIND_ADDR, got %s", cfg2.Host)
+	}
+}
+
+// The daemon CLI (status/stop/logs) runs in its own short-lived process and
+// resolves the data dir through this function, while the server resolves it
+// through viper — which reads .env. When the two disagreed, a deployment
+// configured only through .env reported "not running" against a live listener
+// and refused to stop it. DATA_DIR from the OS environment must still win.
+func TestResolveDataDir_PrefersOSEnvOverDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeDotEnv(t, dir, "DATA_DIR="+filepath.Join(dir, "from-file")+"\n")
+	t.Chdir(dir)
+	t.Setenv("DATA_DIR", filepath.Join(dir, "from-env"))
+
+	if got := ResolveDataDir(); got != filepath.Join(dir, "from-env") {
+		t.Fatalf("DATA_DIR from the environment must win, got %q", got)
+	}
+}
+
+// The regression itself: no DATA_DIR in the environment at all, which is the
+// shape of every compose deployment that configures the gateway through .env.
+func TestResolveDataDir_FallsBackToDotEnv(t *testing.T) {
+	dir := t.TempDir()
+fromFile := filepath.Join(dir, "from-file")
+	writeDotEnv(t, dir, "DATA_DIR="+fromFile+"\n")
+	t.Chdir(dir)
+	t.Setenv("DATA_DIR", "")
+
+	if got := ResolveDataDir(); got != fromFile {
+		t.Fatalf("ResolveDataDir() = %q, want the .env value %q", got, fromFile)
+	}
+}
+
+// A .env without DATA_DIR must not be answered with an empty string: the
+// platform default is still the correct answer.
+func TestResolveDataDir_DotEnvWithoutDataDirUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeDotEnv(t, dir, "PORT=20140\n")
+	t.Chdir(dir)
+	t.Setenv("DATA_DIR", "")
+
+	got := ResolveDataDir()
+	if got == "" {
+	t.Fatal("ResolveDataDir() returned empty; want the platform default")
+	}
+	if strings.Contains(got, ".env") {
+	t.Errorf("ResolveDataDir() = %q, want the platform default rather than a config path", got)
+	}
+}
+
+func writeDotEnv(t *testing.T, dir, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0600); err != nil {
+		t.Fatalf("write .env: %v", err)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+// extractReasoningText pulls reasoning out of a Chat delta across the three
+// shapes vendors use: reasoning_content, reasoning, and reasoning_details.
 func extractReasoningText(delta OpenAIDelta) string {
 	if delta.ReasoningContent != "" {
 		return delta.ReasoningContent
@@ -16,7 +18,17 @@ func extractReasoningText(delta OpenAIDelta) string {
 	if delta.Reasoning != "" {
 		return delta.Reasoning
 	}
-	return ""
+
+	var b strings.Builder
+	for _, detail := range delta.ReasoningDetails {
+		switch {
+		case detail.Text != "":
+			b.WriteString(detail.Text)
+		case detail.Content != "":
+			b.WriteString(detail.Content)
+		}
+	}
+	return b.String()
 }
 
 func formatSSE(event map[string]any) string {
@@ -28,12 +40,61 @@ func formatSSE(event map[string]any) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(payload))
 }
 
-// ParseClaudeUsage extracts usage from a Claude-format response body. Maps
-// Claude's input_tokens/output_tokens/cache_read_input_tokens to OpenAIUsage.
-// Also handles OpenAI Responses shape where cached_tokens rides in
-// input_tokens_details.cached_tokens (cache-INCLUSIVE prompt).
-// Returns nil when the body has no Claude usage (e.g. OpenAI format or error),
-// so callers never stamp a bogus all-zero usage over a real one.
+// CachedTokensFromJSON reads cached prompt tokens from every persisted and
+// provider-facing compatibility shape. It returns the first explicit numeric
+// value in precedence order and never treats JSON null as a value.
+func CachedTokensFromJSON(raw []byte) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var usage struct {
+		CachedTokens         *float64 `json:"cached_tokens"`
+		CacheReadInputTokens *float64 `json:"cache_read_input_tokens"`
+		PromptTokensDetails  *struct {
+			CachedTokens *float64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		InputTokensDetails *struct {
+			CachedTokens *float64 `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+	}
+	if json.Unmarshal(raw, &usage) != nil {
+		return 0
+	}
+	var promptCached *float64
+	if usage.PromptTokensDetails != nil {
+		promptCached = usage.PromptTokensDetails.CachedTokens
+	}
+	var inputCached *float64
+	if usage.InputTokensDetails != nil {
+		inputCached = usage.InputTokensDetails.CachedTokens
+	}
+	for _, candidate := range []*float64{
+		usage.CachedTokens,
+		usage.CacheReadInputTokens,
+		promptCached,
+		inputCached,
+	} {
+		if candidate != nil && *candidate >= 0 {
+			return int(*candidate)
+		}
+	}
+	return 0
+}
+
+// NormalizeClaudeUsage converts a fresh Claude usage record to the canonical
+// OpenAI shape. The source marker makes repeated calls safe.
+func NormalizeClaudeUsage(usage *OpenAIUsage) *OpenAIUsage {
+	if usage == nil || usage.PromptCacheIncluded {
+		return usage
+	}
+	usage.PromptTokens += usage.GetCachedTokens() + usage.CacheCreationInputTokens
+	usage.PromptCacheIncluded = true
+	return usage
+}
+
+// ParseClaudeUsage extracts usage from a Claude-format response body. Claude
+// prompt cache counters are separate from input_tokens, so canonical OpenAI
+// prompt_tokens must include cache reads and creation.
 func ParseClaudeUsage(body []byte) *OpenAIUsage {
 	var raw struct {
 		Usage jsontext.Value `json:"usage"`
@@ -41,9 +102,6 @@ func ParseClaudeUsage(body []byte) *OpenAIUsage {
 	if json.Unmarshal(body, &raw) != nil || len(raw.Usage) == 0 || string(raw.Usage) == "null" {
 		return nil
 	}
-	// Only treat it as Claude usage when the defining Claude key is present.
-	// An OpenAI-format body (prompt_tokens/completion_tokens) must yield nil,
-	// not an all-zero usage.
 	var keys map[string]jsontext.Value
 	if json.Unmarshal(raw.Usage, &keys) != nil {
 		return nil
@@ -52,49 +110,39 @@ func ParseClaudeUsage(body []byte) *OpenAIUsage {
 		return nil
 	}
 	var u struct {
-		InputTokens              int  `json:"input_tokens"`
-		OutputTokens             int  `json:"output_tokens"`
-		CachedTokens             *int `json:"cached_tokens"`
-		CacheReadInputTokens     int  `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
-		InputTokensDetails       *struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"input_tokens_details"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	}
 	if err := json.Unmarshal(raw.Usage, &u); err != nil {
 		return nil
 	}
-	cached := 0
-	if u.CachedTokens != nil {
-		cached = *u.CachedTokens
-	} else if u.InputTokensDetails != nil {
-		cached = u.InputTokensDetails.CachedTokens
-	} else {
-		cached = u.CacheReadInputTokens
-	}
-	return &OpenAIUsage{
+	return NormalizeClaudeUsage(&OpenAIUsage{
 		PromptTokens:             u.InputTokens,
 		CompletionTokens:         u.OutputTokens,
-		CachedTokens:             cached,
+		CachedTokens:             CachedTokensFromJSON(raw.Usage),
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
-	}
+	})
 }
 
-// ParseResponseUsage extracts usage from a response body in either OpenAI or
-// Claude format. The !translate path serves both /v1/chat/completions (OpenAI
-// bodies, translateResponse hardcoded false) and claude/anthropic providers
-// (Claude bodies), so a single-format parser would silently drop usage.
+// ParseResponseUsage extracts usage from an OpenAI or Claude response body.
 func ParseResponseUsage(body []byte) *OpenAIUsage {
 	if u := ParseClaudeUsage(body); u != nil {
 		return u
 	}
 	var raw struct {
-		Usage *OpenAIUsage `json:"usage"`
+		Usage jsontext.Value `json:"usage"`
 	}
-	if json.Unmarshal(body, &raw) == nil && raw.Usage != nil {
-		return raw.Usage
+	if json.Unmarshal(body, &raw) != nil || len(raw.Usage) == 0 || string(raw.Usage) == "null" {
+		return nil
 	}
-	return nil
+	var usage OpenAIUsage
+	if json.Unmarshal(raw.Usage, &usage) != nil {
+		return nil
+	}
+	usage.CachedTokens = CachedTokensFromJSON(raw.Usage)
+	usage.PromptCacheIncluded = true
+	return &usage
 }
 
 func stopThinkingBlock(state *StreamState, results *[]map[string]any) {
@@ -214,6 +262,8 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 			claudeStop = "max_tokens"
 		case "tool_calls":
 			claudeStop = "tool_use"
+		case "content_filter":
+			claudeStop = "refusal"
 		}
 	}
 
@@ -233,6 +283,7 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		CachedTokens:             cachedTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 		CompletionTokensDetails:  details,
+		PromptCacheIncluded:      true,
 	}
 	claudeUsageMap := map[string]any{
 		"input_tokens":  inputTokens,
@@ -307,7 +358,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	if sessionKey != "" {
 		statesMu.Lock()
 		if prev, ok := pendingJSON[sessionKey]; ok {
-			dataPart = append(prev, dataPart...)
+			dataPart = append(prev.data, dataPart...)
 			delete(pendingJSON, sessionKey)
 		}
 		statesMu.Unlock()
@@ -317,7 +368,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	if err := json.Unmarshal(dataPart, &chunk); err != nil {
 		if sessionKey != "" && isTruncatedJSON(err) && len(dataPart) < maxPendingJSON {
 			statesMu.Lock()
-			pendingJSON[sessionKey] = dataPart
+			pendingJSON[sessionKey] = pendingFragment{data: dataPart, createdAt: time.Now()}
 			statesMu.Unlock()
 			return nil, nil // hold the fragment until the continuation arrives
 		}
@@ -548,6 +599,8 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 			claudeStop = "max_tokens"
 		case "tool_calls":
 			claudeStop = "tool_use"
+		case "content_filter":
+			claudeStop = "refusal"
 		}
 		finalUsage := map[string]any{
 			"input_tokens":  0,
@@ -556,6 +609,12 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 		if state.Usage != nil {
 			finalUsage["input_tokens"] = state.Usage.PromptTokens
 			finalUsage["output_tokens"] = state.Usage.CompletionTokens
+			if cached := state.Usage.GetCachedTokens(); cached > 0 {
+				finalUsage["cache_read_input_tokens"] = cached
+			}
+			if state.Usage.CacheCreationInputTokens > 0 {
+				finalUsage["cache_creation_input_tokens"] = state.Usage.CacheCreationInputTokens
+			}
 		}
 		results = append(results, map[string]any{
 			"type": "message_delta",
@@ -664,4 +723,17 @@ func EnsureStreamClosed(sessionKey string) []byte {
 		buf.WriteString(formatSSE(res))
 	}
 	return buf.Bytes()
+}
+
+// UnwrapClineEnvelope unwraps {"success":true,"data":{...}} envelope from Cline/Clinepass
+// non-streaming responses (parity with open-sse/shared/clineEnvelope.js #122f23ee).
+func UnwrapClineEnvelope(body []byte) []byte {
+	var env struct {
+		Success bool           `json:"success"`
+		Data    jsontext.Value `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err == nil && env.Success && len(env.Data) > 0 && env.Data[0] == '{' {
+		return []byte(env.Data)
+	}
+	return body
 }

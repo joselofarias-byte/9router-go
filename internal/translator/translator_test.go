@@ -24,7 +24,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 		}
 
 		// Verify structure
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
 			t.Fatalf("failed to parse output: %v", err)
 		}
@@ -41,7 +41,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Errorf("expected max_tokens 1000, got %v", oreq["max_tokens"])
 		}
 
-		messages, ok := oreq["messages"].([]interface{})
+		messages, ok := oreq["messages"].([]any)
 		if !ok {
 			t.Fatalf("messages is not an array")
 		}
@@ -50,12 +50,12 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("expected 2 messages, got %d", len(messages))
 		}
 
-		sysMsg := messages[0].(map[string]interface{})
+		sysMsg := messages[0].(map[string]any)
 		if sysMsg["role"] != "system" || sysMsg["content"] != "System instructions" {
 			t.Errorf("unexpected system message: %v", sysMsg)
 		}
 
-		userMsg := messages[1].(map[string]interface{})
+		userMsg := messages[1].(map[string]any)
 		if userMsg["role"] != "user" || userMsg["content"] != "hello" {
 			t.Errorf("unexpected user message: %v", userMsg)
 		}
@@ -77,11 +77,11 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("failed to translate: %v", err)
 		}
 
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		_ = json.Unmarshal(openaiJSON, &oreq)
 
-		messages := oreq["messages"].([]interface{})
-		sysMsg := messages[0].(map[string]interface{})
+		messages := oreq["messages"].([]any)
+		sysMsg := messages[0].(map[string]any)
 		if sysMsg["role"] != "system" {
 			t.Errorf("expected system message, got role %v", sysMsg["role"])
 		}
@@ -106,17 +106,17 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("failed to translate: %v", err)
 		}
 
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		_ = json.Unmarshal(openaiJSON, &oreq)
 
-		messages := oreq["messages"].([]interface{})
+		messages := oreq["messages"].([]any)
 		if len(messages) != 3 {
 			t.Fatalf("expected 3 messages, got %d", len(messages))
 		}
 
-		userMsg := messages[0].(map[string]interface{})
-		midSysMsg := messages[1].(map[string]interface{})
-		assistantMsg := messages[2].(map[string]interface{})
+		userMsg := messages[0].(map[string]any)
+		midSysMsg := messages[1].(map[string]any)
+		assistantMsg := messages[2].(map[string]any)
 
 		if userMsg["role"] != "user" || userMsg["content"] != "hello" {
 			t.Errorf("unexpected message 1: %v", userMsg)
@@ -161,13 +161,13 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("failed to translate: %v", err)
 		}
 
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		_ = json.Unmarshal(openaiJSON, &oreq)
 
-		messages := oreq["messages"].([]interface{})
-		userMsg := messages[0].(map[string]interface{})
+		messages := oreq["messages"].([]any)
+		userMsg := messages[0].(map[string]any)
 
-		contentBlocks, ok := userMsg["content"].([]interface{})
+		contentBlocks, ok := userMsg["content"].([]any)
 		if !ok {
 			t.Fatalf("expected content blocks array, got %v", userMsg["content"])
 		}
@@ -176,17 +176,17 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("expected 2 content blocks, got %d", len(contentBlocks))
 		}
 
-		textBlock := contentBlocks[0].(map[string]interface{})
+		textBlock := contentBlocks[0].(map[string]any)
 		if textBlock["type"] != "text" || textBlock["text"] != "look at this image" {
 			t.Errorf("unexpected text block: %v", textBlock)
 		}
 
-		imageBlock := contentBlocks[1].(map[string]interface{})
+		imageBlock := contentBlocks[1].(map[string]any)
 		if imageBlock["type"] != "image_url" {
 			t.Errorf("expected type 'image_url', got %v", imageBlock["type"])
 		}
 
-		imageUrl, ok := imageBlock["image_url"].(map[string]interface{})
+		imageUrl, ok := imageBlock["image_url"].(map[string]any)
 		if !ok {
 			t.Fatalf("expected image_url block, got %v", imageBlock["image_url"])
 		}
@@ -248,58 +248,58 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("failed to translate: %v", err)
 		}
 
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		_ = json.Unmarshal(openaiJSON, &oreq)
 
 		// Verify tools
-		tools, ok := oreq["tools"].([]interface{})
+		tools, ok := oreq["tools"].([]any)
 		if !ok || len(tools) != 1 {
 			t.Fatalf("expected 1 tool, got %v", oreq["tools"])
 		}
 
-		tool := tools[0].(map[string]interface{})
+		tool := tools[0].(map[string]any)
 		if tool["type"] != "function" {
 			t.Errorf("expected tool type 'function', got %v", tool["type"])
 		}
 
-		fn := tool["function"].(map[string]interface{})
+		fn := tool["function"].(map[string]any)
 		if fn["name"] != "get_weather" || fn["description"] != "Get the current weather" {
 			t.Errorf("unexpected function metadata: %v", fn)
 		}
 
 		// Verify messages
-		messages := oreq["messages"].([]interface{})
+		messages := oreq["messages"].([]any)
 		if len(messages) != 3 {
 			t.Fatalf("expected 3 messages, got %d", len(messages))
 		}
 
 		// 1. User question
-		userMsg := messages[0].(map[string]interface{})
+		userMsg := messages[0].(map[string]any)
 		if userMsg["role"] != "user" || userMsg["content"] != "What is the weather in Paris?" {
 			t.Errorf("unexpected message 1: %v", userMsg)
 		}
 
 		// 2. Assistant tool call
-		assistantMsg := messages[1].(map[string]interface{})
+		assistantMsg := messages[1].(map[string]any)
 		if assistantMsg["role"] != "assistant" || assistantMsg["content"] != "Let me check that." {
 			t.Errorf("unexpected assistant content: %v", assistantMsg)
 		}
 
-		toolCalls, ok := assistantMsg["tool_calls"].([]interface{})
+		toolCalls, ok := assistantMsg["tool_calls"].([]any)
 		if !ok || len(toolCalls) != 1 {
 			t.Fatalf("expected 1 tool_call, got %v", assistantMsg["tool_calls"])
 		}
 
-		toolCall := toolCalls[0].(map[string]interface{})
+		toolCall := toolCalls[0].(map[string]any)
 		if toolCall["id"] != "toolu_1" || toolCall["type"] != "function" {
 			t.Errorf("unexpected tool_call structure: %v", toolCall)
 		}
 
-		callFn := toolCall["function"].(map[string]interface{})
+		callFn := toolCall["function"].(map[string]any)
 		if callFn["name"] != "get_weather" {
 			t.Errorf("expected function name 'get_weather', got %v", callFn["name"])
 		}
-		var argsMap map[string]interface{}
+		var argsMap map[string]any
 		if err := json.Unmarshal([]byte(callFn["arguments"].(string)), &argsMap); err != nil {
 			t.Fatalf("failed to unmarshal arguments: %v", err)
 		}
@@ -308,7 +308,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 		}
 
 		// 3. Tool response
-		toolResultMsg := messages[2].(map[string]interface{})
+		toolResultMsg := messages[2].(map[string]any)
 		if toolResultMsg["role"] != "tool" {
 			t.Errorf("expected message 3 to be a 'tool' message, got role %v", toolResultMsg["role"])
 		}
@@ -341,16 +341,16 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 			t.Fatalf("failed to translate: %v", err)
 		}
 
-		var oreq map[string]interface{}
+		var oreq map[string]any
 		_ = json.Unmarshal(openaiJSON, &oreq)
 
-		messages := oreq["messages"].([]interface{})
+		messages := oreq["messages"].([]any)
 		// It should insert a mock tool response for toolu_1
 		if len(messages) != 2 {
 			t.Fatalf("expected 2 messages (assistant + fixed tool reply), got %d", len(messages))
 		}
 
-		toolResponse := messages[1].(map[string]interface{})
+		toolResponse := messages[1].(map[string]any)
 		if toolResponse["role"] != "tool" || toolResponse["tool_call_id"] != "toolu_1" || toolResponse["content"] != "[No response received]" {
 			t.Errorf("unexpected inserted tool response: %v", toolResponse)
 		}
@@ -360,11 +360,11 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 		testCases := []struct {
 			name       string
 			toolChoice string
-			expected   interface{}
+			expected   any
 		}{
 			{"auto", `"auto"`, "auto"},
 			{"any", `{"type":"any"}`, "required"},
-			{"specific tool", `{"type":"tool","name":"get_weather"}`, map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "get_weather"}}},
+			{"specific tool", `{"type":"tool","name":"get_weather"}`, map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}},
 		}
 
 		for _, tc := range testCases {
@@ -379,7 +379,7 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 					t.Fatalf("failed to translate: %v", err)
 				}
 
-				var oreq map[string]interface{}
+				var oreq map[string]any
 				_ = json.Unmarshal(openaiJSON, &oreq)
 
 				choiceVal := oreq["tool_choice"]
@@ -388,13 +388,13 @@ func TestTranslateClaudeToOpenAI(t *testing.T) {
 					if choiceVal != exp {
 						t.Errorf("expected tool_choice %v, got %v", exp, choiceVal)
 					}
-				case map[string]interface{}:
-					choiceMap, ok := choiceVal.(map[string]interface{})
+				case map[string]any:
+					choiceMap, ok := choiceVal.(map[string]any)
 					if !ok {
 						t.Fatalf("expected tool_choice map, got %T", choiceVal)
 					}
-					fnMap := choiceMap["function"].(map[string]interface{})
-					expFnMap := exp["function"].(map[string]interface{})
+					fnMap := choiceMap["function"].(map[string]any)
+					expFnMap := exp["function"].(map[string]any)
 					if fnMap["name"] != expFnMap["name"] {
 						t.Errorf("expected function name %v, got %v", expFnMap["name"], fnMap["name"])
 					}
@@ -598,10 +598,10 @@ func TestTranslateOpenAIToClaudeStream(t *testing.T) {
 		for _, line := range strings.Split(outputStr, "\n") {
 			if strings.HasPrefix(line, "data:") {
 				data := strings.TrimSpace(line[5:])
-				var ev map[string]interface{}
+				var ev map[string]any
 				if err := json.Unmarshal([]byte(data), &ev); err == nil {
 					if ev["type"] == "content_block_delta" {
-						if delta, ok := ev["delta"].(map[string]interface{}); ok {
+						if delta, ok := ev["delta"].(map[string]any); ok {
 							if pj, ok := delta["partial_json"].(string); ok {
 								partialJSON = pj
 								break
@@ -616,7 +616,7 @@ func TestTranslateOpenAIToClaudeStream(t *testing.T) {
 			t.Fatalf("could not find partial_json in output:\n%s", outputStr)
 		}
 
-		var sanitizedArgs map[string]interface{}
+		var sanitizedArgs map[string]any
 		if err := json.Unmarshal([]byte(partialJSON), &sanitizedArgs); err != nil {
 			t.Fatalf("failed to unmarshal partial_json %q: %v", partialJSON, err)
 		}
@@ -649,10 +649,10 @@ func TestTranslateOpenAIToClaudeStream(t *testing.T) {
 		for _, line := range strings.Split(string(output), "\n") {
 			if strings.HasPrefix(line, "data:") {
 				data := strings.TrimSpace(line[5:])
-				var ev map[string]interface{}
+				var ev map[string]any
 				if err := json.Unmarshal([]byte(data), &ev); err == nil {
 					if ev["type"] == "content_block_delta" {
-						if delta, ok := ev["delta"].(map[string]interface{}); ok {
+						if delta, ok := ev["delta"].(map[string]any); ok {
 							if pj, ok := delta["partial_json"].(string); ok {
 								partialJSON = pj
 								break
@@ -663,7 +663,7 @@ func TestTranslateOpenAIToClaudeStream(t *testing.T) {
 			}
 		}
 
-		var sanitizedArgs map[string]interface{}
+		var sanitizedArgs map[string]any
 		_ = json.Unmarshal([]byte(partialJSON), &sanitizedArgs)
 
 		if sanitizedArgs["limit"] != float64(150) {

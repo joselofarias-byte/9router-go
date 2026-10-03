@@ -197,6 +197,29 @@ func TestAntigravityImageModelAndConfig(t *testing.T) {
 	}
 }
 
+func TestWrapForAntigravity_OmitsAgentRequestType(t *testing.T) {
+	// Port of decolua/9router#3986: requestType="agent" triggers a false
+	// upstream 429 bucket on OMP harness payloads, so it must be omitted.
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3.8-flash-medium")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	if strings.Contains(string(wrapped), `"requestType"`) {
+		t.Errorf("expected no requestType field in envelope, got %s", string(wrapped))
+	}
+	var req translator.AntigravityRequest
+	if err := json.Unmarshal(wrapped, &req); err != nil {
+		t.Fatalf("unmarshal wrapper: %v", err)
+	}
+	if req.RequestType != "" {
+		t.Errorf("expected empty RequestType, got %q", req.RequestType)
+	}
+	if !antigravityRequestIDRe.MatchString(req.RequestID) {
+		t.Errorf("request ID %q does not match UUID format", req.RequestID)
+	}
+}
+
 func TestWrapAntigravityImageRequest(t *testing.T) {
 	reqBytes, err := translator.WrapAntigravityImageRequest("A cute cat", "", "proj-123", "gemini-3.1-flash-image", "16:9")
 	if err != nil {
@@ -311,17 +334,22 @@ func TestTranslateOpenAIToGemini_ClaudeCodeToolResponseMapping(t *testing.T) {
 		t.Fatalf("unmarshal gemini request failed: %v", err)
 	}
 
-	if len(req.Contents) != 2 {
-		t.Fatalf("expected 2 contents, got %d", len(req.Contents))
+	// NormalizeGeminiContents brackets the conversation with user turns, so the
+	// response part is found wherever it landed rather than at a fixed index.
+	var respPart *translator.GeminiFunctionResp
+	for _, c := range req.Contents {
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				respPart = p.FunctionResponse
+			}
+		}
 	}
-
+	if respPart == nil {
+		t.Fatalf("expected a functionResponse part in %d contents", len(req.Contents))
+	}
 	// Tool response part must have exact name "plugin:claude-mem:mcp-search"
-	respPart := req.Contents[1].Parts[0]
-	if respPart.FunctionResponse == nil {
-		t.Fatal("expected functionResponse part")
-	}
-	if respPart.FunctionResponse.Name != "plugin:claude-mem:mcp-search" {
-		t.Errorf("expected functionResponse name 'plugin:claude-mem:mcp-search', got %q", respPart.FunctionResponse.Name)
+	if respPart.Name != "plugin:claude-mem:mcp-search" {
+		t.Errorf("expected functionResponse name 'plugin:claude-mem:mcp-search', got %q", respPart.Name)
 	}
 }
 
@@ -349,6 +377,89 @@ func TestStripCompetitivePrompts(t *testing.T) {
 	}
 	if strings.Contains(stripped.Contents[0].Parts[0].Text, "Anthropic's Claude Agent SDK") {
 		t.Errorf("expected competitive prompt removed from contents, got %s", stripped.Contents[0].Parts[0].Text)
+	}
+}
+func TestStripCompetitivePrompts_NormalizesHarnessTagsInSystemOnly(t *testing.T) {
+	req := &translator.GeminiRequest{
+		SystemInstruction: &translator.GeminiContent{
+			Role: "user",
+			Parts: []translator.GeminiPart{
+				{Text: "<system-conventions>\nRFC 2119 body stays.</system-conventions> <system-directive>dir stays</system-directive> <critical>crit stays</critical> Oh My Pi coding harness Oh My Pi omp Live"},
+			},
+		},
+		Contents: []translator.GeminiContent{
+			{
+				Role: "user",
+				Parts: []translator.GeminiPart{
+					{Text: "<system-conventions> caller text untouched Oh My Pi"},
+				},
+			},
+		},
+	}
+
+	stripped := translator.StripCompetitivePrompts(req)
+	sys := stripped.SystemInstruction.Parts[0].Text
+	for _, want := range []string{"<conventions>", "RFC 2119 body stays", "<instructions>dir stays", "<important>crit stays", "AI coding assistant"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("expected system text to contain %q, got %q", want, sys)
+		}
+	}
+	for _, banned := range []string{"system-conventions", "system-directive", "critical", "Oh My Pi"} {
+		if strings.Contains(sys, banned) {
+			t.Errorf("expected system text to drop %q, got %q", banned, sys)
+		}
+	}
+	kept := stripped.Contents[0].Parts[0].Text
+	if !strings.Contains(kept, "<system-conventions>") || !strings.Contains(kept, "Oh My Pi") {
+		t.Errorf("expected caller content preserved, got %q", kept)
+	}
+}
+
+func TestStripCompetitivePrompts_HermesAndBillingHeader(t *testing.T) {
+	req := &translator.GeminiRequest{
+		SystemInstruction: &translator.GeminiContent{
+			Role: "user",
+			Parts: []translator.GeminiPart{
+				{Text: "x-anthropic-billing-header: cc_version=2.1.275.f15; cc_entrypoint=cli;\n\nYou are Hermes Agent, an intelligent AI assistant created by Nous Research. Help user."},
+			},
+		},
+	}
+
+	stripped := translator.StripCompetitivePrompts(req)
+	sys := stripped.SystemInstruction.Parts[0].Text
+	if strings.Contains(sys, "x-anthropic-billing-header") {
+		t.Errorf("expected billing header stripped, got %q", sys)
+	}
+	if strings.Contains(sys, "created by Nous Research") {
+		t.Errorf("expected Nous Research stripped from Hermes identity, got %q", sys)
+	}
+	if !strings.Contains(sys, "You are Hermes Agent. You are an intelligent AI assistant.") {
+		t.Errorf("expected sanitized Hermes identity, got %q", sys)
+	}
+}
+
+func TestWrapForAntigravity_NormalizesTriggerSystemPrompt(t *testing.T) {
+	geminiBody := []byte(`{"system_instruction":{"role":"user","parts":[{"text":"<system-conventions>\nRFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."}]},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	inner := unwrapInnerRequest(t, wrapped)
+	si, _ := inner["system_instruction"].(map[string]any)
+	if si == nil {
+		t.Fatal("system_instruction missing from wrapped request")
+	}
+	parts, _ := si["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatal("system_instruction.parts missing")
+	}
+	part, _ := parts[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if strings.Contains(text, "system-conventions") {
+		t.Errorf("expected trigger tag normalized, got %q", text)
+	}
+	if !strings.Contains(text, "<conventions>") || !strings.Contains(text, "RFC 2119") {
+		t.Errorf("expected neutral tag with intact body, got %q", text)
 	}
 }
 

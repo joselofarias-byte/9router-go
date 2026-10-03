@@ -1,6 +1,11 @@
 package chat
 
 import (
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/translator"
+	"9router/proxy/internal/updater"
 	"bytes"
 	"context"
 	json "encoding/json/v2"
@@ -8,15 +13,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
-
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/log"
-	"9router/proxy/internal/providers"
-	"9router/proxy/internal/translator"
-	"9router/proxy/internal/updater"
 )
 
 // HandleChatCompletions handles POST /v1/chat/completions (OpenAI format requests).
@@ -54,17 +56,62 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
+	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
+		augmented, comboStrategy := modelInfo.ComboModels, modelInfo.Strategy
+		if !modelInfo.VirtualFree {
+			augmented, comboStrategy = h.applyCapacityAdapter(augmented, requiredCaps, comboStrategy, reqBody.Model)
+		}
 		if modelInfo.Strategy == "fusion" {
-			h.handleFusion(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit)
+			h.handleFusion(ctx, w, body, augmented, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
-		h.handleComboFallback(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.VirtualFree)
+		h.handleComboFallback(ctx, w, body, augmented, comboStrategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.VirtualFree)
+		return
+	}
+
+	// Single model request: check if capacity adapter should auto-switch (e.g. vision for image inputs)
+	targetEntry := reqBody.Model
+	if !strings.Contains(targetEntry, "/") && modelInfo != nil && modelInfo.Provider != "" {
+		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
+	}
+	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps)
+	if len(augmented) > 1 {
+		log.Info("chat", "capacity adapter auto-switch", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
+		h.handleComboFallback(ctx, w, body, augmented, strat, reqBody.Stream, false, reqBody.Model, 0)
 		return
 	}
 
 	h.handleSingleModel(ctx, w, body, modelInfo, reqBody.Stream, false)
+}
+
+// applyCapacityAdapter augments a combo's model list with the capacity-adapter
+// pool and reports the strategy that must govern the resulting list.
+//
+// The pool exists precisely because none of the combo's own models can serve
+// the request (a text-only combo receiving an image, say), so it is prepended
+// and must be tried before the combo's own list. Handing the combo's own
+// strategy to the augmented list instead used to fold the adapter model into
+// the combo's rotation: with strategy round-robin, combo-wombo (whose only
+// entry is oc/space-bunny-free, which reports no vision) alternated every turn
+// between its own model and ag/gemini-3.8-flash-high, so traffic to a provider
+// absent from the combo appeared to leak out of it. An augmented list is
+// therefore governed by the adapter's own strategy; the combo's strategy
+// applies only when nothing was injected.
+func (h *ChatHandler) applyCapacityAdapter(comboModels []string, required map[string]bool, comboStrategy, requestedModel string) ([]string, string) {
+	augmented, adapterStrategy := h.AugmentModelsWithCapacityAdapter(comboModels, required)
+	if len(augmented) == len(comboModels) {
+		return augmented, comboStrategy
+	}
+	log.Info("chat", "capacity adapter auto-switch combo",
+		"target", requestedModel,
+		"switched_to", augmented[0],
+		"caps", keysString(required),
+		"comboStrategy", comboStrategy,
+		"adapterStrategy", adapterStrategy)
+	return augmented, adapterStrategy
 }
 
 // handleSingleModel resolves a single ModelInfo and forwards the request upstream.
@@ -76,7 +123,7 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	upstreamBody["model"] = modelInfo.Model
-
+	repairToolCallIDsInMap(upstreamBody)
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
@@ -137,7 +184,9 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body)
-		body = translator.DefaultClaudeToolType(body)
+		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {
+			body = translator.DefaultClaudeToolType(body)
+		}
 		body = translator.AnchorClaudeCache(body)
 		if err := json.Unmarshal(body, &workingBody); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
@@ -158,20 +207,39 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	// Store requested model for streaming echo (PR #3693) and for [1m] marker handling
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
 
+	requiredCaps := DetectRequiredCapabilities(body)
+
 	if len(modelInfo.ComboModels) > 0 {
+		augmented, comboStrategy := modelInfo.ComboModels, modelInfo.Strategy
+		if !modelInfo.VirtualFree {
+			augmented, comboStrategy = h.applyCapacityAdapter(augmented, requiredCaps, comboStrategy, reqBody.Model)
+		}
 		if modelInfo.Strategy == "fusion" {
 			bodyJSON, err := json.Marshal(workingBody)
 			if err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal request body")
 				return
 			}
-			h.handleFusion(ctx, w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit)
+			h.handleFusion(ctx, w, bodyJSON, augmented, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
-		h.handleMessagesComboFallback(ctx, w, workingBody, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, modelInfo.VirtualFree)
+		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, modelInfo.VirtualFree)
+		return
+	}
+
+	// Single model request: check if capacity adapter should auto-switch (e.g. vision for image inputs)
+	targetEntry := reqBody.Model
+	if !strings.Contains(targetEntry, "/") && modelInfo != nil && modelInfo.Provider != "" {
+		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
+	}
+	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps)
+	if len(augmented) > 1 {
+		log.Info("chat", "capacity adapter auto-switch messages", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
+		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, strat, reqBody.Stream, reqBody.Model, 0)
 		return
 	}
 
@@ -222,6 +290,50 @@ func (h *ChatHandler) HandleVersionStatus(w http.ResponseWriter, r *http.Request
 	handlerutil.WriteJSON(w, http.StatusOK, status)
 }
 
+// HandleChangelog serves the CHANGELOG.md file or fetches it from remote with fallbacks.
+func (h *ChatHandler) HandleChangelog(w http.ResponseWriter, r *http.Request) {
+	candidates := []string{
+		"CHANGELOG.md",
+		"../CHANGELOG.md",
+		"../../CHANGELOG.md",
+	}
+	for _, path := range candidates {
+		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+	}
+
+	urls := []string{
+		"https://raw.githubusercontent.com/luqman-v1/9router-go/main/CHANGELOG.md",
+		"https://raw.githubusercontent.com/decolua/9router/refs/heads/master/CHANGELOG.md",
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, u := range urls {
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			data, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr == nil && len(data) > 0 {
+				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(data)
+				return
+			}
+		} else if resp != nil {
+			_ = resp.Body.Close()
+		}
+	}
+
+	handlerutil.WriteJSONError(w, http.StatusNotFound, "changelog not found")
+}
+
 // HandleToggleAutoUpdate enables or disables automatic updates in settings and runtime.
 func (h *ChatHandler) HandleToggleAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -234,7 +346,9 @@ func (h *ChatHandler) HandleToggleAutoUpdate(w http.ResponseWriter, r *http.Requ
 
 	updater.SetAutoUpdate(body.Enabled)
 	if h.Repo != nil {
-		_ = h.Repo.SetAutoUpdate(body.Enabled)
+		if err := h.Repo.SetAutoUpdate(body.Enabled); err != nil {
+			log.Warn("chat", "persist auto-update setting failed", "error", err)
+		}
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
@@ -286,121 +400,62 @@ func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request
 	}()
 }
 
-// HandleModels responds with the list of available model identifiers from the DB.
+// modelsListModeFromQuery reads the listing scope from the request. Absent
+// params keep the upstream default (modeListAll) so existing clients are
+// unaffected: `?connected=1` narrows to usable providers, `?all=1` forces the
+// full catalog.
+func modelsListModeFromQuery(r *http.Request) ModelsListMode {
+	q := r.URL.Query()
+	if queryFlagEnabled(q.Get("connected")) {
+		return modeListConnected
+	}
+	if queryFlagEnabled(q.Get("all")) {
+		return modeListCatalog
+	}
+	return modeListAll
+}
+
+// queryFlagEnabled treats an explicit "1"/"true" as on, matching the loose
+// boolean parsing the rest of the dashboard API uses. An absent value is off,
+// so `?all` alone (no value) also reads as false and the default applies.
+func queryFlagEnabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// HandleModels responds with the list of available model identifiers.
+//
+// Scope is controlled by query parameters:
+//   - default        upstream behaviour: full static catalog on a fresh
+//     install, connection-scoped once connections exist
+//   - ?connected=1   only providers with an active connection, plus registry
+//     noAuth providers — the set a client can actually call
+//   - ?all=1         always the full static catalog, connections ignored
+//
+// The response always carries `mode` and `connections` so a caller can tell a
+// candidate catalog from a usable model list.
 func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
-	type modelObj struct {
-		ID                  string `json:"id"`
-		Object              string `json:"object"`
-		Created             int64  `json:"created"`
-		OwnedBy             string `json:"owned_by"`
-		ContextLength       int    `json:"context_length,omitempty"`
-		MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
-	}
-
-	var data []modelObj
-	now := time.Now().Unix()
-
-	aliases, err := h.Repo.GetModelAliases()
-	if err == nil {
-		for alias := range aliases {
-			ctxLen, maxOut := providers.GetModelTokenLimits(alias)
-			data = append(data, modelObj{
-				ID:                  alias,
-				Object:              "model",
-				Created:             now,
-				OwnedBy:             "system",
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
-			})
-		}
-	}
-
-	combos, err := h.Repo.GetCombos()
-	if err == nil {
-		for _, c := range combos {
-			ctxLen, maxOut := providers.GetModelTokenLimits(c.Name)
-			data = append(data, modelObj{
-				ID:                  c.Name,
-				Object:              "model",
-				Created:             now,
-				OwnedBy:             "system",
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
-			})
-		}
-	}
-
-	// Include custom models with live caps (port of Next.js GET /api/models customModels merge)
-	if customs, err := h.Repo.GetCustomModels(); err == nil {
-		seen := make(map[string]bool, len(data))
-		for _, m := range data {
-			seen[m.ID] = true
-		}
-		for _, cm := range customs {
-			fullModel := cm.ProviderAlias + "/" + cm.ID
-			if seen[fullModel] {
-				continue
-			}
-			ctxLen, maxOut := providers.GetModelTokenLimits(fullModel)
-			// Apply custom caps to provider registry for capability detection
-			if len(cm.Caps) > 0 {
-				var caps providers.Capabilities
-				if cm.Caps["vision"] {
-					caps.Vision = true
-				}
-				if cm.Caps["reasoning"] {
-					caps.Reasoning = true
-				}
-				if cm.Caps["search"] {
-					caps.Search = true
-				}
-				if cm.Caps["tools"] {
-					caps.Tools = true
-				}
-				if cm.Caps["image"] || cm.Caps["imageOutput"] {
-					caps.ImageOutput = true
-				}
-				if cm.Caps["audio"] {
-					caps.AudioInput = true
-				}
-				providers.SetCustomModelCaps(cm.ProviderAlias, cm.ID, caps)
-				// If custom caps enable vision/reasoning, reflect in token limits display? Keep as is.
-			}
-			data = append(data, modelObj{
-				ID:                  fullModel,
-				Object:              "model",
-				Created:             now,
-				OwnedBy:             cm.ProviderAlias,
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
-			})
-			seen[fullModel] = true
-		}
-	}
-
-	seenIDs := make(map[string]bool, len(data))
-	for _, m := range data {
-		seenIDs[strings.ToLower(m.ID)] = true
+	mode := modelsListModeFromQuery(r)
+	result := h.buildModelsListResult(r.Context(), mode)
+	seen := make(map[string]bool, len(result.Models))
+	for _, m := range result.Models {
+		seen[strings.ToLower(m.ID)] = true
 	}
 	for _, id := range []string{"free", "free-best"} {
-		if seenIDs[id] {
-			continue
+		if !seen[id] {
+			result.Models = append(result.Models, ModelInfoObject{ID: id, Object: "model", OwnedBy: "fabric"})
 		}
-		data = append(data, modelObj{
-			ID:      id,
-			Object:  "model",
-			Created: now,
-			OwnedBy: "fabric",
-		})
 	}
-
-	if data == nil {
-		data = []modelObj{}
-	}
-
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"object": "list",
-		"data":   data,
+		"object":      "list",
+		"data":        result.Models,
+		"models":      result.Models,
+		"mode":        result.Mode,
+		"connections": result.Connections,
 	})
 }
 
@@ -431,6 +486,7 @@ func (h *ChatHandler) HandleModelsInfo(w http.ResponseWriter, r *http.Request) {
 		"owned_by":              modelInfo.Provider,
 		"endpoint":              "/v1/chat/completions",
 		"context_length":        ctxLen,
+		"context_window":        ctxLen,
 		"max_completion_tokens": maxOut,
 		"max_input_tokens":      ctxLen - maxOut,
 		"max_output_tokens":     maxOut,
@@ -467,6 +523,8 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 			match = cfg.TTSURL != ""
 		case "stt":
 			match = cfg.STTURL != ""
+		case "systemone":
+			match = cfg.SystemoneURL != ""
 		case "embedding":
 			match = strings.Contains(cfg.BaseURL, "/embeddings")
 		case "web":
@@ -491,6 +549,9 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 		}
 		if kind == "embedding" {
 			endpoint = "/v1/embeddings"
+		}
+		if kind == "systemone" {
+			endpoint = "/v1/systemone"
 		}
 		if kind == "image-to-text" {
 			endpoint = "/v1/chat/completions"
@@ -572,90 +633,10 @@ func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Otherwise treat as provider/model ID lookup
-	// Build full model list like HandleModels does
-	type modelObj struct {
-		ID                  string `json:"id"`
-		Object              string `json:"object"`
-		Created             int64  `json:"created"`
-		OwnedBy             string `json:"owned_by"`
-		ContextLength       int    `json:"context_length,omitempty"`
-		MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
-	}
-	var data []modelObj
-	now := time.Now().Unix()
-	aliases, err := h.Repo.GetModelAliases()
-	if err == nil {
-		for alias := range aliases {
-			ctxLen, maxOut := providers.GetModelTokenLimits(alias)
-			data = append(data, modelObj{
-				ID:                  alias,
-				Object:              "model",
-				Created:             now,
-				OwnedBy:             "system",
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
-			})
-		}
-	}
-	combos, err := h.Repo.GetCombos()
-	if err == nil {
-		for _, c := range combos {
-			ctxLen, maxOut := providers.GetModelTokenLimits(c.Name)
-			data = append(data, modelObj{
-				ID:                  c.Name,
-				Object:              "model",
-				Created:             now,
-				OwnedBy:             "system",
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
-			})
-		}
-	}
-	if customs, err := h.Repo.GetCustomModels(); err == nil {
-		seen := make(map[string]bool, len(data))
-		for _, m := range data {
-			seen[m.ID] = true
-		}
-		for _, cm := range customs {
-			fullModel := cm.ProviderAlias + "/" + cm.ID
-			if seen[fullModel] {
-				continue
-			}
-			ctxLen, maxOut := providers.GetModelTokenLimits(fullModel)
-			if len(cm.Caps) > 0 {
-				var caps providers.Capabilities
-				if cm.Caps["vision"] {
-					caps.Vision = true
-				}
-				if cm.Caps["reasoning"] {
-					caps.Reasoning = true
-				}
-				if cm.Caps["search"] {
-					caps.Search = true
-				}
-				if cm.Caps["tools"] {
-					caps.Tools = true
-				}
-				providers.SetCustomModelCaps(cm.ProviderAlias, cm.ID, caps)
-			}
-			data = append(data, modelObj{
-				ID:                  fullModel,
-				Object:              "model",
-				Created:             now,
-				OwnedBy:             cm.ProviderAlias,
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
-			})
-		}
-	}
-
-	// Search for exact match (including provider prefix)
-	for _, m := range data {
-		if m.ID == suffix {
-			handlerutil.WriteJSON(w, http.StatusOK, m)
-			return
-		}
+	// Otherwise treat as provider/model ID lookup.
+	if m, ok := h.findModelForLookup(r.Context(), suffix); ok {
+		handlerutil.WriteJSON(w, http.StatusOK, m)
+		return
 	}
 	// Also try without provider prefix? No, must be exact.
 
@@ -666,6 +647,35 @@ func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) 
 			"code":    "model_not_found",
 		},
 	})
+}
+
+// findModelForLookup resolves a provider/model id against the default list,
+// then against the connected-mode list.
+//
+// The default list is connection-scoped as soon as any connection row exists,
+// so a registry noAuth model that /v1/models?connected=1 advertises would 404
+// here — the listing endpoint and the lookup endpoint would disagree about
+// whether the same model exists. Falling back keeps this route additive in both
+// directions: on a fresh install the default list is the full catalog, which
+// already contains everything connected mode offers, and on a configured
+// install connected mode is the superset. Replacing the lookup outright with
+// connected mode would instead make a fresh install stricter, turning the
+// credentialed-provider lookups that resolve today into 404s.
+func (h *ChatHandler) findModelForLookup(ctx context.Context, modelID string) (ModelInfoObject, bool) {
+	if m, ok := findModelByID(h.buildModelsList(ctx), modelID); ok {
+		return m, true
+	}
+	return findModelByID(h.buildModelsListResult(ctx, modeListConnected).Models, modelID)
+}
+
+// findModelByID scans the published list for an exact provider/model id.
+func findModelByID(data []ModelInfoObject, modelID string) (ModelInfoObject, bool) {
+	for _, m := range data {
+		if m.ID == modelID {
+			return m, true
+		}
+	}
+	return ModelInfoObject{}, false
 }
 
 // HandleAudioVoices lists available TTS voices for a provider.
@@ -867,8 +877,11 @@ func contentBlockChars(block any) int {
 	}
 }
 
-// HandleResponsesCompact forwards to chat handler with compact flag.
-// POST /v1/responses/compact
+// HandleResponsesCompact marks a Responses request as a compaction and runs it
+// down the same pipeline as /v1/responses, matching upstream's route, which
+// sets body._compact and reuses handleChat rather than picking another wire
+// format. Forcing the body through /v1/chat/completions instead would strip
+// the Responses format the client spoke.
 func (h *ChatHandler) HandleResponsesCompact(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -890,9 +903,9 @@ func (h *ChatHandler) HandleResponsesCompact(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	newReq, _ := http.NewRequestWithContext(r.Context(), "POST", "/v1/chat/completions", bytes.NewReader(body))
+	newReq, _ := http.NewRequestWithContext(r.Context(), "POST", responsesEndpoint, bytes.NewReader(body))
 	newReq.Header = r.Header
-	h.HandleChatCompletions(w, newReq)
+	h.HandleResponses(w, newReq)
 }
 
 // HandleOllamaChat handles Ollama-compatible /v1/api/chat endpoint.
@@ -909,4 +922,92 @@ func (h *ChatHandler) HandleOllamaChat(w http.ResponseWriter, r *http.Request) {
 	newReq, _ := http.NewRequestWithContext(r.Context(), "POST", "/v1/chat/completions", bytes.NewReader(body))
 	newReq.Header = r.Header
 	h.HandleChatCompletions(w, newReq)
+}
+
+// HandleTestModel handles POST /api/models/test to ping a model.
+func (h *ChatHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "failed to read body"})
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" {
+		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Model required"})
+		return
+	}
+
+	payload := map[string]any{
+		"model": req.Model,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+		"max_tokens": 1024,
+		"stream":     false,
+	}
+	b, _ := json.Marshal(payload)
+
+	testReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(b))
+	testReq.Header.Set("Content-Type", "application/json")
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		if keys, err := h.Repo.GetApiKeys(); err == nil {
+			for _, k := range keys {
+				if k.IsActive == 1 && k.Key != "" {
+					auth = "Bearer " + k.Key
+					break
+				}
+			}
+		}
+	}
+	if auth != "" {
+		testReq.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	h.HandleChatCompletions(rec, testReq)
+
+	if rec.Code == http.StatusOK {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	} else {
+		errMsg := strings.TrimSpace(rec.Body.String())
+		var errObj struct {
+			Error struct {
+				Message string `json:"message"`
+				Code    any    `json:"code"`
+			} `json:"error"`
+			Message string `json:"message"`
+		}
+		trimmed := errMsg
+		if len(trimmed) > 500 {
+			head, tail := trimmed[:200], trimmed[len(trimmed)-200:]
+			trimmed = head + "\n...[truncated " + strconv.Itoa(len(errMsg)-400) + " bytes]...\n" + tail
+		}
+		// Non-JSON upstream bodies (proxied error pages, empty SSE) otherwise
+		// surface as a bare "response bukan JSON" with no diagnostic tail.
+		var probe any
+		if json.Unmarshal([]byte(errMsg), &probe) != nil {
+			errMsg = trimmed
+		} else if json.Unmarshal([]byte(errMsg), &errObj) == nil {
+			if errObj.Error.Message != "" {
+				errMsg = errObj.Error.Message
+			} else if errObj.Message != "" {
+				errMsg = errObj.Message
+			}
+		}
+
+		if rec.Code == http.StatusTooManyRequests && !strings.HasPrefix(errMsg, "429") {
+			errMsg = "429: " + errMsg
+		} else if rec.Code == http.StatusUnauthorized && !strings.HasPrefix(errMsg, "401") {
+			errMsg = "401: " + errMsg
+		} else if rec.Code == http.StatusServiceUnavailable && !strings.HasPrefix(errMsg, "503") {
+			errMsg = "503: " + errMsg
+		} else if rec.Code == http.StatusNotFound && !strings.HasPrefix(errMsg, "404") {
+			errMsg = "404: " + errMsg
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": errMsg})
+	}
 }

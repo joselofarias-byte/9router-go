@@ -7,16 +7,16 @@ import (
 )
 
 func TestDeriveOpencodeSession(t *testing.T) {
-	// Native session preserved
-	native := "ses_0123456789abcdef0123456789abcdef"
+	// Native session preserved (canonical 30 chars)
+	native := "ses_f52b0d414ffeObbCKcHUQYZR2I"
 	if got := deriveOpencodeSession(native, "claude", "conn1"); got != native {
 		t.Errorf("expected native session %q, got %q", native, got)
 	}
 
-	// Translation format: ses_<32 hex chars>
+	// Translation format: ses_<12 hex + 14 Base62> length 30 (PR #4105)
 	s1 := deriveOpencodeSession("my-conversation-id", "claude", "conn1")
-	if !strings.HasPrefix(s1, "ses_") || len(s1) != 36 {
-		t.Errorf("expected ses_<32 hex> length 36, got %q (len %d)", s1, len(s1))
+	if !strings.HasPrefix(s1, "ses_") || len(s1) != 30 {
+		t.Errorf("expected canonical session length 30, got %q (len %d)", s1, len(s1))
 	}
 
 	// Stable across calls
@@ -39,7 +39,7 @@ func TestDeriveOpencodeSession(t *testing.T) {
 
 	// Fallback to connection ID
 	sFallback := deriveOpencodeSession("", "", "my-conn-id")
-	if !strings.HasPrefix(sFallback, "ses_") || len(sFallback) != 36 {
+	if !strings.HasPrefix(sFallback, "ses_") || len(sFallback) != 30 {
 		t.Errorf("expected valid session on connection fallback, got %q", sFallback)
 	}
 }

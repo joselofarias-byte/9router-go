@@ -22,9 +22,13 @@ func RegisterAll() {
 }
 
 // BuildConnectionUpdate builds a DB update map from a refresh result.
-func BuildConnectionUpdate(result *TokenResult) map[string]interface{} {
-	return map[string]interface{}{
+func BuildConnectionUpdate(result *TokenResult) map[string]any {
+	m := map[string]any{
 		"accessToken": result.AccessToken,
 		"expiresAt":   time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
+	if result.RefreshToken != "" {
+		m["refreshToken"] = result.RefreshToken
+	}
+	return m
 }

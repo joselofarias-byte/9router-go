@@ -9,6 +9,12 @@ import (
 	"9router/proxy/internal/constants"
 )
 
+// deterministicJSON makes Go maps serialize with their keys in sorted order, so
+// the same data always produces byte-identical JSON. Without it, encoding/json/v2
+// marshals maps in the runtime's randomized iteration order, which makes list
+// order shift between requests (e.g. the dashboard models list on every refresh).
+var deterministicJSON = json.Deterministic(true)
+
 // errorTypes maps HTTP status codes to OpenAI-compatible error types and codes.
 var errorTypes = map[int]struct {
 	errType string
@@ -48,7 +54,7 @@ func WriteJSONError(w http.ResponseWriter, status int, message string) {
 			"code":    errCode,
 		},
 	}
-	if err := json.MarshalWrite(w, errResp); err != nil {
+	if err := json.MarshalWrite(w, errResp, deterministicJSON); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
 	}
 }
@@ -57,7 +63,7 @@ func WriteJSONError(w http.ResponseWriter, status int, message string) {
 func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	w.WriteHeader(status)
-	if err := json.MarshalWrite(w, data); err != nil {
+	if err := json.MarshalWrite(w, data, deterministicJSON); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
 	}
 }
@@ -147,3 +153,26 @@ func GetSessionID(ctx context.Context) string {
 	return ""
 }
 
+type clientBetaKey struct{}
+
+// WithClientAnthropicBeta carries the caller's own anthropic-beta flags on the
+// context. They have to be merged into the upstream request rather than dropped:
+// a client asking for a beta the gateway does not list would otherwise fail
+// without ever being told why. (Upstream mergeAnthropicBeta, v0.5.91.)
+func WithClientAnthropicBeta(ctx context.Context, beta string) context.Context {
+	if beta == "" || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, clientBetaKey{}, beta)
+}
+
+// GetClientAnthropicBeta returns the caller's anthropic-beta flags, or "".
+func GetClientAnthropicBeta(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if val, ok := ctx.Value(clientBetaKey{}).(string); ok {
+		return val
+	}
+	return ""
+}

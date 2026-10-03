@@ -1,393 +1,280 @@
-# 9router-go
+<div align="center">
+
+# 9router-go — FREE AI Router & Token Saver (Single Binary)
+
+**Never stop coding. Save 20-40% tokens with RTK + auto-fallback to FREE & cheap AI models.**
+
+**Connect Claude Code, Cursor, Antigravity, Codex, Gemini, OpenCode, Cline, OpenClaw... to 40+ AI providers & 100+ models — no Node.js needed at runtime.**
 
 [![CI](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/ci.yml)
 [![Release](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml/badge.svg)](https://github.com/luqman-v1/9router-go/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/luqman-v1/9router-go)](https://github.com/luqman-v1/9router-go/releases/latest)
+[![License](https://img.shields.io/github/license/luqman-v1/9router-go)](https://github.com/luqman-v1/9router-go/blob/main/LICENSE)
 
-High-performance Go proxy gateway for [9Router](https://github.com/decolua/9router) LLM routing.
+[🚀 Quick Start](#-quick-start) • [💡 Features](#-key-features) • [⚙️ Setup](#-setup-guide) • [🌐 Upstream](https://github.com/decolua/9router)
 
-> **Sync:** `v1.8.8` ↔ `decolua/9router v0.5.65` (31 commits `v0.5.59...v0.5.65`) — see `CHANGELOG.md` & `ARCHITECTURE.md` for the latest flow diagrams (Gemini 3.8, Opencode 1.3, Ollama web_fetch, SSRF hardening).
+</div>
 
-> **9Router** is a local AI routing gateway + dashboard. This Go proxy replaces the Next.js `/v1/*` routes for high-throughput LLM traffic, while the [9Router dashboard](https://github.com/decolua/9router) handles management UI (providers, API keys, combos, usage tracking).
+---
 
-### Features
+## 🤔 Why 9router-go?
 
-- **32K+ RPS** peak throughput (Go vs Next.js ~500 RPS)
-- **42 MB** memory footprint
-- **SQLite WAL mode** with non-blocking concurrency (shared with [9Router dashboard](https://github.com/decolua/9router))
-- **OpenAI, Claude, and Gemini native format support** with bidirectional SSE translation
-- **Antigravity Tool Cloaking & Anti-Ban Decoy System**: 21 official IDE decoy tools (`run_command`, `replace_file_content`, etc.) with `_ide` suffix cloaking and protobuf validation safeguards
-- **Antigravity Anti-Competitive Prompt Stripping**: strips competitor identity prompts to prevent synthetic 429 quota exhaustion errors
-- **Dynamic Egress Proxy Pools & Edge Relays**: round-robin IP rotation via active HTTP/HTTPS/SOCKS5 pools + Vercel/Cloudflare/Deno edge relays (`x-relay-target` / `x-relay-path`)
-- **No-Auth Provider Proxy Strategies**: automatic proxy pool routing & rotation for free-tier/public providers (`settings.providerStrategies`)
-- **Realtime SSE Usage Stream (`/api/usage/stream`)**: in-memory in-flight request tracker powering live glowing pulse & marching-ants animations on the Next.js Usage Topology graph
-- **Snake_case Token Limits (`/v1/models` & `/v1/models/info`)**: exposes `context_length`, `max_completion_tokens`, `max_input_tokens`, and `max_output_tokens`
-- **Gemini 3.8 / 3.7 Flash Model Family**: alias `gemini-3.8-flash-high/medium/low` → `gemini-3.8-flash-tiered` (1M ctx) + `2.11.0` fingerprint, `prefixItems` cleaning
-- **Gemini Multimodal Vision & Audio**: base64 inline images, remote `fileData` URLs, `input_audio`, `thoughtSignature` backfill
-- **Opencode Muse-Spark 1.2/1.3 + Vision**: `Responses API /v1/responses` routing, `Vision:true`, `oc/` prefix, `reasoning max→xhigh`
-- **OpenCode Desktop Fingerprint**: official client headers (`User-Agent: opencode`, `x-opencode-client: desktop`, session/request IDs)
-- **Ollama Cloud Web Fetch**: `POST https://ollama.com/api/web_fetch` via `ollama` chat connection API key, `links` + scoped `webfetch:ollama` lock
-- **Groq Usage via x-ratelimit***: `GET /openai/v1/models` headers `limit/requests/tokens` + Go duration `2m59.56s` → `ProviderQuotaInfo`
-- **Custom Models with Caps Toggle**: `kv customModels` upsert + `SetCustomModelCaps` live refresh, merge di `HandleModels` + `GetCapabilitiesForModel`
-- **Single Model Lookup**: `GET /v1/models/*` catch-all `cc/claude-sonnet-4-6` + kind `image/tts/web` (`#3588`)
-- **SSRF Hardening**: `CGNAT 100.64/10`, `trailing dot`, IPv6 `::ffff:7f00:1` hex, `64:ff9b::`, `normalizeHost`
-- **Defer-Lowering Cache Fix**: `LastCacheableToolIndex` untuk MCP `defer_loading:true` tail (#3567)
-- **Kimchi Dual Authentication**: seamless API key + OAuth token resolution
-- **Dedicated High-Performance Executors**: Qoder COSY signing (RSA-2048 + AES-128 + MD5), CodeBuddy CN/INTL streaming, Trae SOLO remote agent, Windsurf gRPC-web
-- **Combo strategies**: sticky round-robin, round-robin, fallback, fusion (multi-panel + judge), weight
-- **Auto-capability-switch**: floats vision/pdf/audio-capable models to front based on request content
-- **Turn & Tool-Calling Stickiness**: locks multi-turn tool calling to the same provider/model to preserve thought signatures
-- **Error classification**: text-based error rules + exponential backoff matching Next.js
-- **Per-connection model locks**: DB-compatible with Next.js dashboard
-- **SSE stall detection**: 6-minute timeout with per-chunk reset
-- **Reactive 401 Unauthorized Auto-Refresh**: auto-refreshes OAuth tokens on 401 and retries once before fallback
-- **Token savers**: RTK input compression, Caveman terse output (`lite`, `full`, `ultra`, `wenyan-ultra`), Ponytail minimal-code bias (`lite`, `full`, `ultra`), auto-synced from SQLite `settings` table
-- **Headroom Lifecycle Proxy**: token compression proxy management & dashboard reverse proxy
-- **Live Console Logs**: in-process ring buffer + SSE streaming for dashboard console monitoring
-- CGO-free, cross-compile to any platform
+Same idea as [9Router](https://github.com/decolua/9router), minus the Node.js runtime: **one Go binary** serves the proxy APIs + an embedded Svelte dashboard.
 
-## Architecture
+**Stop wasting money, tokens and hitting limits:**
 
-```
-┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
-│   CLI Client    │────▶│    Go Proxy           │────▶│  Upstream LLM   │
-│  (Claude Code,  │     │                       │     │  (OpenAI, etc.) │
-│   Codex, etc.)  │     │  • Auth (SQLite)      │     └─────────────────┘
-│                 │     │  • Model resolution   │
-│                 │     │  • Combo strategies   │
-│                 │     │    - sticky           │
-│                 │     │    - round-robin      │
-│                 │     │    - fallback         │
-│                 │     │    - fusion           │
-│                 │     │  • Auto-capability    │
-│                 │     │  • SSE streaming      │
-│                 │     │  • Stall detection    │
-│                 │     │  • Error klasifikasi  │
-│                 │     │  • Translation        │
-│                 │     └───────┬──────────┘
-│                             │
-└─────────────────────┐     ┌─▼──────────────────┐
-  │   Dashboard     │────▶│  SQLite (WAL)    │
-  │  [9Router]      │     └────────────────────┘
-  │  • Providers    │
-  │  • API Keys     │
-  │  • Usage        │
-  └─────────────────┘
+- ❌ Subscription quota expires unused every month
+- ❌ Rate limits stop you mid-coding
+- ❌ Tool outputs (git diff, grep, ls...) burn tokens fast
+- ❌ Manual switching between providers
+
+**9router-go solves this:**
+
+- ✅ **RTK Token Saver** — auto-compress tool_result content, save 20-40% tokens
+- ✅ **Auto fallback** — Subscription → Cheap → Free, zero downtime
+- ✅ **Multi-account** — round-robin between accounts per provider
+- ✅ **Single binary** — Go + embedded dashboard, works with Claude Code, Codex, Cursor, Cline, any CLI tool
+
+---
+
+## 🔄 How It Works
+
+```text
+┌─────────────┐
+│  Your CLI   │  (Claude Code, Codex, OpenClaw, Cursor, Cline...)
+│   Tool      │
+└──────┬──────┘
+       │ http://localhost:20130/v1
+       ↓
+┌─────────────────────────────────────────────┐
+│         9router-go (Smart Router)           │
+│  • RTK Token Saver (cut tool_result tokens) │
+│  • Format translation (OpenAI ↔ Claude)     │
+│  • Quota tracking                           │
+│  • Auto token refresh                       │
+└──────┬──────────────────────────────────────┘
+       │
+       ├─→ [Tier 1: SUBSCRIPTION] Claude Code, Codex, GitHub Copilot
+       │   ↓ quota exhausted
+       ├─→ [Tier 2: CHEAP] GLM ($0.6/1M), MiniMax ($0.2/1M)
+       │   ↓ budget limit
+       └─→ [Tier 3: FREE] Kiro, OpenCode Free, Vertex ($300 credits)
+
+Result: Never stop coding, minimal cost + 20-40% token savings via RTK
 ```
 
-### Request Flow
+---
 
-```
-Client → Auth → resolveModel() → [Combo?]
-    │                              │
-    │ Yes                          │ No
-    ▼                              ▼
-Combo Handler                 Single Model
-    │                              │
-    ├─ sticky/round-robin          │
-    ├─ fallback                    │
-    └─ fusion (parallel panel)     │
-    │                              │
-    ▼                              ▼
-detectRequiredCapabilities()
-    │
-    ▼
-tryForwardWithConnection()
-    │
-    ├─ Success → unlockModel + logUsage
-    └─ Error  → classifyError() → lockConnectionModel()
-                                       │
-                                  Fallback model?
-                                       │ Yes → retry next model
-                                       │ No  → error response
-```
+## ⚡ Quick Start
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flow diagrams (combo, fusion, error classification, locking, SSE stall, etc.).
-
-## Quick Start
+**1. Install (one line):**
 
 ```bash
-# Build
-go build -o 9router-go ./cmd/9router-go/
-
-# Run (standalone, no dashboard needed)
-PORT=20128 ./9router-go
-
-# Health check
-curl http://localhost:20128/health
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash
 ```
 
-## Combo Strategies
+```powershell
+# Windows (PowerShell, no admin needed)
+irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex
+```
 
-Combo models support multiple routing strategies, configurable per combo:
-
-| Strategy | Description |
-|----------|-------------|
-| **fallback** | Try models in order, skip on error (default) |
-| **round-robin** | Rotate starting index per request |
-| **sticky** | Round-robin with consecutive-use pinning; rotate after `stickyLimit` requests |
-| **fusion** | Fire all panel models in parallel → collect with quorum grace → judge synthesizes final answer |
-
-All strategies support **auto-capability-switch**: if the request body contains images or PDFs, capable models (OpenAI, Anthropic, Gemini, etc.) are floated to the front automatically.
-
-### Built-in free route
-
-`free` and `free-best` are virtual models. No combo row is required.
-
-On each request they expand into a fallback chain of models the Fabric registry currently marks `free` or `free_tier`, and only when that provider also has an active local connection. Paid and unclassified models are left out. If discovery has not published any eligible model, the request fails instead of being sent to a paid provider under that name. An explicit alias or combo named `free` or `free-best` still wins.
-
-Other projects can point an OpenAI-compatible client at this proxy and set the model to `free-best`. The names are also listed by `GET /v1/models`.
-
-When the pool is empty, or every candidate stops being free or connected before its hop, the proxy returns HTTP 503 with error code `free_route_unavailable`. It does not fall through to a paid provider. See [Free route for consumer projects](docs/FREE-ROUTE-CONSUMERS.es.md).
-
-### Fusion
-
-Fusion runs multiple models as a panel in parallel:
-
-1. **Fan-out**: Send request to all panel models simultaneously (non-streaming)
-2. **CollectPanel**: Wait for quorum (`minPanel=2`), apply `stragglerGraceMs=8s`, hard timeout at `panelHardTimeoutMs=90s`
-3. **Degrade gracefully**: If 0 answers → 503; if 1 answer → answer directly
-4. **Judge synthesis**: Build anonymized panel responses → send to judge model → final answer streamed to client
-
-## Error Classification
-
-Errors are classified using the same rule system as Next.js:
-
-| Rule | Type | Action |
-|------|------|--------|
-| `"no credentials"` | Text | Cooldown 120s |
-| `"request not allowed"` | Text | Cooldown 5s |
-| `"rate limit"` | Text | Exponential backoff |
-| `"too many requests"` | Text | Exponential backoff |
-| `"quota exceeded"` | Text | Exponential backoff |
-| `"capacity"` / `"overloaded"` | Text | Exponential backoff |
-| 401 / 402 / 403 / 404 | Status | Cooldown 120s |
-| 429 | Status | Exponential backoff |
-| Default (unmatched) | — | Cooldown 30s |
-
-**Exponential backoff**: 2s base, doubled per level, max 5 minutes, 15 levels max.
-Backoff level is tracked per-connection in `providerConnections.data.backoffLevel` (DB-compatible with Next.js dashboard).
-
-## Model Locking
-
-**Per-connection model locks** — stored as `modelLock_<model>` fields in `providerConnections.data` JSON blob.
-Same format as Next.js, readable by the shared dashboard.
-
-- Failed connection → `LockConnectionModel(id, model, duration)` → `data.modelLock_gpt-4 = "ISO timestamp"`
-- Successful request → `UnlockConnectionModel(id, model)` → `data.modelLock_gpt-4 = null`, `backoffLevel = 0`
-- Connection selection → skips connections with active model lock
-
-## SSE Stall Detection
-
-Each SSE stream is wrapped with a `StallReader` (6-minute timeout by default).
-
-- Timer resets on each received chunk
-- If timer fires (no data for 6 minutes) → underlying connection is closed → `Read` unblocks with error → stream terminated
-- No goroutine leak on clean stream close (timer stopped)
-
-## Token Savers
-
-Reduce token usage on routed LLM traffic. Each saver is independently toggleable
-via CLI flag or environment variable (CLI flag overrides env).
-
-| Saver | CLI flag | Env var | Default | Effect |
-|-------|----------|---------|---------|--------|
-| RTK | `--rtk` | `RTK_ENABLED` | **on** | Content-aware compression of tool/tool_result messages (git diff, logs, grep, tree) |
-| Caveman | `--caveman` | `CAVEMAN_ENABLED` | off | Injects terse-output system prompt (~65% fewer output tokens) |
-| Ponytail | `--ponytail` | `PONYTAIL_ENABLED` | off | Injects lazy-senior-dev prompt biasing minimal code |
+🎉 Then start it (defaults: port `20130`, data `~/.9router` — no flags needed):
 
 ```bash
-# All savers on
-./9router-go --rtk --caveman --ponytail
+9router-go
+# Dashboard: http://localhost:20130 (Default password: 123456)
 ```
+> Already use upstream 9Router? Point Go at the same data dir — it opens the **same `DATA_DIR/db/data.sqlite`**: providers, connections, combos, and usage carry over. Details in [`DATABASE.md`](DATABASE.md).
 
-> RTK is on by default. Disable with `RTK_ENABLED=false` or `--rtk=false`.
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `20128` | Server port |
-| `DATA_DIR` | `~/.9router/` | Data directory (DB, JWT secret) |
-| `DB_PATH` | `DATA_DIR/db/data.sqlite` | Custom SQLite DB path (overrides DATA_DIR) |
-| `LOG_FILE` | stderr | Log output file (defaults to stderr when unset) |
-| `RTK_ENABLED` | `true` | Enable RTK input compression |
-| `CAVEMAN_ENABLED` | `false` | Enable Caveman terse output style |
-| `PONYTAIL_ENABLED` | `false` | Enable Ponytail minimal-code bias |
-
-## Database
-
-Uses the same SQLite DB as [9Router dashboard](https://github.com/decolua/9router) (`~/.9router/db/data.sqlite`) with WAL mode.
-
-**Tables:** `apiKeys`, `providerConnections`, `providerNodes`, `combos`, `kv`, `settings`, `usageHistory`, `usageDaily`, `requestDetails`, `proxyPools`, `_meta`
-
-See [DATABASE.md](DATABASE.md) for full schema documentation, JSON blob structure, and Go vs Next.js differences.
-
-### Custom DB Location
+**Keep the terminal free (background mode):**
 
 ```bash
-# Use custom SQLite path
-DB_PATH=/mnt/shared/9router/data.sqlite PORT=20128 ./9router-go
+9router-go start          # same as: 9router-go --background   (or -d)
+9router-go status         # is it running? (pid, dashboard, log)
+9router-go restart        # replace the running daemon
+9router-go logs -n 100    # tail the background log
+9router-go stop           # stop it
 ```
 
-## API Endpoints
+The detached process records itself in `DATA_DIR/run/gateway.pid` and writes its
+output to `DATA_DIR/run/gateway.log`. A second `start` while one is running
+refuses instead of fighting over the port, and a daemon killed from Task Manager
+leaves nothing behind: the stale pid file is cleaned on the next command.
+> Windows stops the process with `TerminateProcess` instead of `SIGTERM`, so
+> stopping skips the graceful drain; use the dashboard's Shutdown button or
+> `9router-go restart` when you want in-flight streams to finish first.
 
-```
-# Core Chat & Completion Endpoints
-POST /v1/chat/completions      # OpenAI format
-POST /v1/messages              # Claude format
-POST /v1/messages/count_tokens # Claude token counter
-POST /v1/embeddings            # Embeddings
-POST /v1/responses             # Responses API
-POST /v1/responses/compact     # Compact responses API
-POST /api/chat                 # Ollama compatible format
+**2. Connect a FREE provider (no signup needed):**
 
-# Media & Multimodal Endpoints
-POST /v1/images/generations    # Text-to-image generation
-POST /v1/images/understanding  # Image understanding (vision)
-POST /v1/videos/generations    # Video generation
-POST /v1/videos/edits          # Video edits
-POST /v1/videos/extensions     # Video extension
-GET  /v1/videos/{id}           # Video status lookup
-POST /v1/audio/speech          # Text-to-speech (TTS)
-POST /v1/audio/transcriptions  # Speech-to-text (STT)
-POST /v1/audio/music           # Music generation
-GET  /v1/audio/voices          # TTS voices list
+Dashboard → Providers → Connect **Kiro AI** (~50 credits/month free) or **OpenCode Free** (no auth) → Done!
 
-# Search, Scrape & Web Fetch
-POST /v1/search                # Web search (provider-selected)
-POST /v1/scrape                # Web scrape
-POST /v1/web/fetch             # Web URL extraction (Jina Reader / Firecrawl)
+**3. Use in your CLI tool:**
 
-# Models & Token Limits
-GET  /v1/models                # List models (with context_length, token limits)
-GET  /v1/models/info           # Model capability & limits metadata
-GET  /v1/models/{kind}         # Models filtered by kind (e.g. tts, image)
-
-# Usage & Realtime SSE Stream
-GET  /api/usage/stream         # Live SSE in-flight request tracking & topology animation
-GET  /api/usage/stats          # Realtime usage stats & active concurrency
-
-# OAuth & Authentication
-POST /v1/oauth/authorize       # OAuth authorize
-POST /v1/oauth/refresh         # OAuth refresh
-
-# System & Monitoring
-GET  /health                   # Health check
-GET  /api/version              # Proxy version & update check
-GET  /api/translator/stream    # Dashboard live console log SSE stream
+```text
+Claude Code / Codex / OpenClaw / Cursor / Cline Settings:
+  Endpoint: http://localhost:20130/v1
+  API Key:  [Settings → API Keys in the dashboard]
+  Model:    kr/claude-sonnet-4.5
 ```
 
-## Docker
+**That's it!** Start coding with FREE AI models.
 
-### Pull from Docker Hub
+**Alternatives:**
 
 ```bash
-docker pull luqmenul/9router-go:latest
+# Docker — no build needed
+docker run -d --name 9router-go --restart unless-stopped \
+  -p 20130:20130 -v "$HOME/.9router:/data" \
+  -e PORT=20130 -e DATA_DIR=/data \
+  -e INITIAL_PASSWORD=your-secure-password \
+  luqmenul/9router-go:latest
+
+# Manual download — pick your file, no command line guesswork:
+# Windows → .exe | Mac M1+ → darwin-arm64 | Mac Intel → darwin-amd64
+# Linux VPS → linux-amd64 | Raspberry Pi → linux-arm64
 ```
 
-### Docker Compose (`docker-compose.yml`)
+📦 [All release binaries](https://github.com/luqman-v1/9router-go/releases/latest) • 🔨 [Build from source](#-setup-guide)
 
-#### With Outbound Egress Proxy (Microwarp SOCKS5)
+---
 
-```yaml
-services:
-  microwarp:
-    image: ghcr.io/ccbkkb/microwarp:latest
-    container_name: microwarp
-    restart: always
-    ports:
-      - "1080:1080"
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-    volumes:
-      - ./warp:/etc/wireguard
+## 💡 Key Features
 
-  9router-go:
-    image: luqmenul/9router-go:latest
-    container_name: 9router-go
-    ports:
-      - "20130:20128"
-    environment:
-      - PORT=20128
-      - DATA_DIR=/data
-      - RTK_ENABLED=true
-      - CAVEMAN_ENABLED=false
-      - PONYTAIL_ENABLED=true
-      - HTTP_PROXY=socks5://microwarp:1080
-      - HTTPS_PROXY=socks5://microwarp:1080
-    volumes:
-      - ./data:/data
-    depends_on:
-      - microwarp
-    restart: unless-stopped
-```
+- 🖥️ Native Svelte 5 dashboard: providers, OAuth, combos, proxy pools, API keys, usage, quota, settings
+- 🔌 OpenAI Chat, Claude Messages, Gemini, Ollama-compatible, Responses, embeddings, media, search, web tools
+- 🔁 Combos with fallback, round-robin, sticky routing, fusion, capability-aware reordering
+- 👥 Per-provider executors, OAuth refresh, reactive 401 retry
+- 📡 Live usage + console-log SSE streams, stall detection
+- 💾 SQLite WAL persistence, outbound proxy support, self-update, MITM commands, Docker, cross-compilation
 
-#### Standalone Deployment
+---
 
-```yaml
-services:
-  9router-go:
-    image: luqmenul/9router-go:latest
-    container_name: 9router-go
-    ports:
-      - "20128:20128"
-    environment:
-      - PORT=20128
-      - DATA_DIR=/data
-      - RTK_ENABLED=true
-      - CAVEMAN_ENABLED=false
-      - PONYTAIL_ENABLED=true
-    volumes:
-      - ./data:/data
-    restart: unless-stopped
-```
+## ⚙️ Setup Guide
+
+### Release binary
+
+Download from [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest), verify against `SHA256SUMS.txt`.
+
+### Build from source
+
+Prerequisites: Go 1.27 and Bun 1.x (dashboard is embedded into the binary, so build web first):
 
 ```bash
-# Start container
-docker compose up -d
+git clone https://github.com/luqman-v1/9router-go.git
+cd 9router-go
+make web-build   # bun install --frozen-lockfile && bun run build
+make build       # embeds VERSION into the Go binary
 ```
 
-## Cross-Compile
+### Run
+
+Defaults are enough for most people — plain `9router-go` listens on port `20130` with data in `~/.9router`:
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o 9router-go-linux ./cmd/9router-go/
-GOOS=darwin GOARCH=arm64 go build -o 9router-go-mac ./cmd/9router-go/
-GOOS=windows GOARCH=amd64 go build -o 9router-go.exe ./cmd/9router-go/
+9router-go
+curl http://localhost:20130/health
+./9router-go version
 ```
 
-## Test
+Only override when you need something different (`PORT`, `DATA_DIR`/`DB_PATH` — there are no `--port` flags):
 
 ```bash
-go test ./... -v
+PORT=20129 ./9router-go                        # different port
+DATA_DIR=/srv/9router ./9router-go              # different data dir
+DB_PATH=/srv/9router/data.sqlite ./9router-go   # explicit SQLite file
+HOST=127.0.0.1 ./9router-go                     # localhost only, behind a reverse proxy
 ```
 
-All **655 tests** pass (with `-count=1` to bypass test caching).
+### 🔑 Dashboard Login & Fresh Install
 
-## Benchmark
+- **Localhost (`localhost` / `127.0.0.1`)**: First login uses the default compatibility password `123456`. Once logged in, change your password in **Settings → Profile**.
+- **Remote / VPS / Docker / LAN**: For security (preventing public takeover of fresh installs with known defaults, CVE-2026-56679), remote access blocks the default `123456` password. You **must** either:
+  1. **Set `INITIAL_PASSWORD` on launch (Recommended)**:
+     ```bash
+     INITIAL_PASSWORD="your-secure-password" ./9router-go
+     # Or in your .env file:
+     # INITIAL_PASSWORD=your-secure-password
+     ```
+  2. **Or access via SSH port-forwarding first**:
+     ```bash
+     ssh -L 20130:127.0.0.1:20130 user@remote-host
+     # Open http://localhost:20130, login with 123456, then change password in Settings
+     ```
 
-Run the native self-contained Go benchmark runner (zero external dependencies):
+### Client example
 
 ```bash
-go run ./benchmark/runner.go
+curl http://localhost:20130/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer sk-your-api-key' \
+  -d '{"model":"ag/gemini-3.8-flash-high","messages":[{"role":"user","content":"Hello"}],"stream":true}'
 ```
 
-| Metric | Go Proxy | Legacy Next.js | Speedup |
-|---|---|---|---|
-| Peak RPS (non-stream) | 5,920 (up to 13,216 native) | 505 | **11.7x – 26x** |
-| Peak RPS (stream) | 5,437 | 429 | **12.6x** |
-| Avg latency (c=100) | 6.0ms | 108ms | **18x** |
-| Memory (RSS) | 42.5 MB | 270.9 MB | **6.4x lighter** |
-| Startup | <100ms | 3–5s | **30–50x** |
+For Claude Messages clients: `ANTHROPIC_BASE_URL=http://localhost:20130/v1`.
 
-See [`benchmark/RESULTS.md`](benchmark/RESULTS.md) for full methodology and reproduction steps.
+<details>
+<summary><b>Advanced: environment variables, API surface, auth, database</b></summary>
 
-## Roadmap
+### Environment
 
-See [`ROADMAP.md`](ROADMAP.md) for planned future features, cost-aware model routing, semantic caching, and alerting proposals.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `20130` | HTTP port |
+| `HOST` / `BIND_ADDR` | all interfaces | Listener address |
+| `DATA_DIR` | `~/.9router` (`%APPDATA%/9router` on Windows) | Data root |
+| `DB_PATH` | `$DATA_DIR/db/data.sqlite` | SQLite file |
+| `INITIAL_PASSWORD` | unset (fallback `123456` locally) | First dashboard password |
+| `RTK_ENABLED` | `true` | RTK input compression |
+| `CAVEMAN_ENABLED` / `PONYTAIL_ENABLED` | `false` | Style savers |
+| `AUTO_UPDATE` | `false` | Background self-update |
+| `HTTP_PROXY` / `HTTPS_PROXY` | Go defaults | Upstream egress proxy |
+| `PPROF_ENABLED` | `false` | Expose `/debug/pprof/*` (keep off on untrusted networks) |
+| `TRUST_PROXY` / `TRUST_CLOUDFLARE` | unset | Trust forwarded client-IP headers |
+
+`.env.example` documents the security-sensitive subset and OAuth overrides.
+
+### API surface
+
+```text
+POST /v1/chat/completions       OpenAI Chat Completions
+POST /v1/messages               Claude Messages
+POST /v1/responses              Responses API
+POST /v1/embeddings             Embeddings
+POST /api/chat                  Ollama-compatible chat
+GET  /v1/models                 Model catalog
+POST /v1/images/generations     Image generation
+POST /v1/videos/generations     Video generation
+POST /v1/audio/speech           Text to speech
+POST /v1/audio/transcriptions   Speech to text
+POST /v1/search                 Web search
+GET  /api/usage/stream          Live usage SSE
+GET  /health                    Liveness
+GET  /api/version               Version metadata
+```
+
+### Authentication
+
+- Public: `/health`, dashboard HTML/assets, `/login`, OAuth callbacks.
+- Proxy routes need an active client API key (`Authorization: Bearer` / `X-API-Key`).
+- Dashboard APIs need a session cookie, CLI token, or API key; destructive ops (shutdown, update, DB import) need a session or CLI token.
+- The API server defaults to all interfaces — bind localhost or protect the port outside trusted machines.
+
+### Database compatibility
+
+Go reads/writes the upstream 9router table/JSON shapes and bootstraps the core schema on startup (creates the 11 tables when absent, backfills missing columns, seeds an empty settings row) — a fresh `DATA_DIR` just works, no upstream install needed. Existing databases are never modified beyond additive backfills. Full contract in [`DATABASE.md`](DATABASE.md), routing internals in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+</details>
+
+---
+
+## 📚 Docs
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — routing, providers, runtime layout
+- [`DATABASE.md`](DATABASE.md) — SQLite schema & operator contract
+- [`ROADMAP.md`](ROADMAP.md) — proposals only, not current behavior
+- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.6**, upstream baseline `decolua/9router` v0.5.85)
 
 ## Credits
 
-- [9Router](https://github.com/decolua/9router) — Original Next.js LLM routing gateway + dashboard
+- [9Router](https://github.com/decolua/9router) — original Next.js gateway & dashboard this Go port preserves compatibility with

@@ -2,10 +2,14 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"9router/proxy/internal/proxy"
 )
 
 func parseToolCalls(t *testing.T, sse string) (id string, idx int) {
@@ -69,6 +73,27 @@ func TestProcessCodexEvent_DoneCarriesToolCallID(t *testing.T) {
 	}
 }
 
+func TestProcessCodexEvent_OutputItemDone_NoDuplicateArguments(t *testing.T) {
+	// Scenario 1: delta already streamed arguments -> output_item.done must NOT re-emit arguments
+	state := &CodexStreamState{}
+	deltaOut := ProcessCodexEvent(`{"type":"response.function_call_arguments.delta","call_id":"call_1","delta":"{\"q\":\"*.yaml\"}","name":"search_file"}`, state, "chatcmpl-x", 1)
+	if len(deltaOut) == 0 {
+		t.Fatal("expected delta chunk")
+	}
+
+	doneOut := ProcessCodexEvent(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","arguments":"{\"q\":\"*.yaml\"}"}}`, state, "chatcmpl-x", 1)
+	if len(doneOut) != 0 {
+		t.Fatalf("expected output_item.done to be suppressed after delta, but got %d chunk(s): %v", len(doneOut), doneOut)
+	}
+
+	// Scenario 2: no delta was sent (upstream only sent output_item.done) -> MUST emit arguments
+	state2 := &CodexStreamState{}
+	doneOut2 := ProcessCodexEvent(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_2","arguments":"{\"q\":\"*.yaml\"}"}}`, state2, "chatcmpl-x", 1)
+	if len(doneOut2) == 0 {
+		t.Fatal("expected output_item.done to emit arguments when no delta was streamed")
+	}
+}
+
 // tool-input-delta must carry the id so the client can associate the
 // incremental arguments with the tool call started by tool-input-start.
 func TestProcessCommandcodeEvent_ToolInputDeltaHasID(t *testing.T) {
@@ -78,7 +103,7 @@ func TestProcessCommandcodeEvent_ToolInputDeltaHasID(t *testing.T) {
 		Model:         "deepseek",
 		ToolIndexByID: map[string]int{"call_1": 0},
 	}
-	out := ProcessCommandcodeEvent(map[string]interface{}{
+	out := ProcessCommandcodeEvent(map[string]any{
 		"type":  "tool-input-delta",
 		"id":    "call_1",
 		"delta": `"path": "/`,
@@ -294,5 +319,39 @@ func TestHandleCodexStream_SplitPackets(t *testing.T) {
 	}
 	if !strings.Contains(body, "[DONE]") {
 		t.Errorf("expected [DONE], got body: %s", body)
+	}
+}
+
+func TestHandleCodexStream_UpstreamErrorFailsLoud(t *testing.T) {
+	// Upstream FreeTierError must surface as an error, never a 200 with
+	// empty content (silent success). Mirrors the live muse-spark-free case.
+	rawSSE := "data: {\"type\":\"error\",\"error\":{\"type\":\"FreeTierError\",\"message\":\"Error from provider (Console): OpenCode's free tier can only be used from within OpenCode\"}}\n\n" +
+		"data: [DONE]\n\n"
+	rec := httptest.NewRecorder()
+	req := &Request{IsStream: false, TranslateResp: false}
+	err := handleCodexStream(rec, req, strings.NewReader(rawSSE))
+	if err == nil {
+		t.Fatalf("expected upstream error, got nil (body: %s)", rec.Body.String())
+	}
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *proxy.UpstreamError, got %T: %v", err, err)
+	}
+	if ue.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for FreeTierError, got %d", ue.StatusCode)
+	}
+	if !strings.Contains(string(ue.Body), "free tier") {
+		t.Errorf("expected upstream message preserved, got %s", string(ue.Body))
+	}
+}
+
+func TestProcessCodexEvent_ErrorRecorded(t *testing.T) {
+	state := &CodexStreamState{}
+	out := ProcessCodexEvent(`{"type":"error","error":{"type":"FreeTierError","message":"nope"}}`, state, "r", 1)
+	if len(out) != 0 {
+		t.Errorf("error events must emit no chunks, got %v", out)
+	}
+	if len(state.UpstreamErr) == 0 {
+		t.Fatalf("error event must be recorded on state")
 	}
 }

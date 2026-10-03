@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -37,7 +38,12 @@ func TestHandleModelLookup_Kind(t *testing.T) {
 func TestHandleModelLookup_ProviderModel(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// Seed an alias for lookup
+	// Upstream parity: an alias target is only listed through a connected
+	// provider, so seed the claude (cc) connection it points at.
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cc-alias', 'claude', 'apikey', 'Claude Alias', 1, 1, '{"apiKey":"sk-test-cc"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed claude connection: %v", err)
+	}
 	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'cc/claude-sonnet-4-6', '"cc/claude-sonnet-4-6"')`); err != nil {
 		t.Fatalf("seed alias: %v", err)
 	}
@@ -92,7 +98,12 @@ func TestHandleModelLookup_NotFound(t *testing.T) {
 func TestHandleModels_CustomModels(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
-	// Seed custom model with vision caps
+	// Upstream parity: customs surface under an active credentialed
+	// connection, so seed one for the cc provider first.
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-cc-test', 'claude', 'apikey', 'Claude Test', 1, 1, '{"apiKey":"sk-test-cc"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed claude connection: %v", err)
+	}
 	customJSON := `{"providerAlias":"cc","id":"my-custom-vision","type":"llm","name":"my-custom-vision","caps":{"vision":true,"reasoning":true}}`
 	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('customModels', 'cc/my-custom-vision/llm', ?)`, customJSON); err != nil {
 		t.Fatalf("seed custom: %v", err)
@@ -119,6 +130,67 @@ func TestHandleModels_CustomModels(t *testing.T) {
 	providers.ClearCustomModelCaps()
 }
 
+func TestHandleModels_MapsProviderNodeRowIDToPrefix(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// Seed providerNode with row ID "openai-compatible-chat-0489217b" and prefix "nara"
+	nodeData := `{"prefix":"nara","apiType":"openai-compatible","baseUrl":"https://nara.example.com/v1"}`
+	_, err := database.Exec(`INSERT INTO providerNodes (id, type, name, data, createdAt, updatedAt) VALUES
+		('openai-compatible-chat-0489217b', 'openai-compatible', 'Nara AI', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, nodeData)
+	if err != nil {
+		t.Fatalf("seed providerNode: %v", err)
+	}
+
+	// Seed customModel in kv with providerAlias set to internal node ID
+	customJSON := `{"providerAlias":"openai-compatible-chat-0489217b","id":"glm-5.3","type":"chat","name":"GLM 5.3","caps":{"vision":true}}`
+	_, err = database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('customModels', 'openai-compatible-chat-0489217b|glm-5.3|chat', ?)`, customJSON)
+	if err != nil {
+		t.Fatalf("seed customModels: %v", err)
+	}
+	// Upstream parity: the node row makes its connection routable — seed a
+	// matching connection so the custom surfaces under the node prefix. The
+	// connection-level prefix ("nara") wins over the node row generic type,
+	// so the custom resolves to nara/glm-5.3.
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-nara-test', 'openai-compatible-chat-0489217b', 'apikey', 'Nara ID', 1, 1, '{"apiKey":"sk-test-nara","providerSpecificData":{"prefix":"nara"}}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed nara connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	// 1. Verify GET /v1/models publishes "nara/glm-5.3" and NOT internal row ID
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	handler.HandleModels(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"id":"nara/glm-5.3"`) {
+		t.Errorf("expected mapped model id 'nara/glm-5.3', got %s", body)
+	}
+	if strings.Contains(body, "openai-compatible-chat-0489217b/glm-5.3") {
+		t.Errorf("leaked internal node row id in /v1/models: %s", body)
+	}
+	if !strings.Contains(body, `"owned_by":"nara"`) {
+		t.Errorf("expected owned_by 'nara', got %s", body)
+	}
+
+	// 2. Verify GET /v1/models/nara/glm-5.3 succeeds
+	reqLookup := httptest.NewRequest("GET", "/v1/models/nara/glm-5.3", nil)
+	wLookup := httptest.NewRecorder()
+	handler.HandleModelLookup(wLookup, reqLookup)
+	if wLookup.Code != http.StatusOK {
+		t.Fatalf("expected 200 for lookup nara/glm-5.3, got %d: %s", wLookup.Code, wLookup.Body.String())
+	}
+	lookupBody := wLookup.Body.String()
+	if !strings.Contains(lookupBody, `"id":"nara/glm-5.3"`) {
+		t.Errorf("expected lookup id 'nara/glm-5.3', got %s", lookupBody)
+	}
+}
+
 func TestAntigravityQuota_StrikeReassert(t *testing.T) {
 	ClearAntigravityQuotaCache()
 	connID := "test-conn-strike"
@@ -137,9 +209,15 @@ func TestAntigravityQuota_StrikeReassert(t *testing.T) {
 	antigravityQuotaBaseURL = srv.URL
 	defer func() { antigravityQuotaBaseURL = oldURL }()
 
-	// 3 consecutive 429s with optimistic quota should trigger strike block
+	// 3 consecutive explicit-quota 429s with optimistic quota should trigger strike block
+	// NOTE: upstream #4197's tests use "RATE_LIMIT_EXHAUSTED" (typo) which
+	// matches no marker; the real marker is "RATE_LIMIT_EXCEEDED".
 	for i := 0; i < 3; i++ {
-		res := HandleAntigravityQuotaError(context.Background(), srv.Client(), connID, 429, model, "token", "proj")
+		res := HandleAntigravityQuotaError(AntigravityQuotaError{
+			Ctx: context.Background(), Client: srv.Client(), ConnectionID: connID,
+			Status: 429, Model: model, AccessToken: "token", ProjectID: "proj",
+			ErrorMessage: "RATE_LIMIT_EXCEEDED",
+		})
 		t.Logf("strike %d: res=%v", i+1, res)
 		if i < 2 && res != nil {
 			t.Fatalf("expected nil for first 2 strikes, got %v", *res)

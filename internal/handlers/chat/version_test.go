@@ -141,3 +141,22 @@ func TestHandleTriggerUpdate_UpToDate(t *testing.T) {
 		t.Errorf("expected status 'up_to_date', got %v", res["status"])
 	}
 }
+
+func TestHandleChangelog(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("CHANGELOG.md", []byte("# Changelog\n\nFixture release notes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewChatHandler(nil, nil)
+	req := httptest.NewRequest("GET", "/api/changelog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleChangelog(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Changelog") {
+		t.Errorf("expected response to contain 'Changelog', got: %s", rec.Body.String())
+	}
+}

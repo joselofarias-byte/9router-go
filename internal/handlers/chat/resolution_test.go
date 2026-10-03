@@ -140,7 +140,7 @@ func TestResolvePrefixProvider_ResolvesConnection(t *testing.T) {
 		t.Fatalf("seed providerNode: %v", err)
 	}
 
-	connData, _ := json.Marshal(map[string]interface{}{"apiKey": "sk-bn"})
+	connData, _ := json.Marshal(map[string]any{"apiKey": "sk-bn"})
 	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-bn', 'openai-compatible-chat-bn', 'apikey', 'Bun', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData))
 	if err != nil {
@@ -159,6 +159,105 @@ func TestResolvePrefixProvider_ResolvesConnection(t *testing.T) {
 	}
 	if info.ConnectionID != "conn-bn" {
 		t.Errorf("expected pinned connection id, got %s", info.ConnectionID)
+	}
+}
+
+func TestResolveModel_CustomPrefixShadowing_BuiltinAlias(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// Seed custom providerNode with prefix "oa" (collides with builtin alias "oa" -> "openai")
+	oaNodeData := `{"prefix":"oa","apiType":"openai-compatible","baseUrl":"https://custom-oa.example.com/v1"}`
+	_, err := database.Exec(`INSERT INTO providerNodes (id, type, name, data, createdAt, updatedAt) VALUES
+		('openai-compatible-chat-f494', 'openai-compatible', 'Custom OA', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, oaNodeData)
+	if err != nil {
+		t.Fatalf("seed providerNode oa: %v", err)
+	}
+
+	// Seed active connection for Custom OA
+	connData, _ := json.Marshal(map[string]any{"apiKey": "sk-custom-oa"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-custom-oa', 'openai-compatible-chat-f494', 'apikey', 'Custom OA Conn', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData))
+	if err != nil {
+		t.Fatalf("seed connection oa: %v", err)
+	}
+
+	// Seed custom providerNode with prefix "cc" (collides with builtin alias "cc" -> "claude")
+	ccNodeData := `{"prefix":"cc","apiType":"openai-compatible","baseUrl":"https://custom-cc.example.com/v1"}`
+	_, err = database.Exec(`INSERT INTO providerNodes (id, type, name, data, createdAt, updatedAt) VALUES
+		('openai-compatible-chat-cc99', 'openai-compatible', 'Custom CC', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, ccNodeData)
+	if err != nil {
+		t.Fatalf("seed providerNode cc: %v", err)
+	}
+	connCCData, _ := json.Marshal(map[string]any{"apiKey": "sk-custom-cc"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-custom-cc', 'openai-compatible-chat-cc99', 'apikey', 'Custom CC Conn', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connCCData))
+	if err != nil {
+		t.Fatalf("seed connection cc: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// 1. "oa/deepseek-v4-flash" must route to openai-compatible-chat-f494, NOT "openai"
+	infoOA, err := h.resolveModel("oa/deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("resolveModel oa error: %v", err)
+	}
+	if infoOA.Provider != "openai-compatible-chat-f494" {
+		t.Errorf("expected provider 'openai-compatible-chat-f494', got %q", infoOA.Provider)
+	}
+	if infoOA.ConnectionID != "conn-custom-oa" {
+		t.Errorf("expected connectionID 'conn-custom-oa', got %q", infoOA.ConnectionID)
+	}
+	if infoOA.Model != "deepseek-v4-flash" {
+		t.Errorf("expected model 'deepseek-v4-flash', got %q", infoOA.Model)
+	}
+
+	// 2. "cc/glm-5.3" must route to openai-compatible-chat-cc99, NOT "claude"
+	infoCC, err := h.resolveModel("cc/glm-5.3")
+	if err != nil {
+		t.Fatalf("resolveModel cc error: %v", err)
+	}
+	if infoCC.Provider != "openai-compatible-chat-cc99" {
+		t.Errorf("expected provider 'openai-compatible-chat-cc99', got %q", infoCC.Provider)
+	}
+	if infoCC.ConnectionID != "conn-custom-cc" {
+		t.Errorf("expected connectionID 'conn-custom-cc', got %q", infoCC.ConnectionID)
+	}
+
+	// 3. Bare alias check "oa" resolves to custom provider node
+	infoBare, err := h.resolveModel("oa")
+	if err != nil {
+		t.Fatalf("resolveModel bare 'oa' error: %v", err)
+	}
+	if infoBare.Provider != "openai-compatible-chat-f494" {
+		t.Errorf("expected bare 'oa' to resolve to custom node, got %q", infoBare.Provider)
+	}
+}
+
+func TestResolveModel_CustomPrefix_NoConnections_ReportsNodeID(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// Seed custom providerNode with prefix "oa", but NO connections anywhere
+	oaNodeData := `{"prefix":"oa","apiType":"openai-compatible","baseUrl":"https://custom-oa.example.com/v1"}`
+	_, err := database.Exec(`INSERT INTO providerNodes (id, type, name, data, createdAt, updatedAt) VALUES
+		('openai-compatible-chat-f494', 'openai-compatible', 'Custom OA', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, oaNodeData)
+	if err != nil {
+		t.Fatalf("seed providerNode oa: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Since openai has no connections, resolveModel should pin to custom node ID
+	info, err := h.resolveModel("oa/deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "openai-compatible-chat-f494" {
+		t.Errorf("expected provider 'openai-compatible-chat-f494' (not shadowed 'openai'), got %q", info.Provider)
 	}
 }
 
@@ -361,5 +460,73 @@ func TestResolveModel_UnresolvableReturnsError(t *testing.T) {
 	_, err := h.resolveModel("gemini-unknown-model")
 	if err == nil {
 		t.Error("expected error for unresolvable model with no connections")
+	}
+}
+
+func TestResolveModel_BareCodexAutoReview(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	info, err := h.resolveModel("codex-auto-review")
+	if err != nil {
+		t.Fatalf("expected codex-auto-review to resolve, got error: %v", err)
+	}
+	if info.Provider != "codex" || info.Model != "codex-auto-review" {
+		t.Errorf("expected Provider=codex, Model=codex-auto-review, got Provider=%s, Model=%s", info.Provider, info.Model)
+	}
+}
+
+func TestResolveModel_StandardPrefixes(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// oc/ prefix resolves to opencode
+	info1, err := h.resolveModel("oc/space-bunny-free")
+	if err != nil {
+		t.Fatalf("expected oc/space-bunny-free to resolve, got error: %v", err)
+	}
+	if info1.Provider != "opencode" || info1.Model != "space-bunny-free" {
+		t.Errorf("expected Provider=opencode, Model=space-bunny-free, got %+v", info1)
+	}
+
+	// ag/ prefix resolves to antigravity
+	info2, err := h.resolveModel("ag/gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("expected ag/gemini-3.8-flash-high to resolve, got error: %v", err)
+	}
+	if info2.Provider != "antigravity" || info2.Model != "gemini-3.8-flash-high" {
+		t.Errorf("expected Provider=antigravity, Model=gemini-3.8-flash-high, got %+v", info2)
+	}
+
+	// antigravity/ prefix resolves to antigravity
+	info3, err := h.resolveModel("antigravity/gemini-3.8-flash")
+	if err != nil {
+		t.Fatalf("expected antigravity/gemini-3.8-flash to resolve, got error: %v", err)
+	}
+	if info3.Provider != "antigravity" || info3.Model != "gemini-3.8-flash" {
+		t.Errorf("expected Provider=antigravity, Model=gemini-3.8-flash, got %+v", info3)
+	}
+}
+
+func TestResolveModel_AntigravityKeepsProviderIdentity(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	info, err := h.resolveModel("ag/muse-spark-1.3-contributor-free")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Provider != "antigravity" || info.Model != "muse-spark-1.3-contributor-free" {
+		t.Fatalf("expected antigravity/muse-spark-1.3-contributor-free, got %s/%s", info.Provider, info.Model)
+	}
+
+	entry := h.resolveModelEntry("ag/muse-spark-1.3-contributor-free")
+	if entry == nil || entry.Provider != "antigravity" {
+		t.Fatalf("resolveModelEntry: expected antigravity, got %+v", entry)
 	}
 }

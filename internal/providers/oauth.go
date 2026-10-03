@@ -78,6 +78,11 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("QODER_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://center.qoder.sh/algo/api/v3/user/refresh_token",
 	},
+	"qoder-cn": {
+		ClientID:     envOr("QODER_CN_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("QODER_CN_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://gateway.qoder.com.cn/algo/api/v3/user/refresh_token",
+	},
 	"codebuddy-cn": {
 		ClientID:     envOr("CODEBUDDY_CN_OAUTH_CLIENT_ID", ""),
 		ClientSecret: envOr("CODEBUDDY_CN_OAUTH_CLIENT_SECRET", ""),
@@ -91,7 +96,12 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 	"cline": {
 		ClientID:     envOr("CLINE_OAUTH_CLIENT_ID", ""),
 		ClientSecret: envOr("CLINE_OAUTH_CLIENT_SECRET", ""),
-		TokenURL:     "https://api.cline.bot/v1/auth/refresh",
+		TokenURL:     "https://api.cline.bot/api/v1/auth/refresh",
+	},
+	"clinepass": {
+		ClientID:     envOr("CLINE_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("CLINE_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://api.cline.bot/api/v1/auth/refresh",
 	},
 }
 
@@ -126,14 +136,14 @@ func RefreshToken(cfg OAuthClientConfig, refreshToken string) (*OAuthTokenRespon
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		return nil, fmt.Errorf("OAuth token refresh returned %d: %s", resp.StatusCode, snippet)
+		return nil, &OAuthRefreshError{Status: resp.StatusCode, Body: snippet}
 	}
 
 	return ParseRefreshResponse(body)
 }
 
 // ParseOAuthConnection extracts OAuth fields from a ConnectionData blob.
-func ParseOAuthConnection(data map[string]interface{}) *OAuthConnectionData {
+func ParseOAuthConnection(data map[string]any) *OAuthConnectionData {
 	if data == nil {
 		return nil
 	}
@@ -180,8 +190,8 @@ func ParseRefreshResponse(body []byte) (*OAuthTokenResponse, error) {
 }
 
 // BuildConnectionUpdate builds a partial ConnectionData map for DB update.
-func (r *OAuthTokenResponse) BuildConnectionUpdate() map[string]interface{} {
-	return map[string]interface{}{
+func (r *OAuthTokenResponse) BuildConnectionUpdate() map[string]any {
+	return map[string]any{
 		"accessToken": r.AccessToken,
 		"expiresAt":   time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}

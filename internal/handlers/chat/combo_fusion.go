@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/shutdown"
 )
 
 type fusionAnswer struct {
@@ -86,13 +87,21 @@ Now write the final answer to the user's original request.`, len(answers), panel
 
 // collectPanel gathers panel responses with quorum-grace timing.
 // Once minPanel answers arrive, a grace timer starts. Returns when
-// all settled, grace fires, or hard timeout reached.
+// all settled, grace fires, hard timeout reached, or ctx/shutdown fires.
+// Stragglers that lose the race are abandoned via ctx cancel (their HTTP
+// requests abort); without this they run uncancelable until upstream
+// responds, leaking goroutines + sockets per fusion call.
 // Matches JS collectPanel in combo.js.
-func collectPanel(calls []func() *fusionResult, ft FusionTuning) []*fusionResult {
+func collectPanel(ctx context.Context, calls []func(context.Context) *fusionResult, ft FusionTuning) []*fusionResult {
 	n := len(calls)
 	if n == 0 {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	results := make([]*fusionResult, n)
 	type pair struct {
@@ -103,7 +112,10 @@ func collectPanel(calls []func() *fusionResult, ft FusionTuning) []*fusionResult
 
 	for i, call := range calls {
 		go func(idx int) {
-			ch <- pair{idx, call()}
+			select {
+			case ch <- pair{idx, call(ctx)}:
+			case <-ctx.Done():
+			}
 		}(i)
 	}
 
@@ -128,15 +140,20 @@ func collectPanel(calls []func() *fusionResult, ft FusionTuning) []*fusionResult
 			return results
 		case <-hardTimeout:
 			return results
+		case <-ctx.Done():
+			return results
+		case <-shutdown.Done():
+			return results
 		}
 	}
 	return results
 }
 
 // makePanelCall returns a closure that resolves one panel model and forwards the
-// request. The closure signature matches what collectPanel expects.
-func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionResult {
-	return func() *fusionResult {
+// request. The closure signature matches what collectPanel expects. The ctx
+// aborts the upstream HTTP request when the panel moves on without us.
+func (h *ChatHandler) makePanelCall(body []byte, entry string) func(context.Context) *fusionResult {
+	return func(ctx context.Context) *fusionResult {
 		modelInfo := h.resolveModelEntry(entry)
 		if modelInfo == nil {
 			return &fusionResult{model: entry, err: fmt.Errorf("unresolved model: %s", entry)}
@@ -146,7 +163,8 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionRes
 		var connData *ConnectionData
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			connData = &ConnectionData{
-				APIKey: cfg.DefaultAPIKey,
+				APIKey:      cfg.DefaultAPIKey,
+				ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
 			}
 		} else {
 			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
@@ -168,7 +186,11 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionRes
 		}
 
 		rec := &responseBuffer{header: http.Header{}}
-		fwdErr := h.tryForwardWithConnection(context.Background(), rec, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, false, false, "/v1/chat/completions")
+		fwdErr := h.tryForwardWithConnection(forwardRequestParams{
+			Ctx: ctx, W: rec, Provider: modelInfo.Provider, Model: modelInfo.Model,
+			ConnectionID: connID, ConnData: connData, Body: upstreamJSON,
+			IsStream: false, TranslateResponse: false, Endpoint: "/v1/chat/completions",
+		})
 		if fwdErr != nil {
 			return &fusionResult{model: entry, err: fwdErr}
 		}

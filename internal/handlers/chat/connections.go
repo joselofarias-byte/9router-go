@@ -3,21 +3,60 @@ package chat
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
-	"net/url"
+	"slices"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 // CredentialFallbacks maps search/tool providers to the primary chat provider whose API key can be reused.
 var CredentialFallbacks = map[string]string{
 	"ollama-search": "ollama",
 	"zai-search":    "glm",
+	"cline":         "clinepass",
+	"clinepass":     "cline",
+}
+
+// ResolveProviderProxyPoolID returns the active proxy pool ID configured for a provider,
+// checking both the canonical provider name and its alias/counterpart (e.g. antigravity <-> opencode).
+func (h *ChatHandler) ResolveProviderProxyPoolID(provider string) string {
+	if h.Repo == nil {
+		return ""
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil || settings.ProviderStrategies == nil {
+		return ""
+	}
+
+	checkList := []string{provider}
+	switch provider {
+	case "antigravity", "ag":
+		checkList = append(checkList, "ag", "antigravity")
+	case "opencode", "oc":
+		checkList = append(checkList, "oc", "opencode")
+	case "cline":
+		checkList = append(checkList, "clinepass")
+	case "clinepass":
+		checkList = append(checkList, "cline")
+	}
+
+	for _, p := range checkList {
+		if strat, ok := settings.ProviderStrategies[p]; ok {
+			if strat.ProxyPoolID != "" && strat.ProxyPoolID != "__none__" {
+				return strat.ProxyPoolID
+			}
+		}
+	}
+	return ""
 }
 
 // GetBestConnection retrieves the highest-priority active connection for a provider.
@@ -31,49 +70,6 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
 
-	// Phase 5 Data Plane Integration: Intercept candidate lookup gracefully
-	if connectionID == "" && model != "" {
-		candidates := getActiveCandidates(nil, h.Repo.RawDB(), model)
-		if len(candidates) > 0 {
-			// Find the best valid candidate that matches requested provider (if specified) and is not excluded
-			for _, cand := range candidates {
-				if provider != "" && cand.ProviderID != provider {
-					continue
-				}
-				excluded := false
-				for _, ex := range excludeIDs {
-					if ex == cand.AccountID {
-						excluded = true
-						break
-					}
-				}
-				if excluded {
-					continue
-				}
-
-				// Candidate is good. Fetch real DB credentials using the routed AccountID.
-				cpConn, cpErr := h.Repo.GetProviderConnectionByID(cand.AccountID)
-				if cpErr == nil && cpConn != nil && cpConn.IsActive == 1 {
-					// Re-check dynamic blocks that the static CP policy might have missed
-					if locked, _ := h.Repo.IsConnectionModelLocked(cpConn.ID, model); locked {
-						continue
-					}
-					if cand.ProviderID == "antigravity" && IsAntigravityModelBlocked(cpConn.ID, model) {
-						continue
-					}
-
-					log.Info("routing", "control plane route selected", "model", model, "provider", cand.ProviderID, "account", cand.AccountID)
-					var data ConnectionData
-					if err := json.Unmarshal([]byte(cpConn.Data), &data); err != nil {
-						return nil, nil, fmt.Errorf("failed to parse connection data for account %s: %w", cand.AccountID, err)
-					}
-					return cpConn, &data, nil
-				}
-			}
-		}
-	}
-
-	// Fallback to legacy behavior if Control Plane yields no candidates or is missing state
 	var conn *models.ProviderConnection
 	var err error
 
@@ -85,7 +81,29 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		if conn == nil {
 			return nil, nil, fmt.Errorf("connection %s not found", connectionID)
 		}
-	} else {
+		// A pinned connection must still belong to the requested provider:
+		// callers forward x-connection-id straight from the client, so without
+		// this check a connection for provider A could serve provider B and
+		// send A's credentials to B's upstream (upstream getProviderCredentials
+		// always scopes the lookup to the provider).
+		if conn.Provider != provider {
+			return nil, nil, fmt.Errorf("connection %s belongs to provider %s, not %s", connectionID, conn.Provider, provider)
+		}
+		// Upstream resolves the pin inside availableConnections
+		// (src/sse/services/auth.js:143-148), so a disabled or model-locked
+		// row never matches and the request falls through to the configured
+		// strategy. Honouring the pin unconditionally made the dashboard's
+		// enable/disable toggle a no-op for every pinned request.
+		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
+		if ineligible {
+			log.Warn("connections", "pinned connection ineligible, falling back to strategy",
+				"provider", provider, "conn", conn.ID, "reason", reason)
+			connectionID = ""
+			conn = nil
+		}
+	}
+
+	if conn == nil {
 		connections, queryErr := h.Repo.GetProviderConnections(provider, true)
 		if queryErr != nil {
 			return nil, nil, fmt.Errorf("failed to query connections for %s: %w", provider, queryErr)
@@ -104,14 +122,7 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 				connData := &ConnectionData{
 					AccessToken: "public",
 				}
-				settings, err := h.Repo.GetSettings()
-				if err == nil && settings != nil && settings.ProviderStrategies != nil {
-					if strat, ok := settings.ProviderStrategies[provider]; ok {
-						if strat.ProxyPoolID != "" && strat.ProxyPoolID != "__none__" {
-							connData.ProxyPoolID = strat.ProxyPoolID
-						}
-					}
-				}
+				connData.ProxyPoolID = h.ResolveProviderProxyPoolID(provider)
 				publicName := "Public"
 				conn := &models.ProviderConnection{
 					ID:       "noauth",
@@ -124,22 +135,69 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
 		}
 
+		settings, settingsErr := h.Repo.GetSettings()
+		connections = filterConnectionsForModel(provider, connections, model, settings)
+		if len(connections) == 0 {
+			return nil, nil, fmt.Errorf("no connection assigned to model %s for provider %s under strict assignment", model, provider)
+		}
+
+		// Rotate only connections eligible for the requested model.
+		if len(connections) > 1 && settingsErr == nil && settings != nil {
+			strat := db.ProviderStrategy{}
+			hasStrat := false
+			if settings.ProviderStrategies != nil {
+				if s, ok := settings.ProviderStrategies[provider]; ok {
+					strat = s
+					hasStrat = true
+				}
+			}
+			if !hasStrat || strat.RotateStrategy == "" {
+				if settings.FallbackStrategy != "" && settings.FallbackStrategy != "fill-first" {
+					strat.RotateStrategy = settings.FallbackStrategy
+					strat.StickyLimit = settings.StickyRoundRobinLimit
+				}
+			}
+			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
+				connections = h.applyConnectionStrategy(connections, strat)
+			}
+		}
+
 		excludeSet := make(map[string]bool, len(excludeIDs))
 		for _, id := range excludeIDs {
 			excludeSet[id] = true
 		}
 
 		conn = nil
+		var cooldownUntil time.Time
+		now := time.Now()
 		for _, c := range connections {
 			if excludeSet[c.ID] {
 				continue
 			}
+			// Account-scoped cooldown. An account whose quota is spent, or
+			// whose OAuth grant the provider already rejected, is skipped
+			// before it is selected — round-robin otherwise kept handing out
+			// dead accounts until a live 429/401 locked them, and a rejected
+			// grant cost a token-endpoint call on every request until the IP
+			// was rate limited. Upstream parity: filterAvailableAccounts.
+			if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+				if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+					cooldownUntil = until
+				}
+				continue
+			}
 			// Skip connections that have an active per-connection model lock
 			if model != "" {
-				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+				lockKey := canonicalLockModel(provider, model)
+				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, lockKey); locked {
 					continue
 				}
-				if provider == "antigravity" && IsAntigravityModelBlocked(c.ID, model) {
+				if lockKey != model {
+					if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+						continue
+					}
+				}
+				if quotaCacheBlocked(provider, c.ID, model) {
 					continue
 				}
 			}
@@ -147,6 +205,13 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			break
 		}
 		if conn == nil {
+			// Every candidate was in cooldown, so say when the first one comes
+			// back instead of a bare "all excluded" the caller cannot act on.
+			if !cooldownUntil.IsZero() {
+				return nil, nil, fmt.Errorf(
+					"no available connections for provider: %s (all in cooldown, earliest reset %s)",
+					provider, cooldownUntil.UTC().Format(time.RFC3339))
+			}
 			return nil, nil, fmt.Errorf("no available connections for provider: %s (all excluded)", provider)
 		}
 	}
@@ -157,8 +222,81 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			return nil, nil, fmt.Errorf("failed to parse connection data: %w", err)
 		}
 	}
+	// The dashboard's proxy assignment endpoint (upstream parity) stores the
+	// binding in providerSpecificData.proxyPoolId, while the top-level field is
+	// what this resolver reads. Accept both so a pool bound from either writer
+	// takes effect.
+	if connData.ProxyPoolID == "" {
+		if poolID, ok := connData.ProviderSpecificData["proxyPoolId"].(string); ok && poolID != "" && poolID != "__none__" {
+			connData.ProxyPoolID = poolID
+		}
+	}
 
 	return conn, &connData, nil
+}
+
+// pinnedConnectionIneligible reports whether a client-pinned connection must
+// not serve the request, mirroring the availability filter upstream applies
+// before it looks for a preferred connection (src/sse/services/auth.js:100-148):
+// disabled rows, explicitly excluded rows, active model locks, and connections
+// the provider's strict model assignment does not bind to this model.
+func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection, excludeIDs []string, model string) (bool, string) {
+	if conn == nil {
+		return true, "nil connection"
+	}
+	if conn.IsActive != 1 {
+		return true, "disabled"
+	}
+	if slices.Contains(excludeIDs, conn.ID) {
+		return true, "excluded"
+	}
+	if until, ok := db.ConnectionBlockedUntil(conn.Data); ok && until.After(time.Now()) {
+		return true, "account cooldown until " + until.UTC().Format(time.RFC3339)
+	}
+	if model == "" {
+		return false, ""
+	}
+	lockKey := canonicalLockModel(conn.Provider, model)
+	if locked, _ := h.Repo.IsConnectionModelLocked(conn.ID, lockKey); locked {
+		return true, "model lock " + lockKey
+	}
+	if lockKey != model {
+		if locked, _ := h.Repo.IsConnectionModelLocked(conn.ID, model); locked {
+			return true, "model lock " + model
+		}
+	}
+	if quotaCacheBlocked(conn.Provider, conn.ID, model) {
+		return true, "quota cache"
+	}
+
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return false, ""
+	}
+	filtered := filterConnectionsForModel(conn.Provider, []*models.ProviderConnection{conn}, model, settings)
+	if len(filtered) == 0 {
+		return true, "strict model assignment"
+	}
+	return false, ""
+}
+
+// quotaCacheBlocked reports whether a provider's in-memory quota cache says
+// this connection must not serve the request. Each provider keeps its own
+// cache, so this dispatches per provider and never crosses them (AGENTS.md
+// §3.A strict provider isolation).
+//
+// Antigravity quota is per model, so it needs the model. Codex quota is
+// account-level — one 5h and one 7d window covers every model the account can
+// serve — so an exhausted window blocks the whole connection, not one model
+// on it.
+func quotaCacheBlocked(provider, connectionID, model string) bool {
+	switch provider {
+	case "antigravity":
+		return IsAntigravityModelBlocked(connectionID, model)
+	case "codex":
+		return IsCodexConnectionExhausted(connectionID)
+	}
+	return false
 }
 
 // GetProviderConfig returns the upstream configuration for a provider.
@@ -262,6 +400,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 				if pool.Type == "vercel" || pool.Type == "cloudflare" || pool.Type == "deno" {
 					relayURL = pool.NextURL()
 					noProxy = pool.NoProxy
+					logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
 				}
 			}
 		}
@@ -301,82 +440,231 @@ func extractAPIKey(connData *ConnectionData) string {
 	return connData.AccessToken
 }
 
-// GetClientForConnection returns an http.Client configured with ProxyPool transport if set.
-func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) *http.Client {
-	return h.getClientForConnection(connData)
+// resolveProviderAuthToken picks which credential a provider must actually send.
+// Kiro is the only provider where both fields can be present and the right one
+// is not the API key: upstream (open-sse/executors/kiro.js buildHeaders) uses the
+// apiKey solely for `authMethod: "api_key"` connections and the OAuth
+// accessToken everywhere else. Sending the wrong one makes CodeWhisperer answer
+// 403 "The bearer token included in the request is invalid." even though the
+// access token is perfectly valid.
+func resolveProviderAuthToken(provider string, connData *ConnectionData, current string) string {
+	if connData == nil || provider != "kiro" {
+		return current
+	}
+	authMethod, _ := connData.ProviderSpecificData["authMethod"].(string)
+	if authMethod == "api_key" && connData.APIKey != "" {
+		return connData.APIKey
+	}
+	if connData.AccessToken != "" {
+		return connData.AccessToken
+	}
+	if connData.APIKey != "" {
+		return connData.APIKey
+	}
+	return current
 }
 
-func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Client {
-	if connData == nil {
-		return h.Client
-	}
-
-	var proxyURLStr string
-	var proxyType string
-	var strictProxy bool
-
-	// 1. Resolve from ProxyPool
-	if connData.ProxyPoolID != "" {
-		pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID)
-		if err == nil && pool != nil && pool.IsActive {
-			proxyURLStr = pool.NextURL()
-			proxyType = pool.Type
-			strictProxy = pool.StrictProxy
+// NormalizeProviderToken normalizes credentials for providers with specific token requirements.
+// Only Cline OAuth tokens — WorkOS JWTs (base64url "eyJ…" with a dot) — take
+// the "workos:" prefix; ClinePass API keys (e.g. "clp_…") ride plain Bearer
+// (upstream parity: open-sse/shared/clineAuth.js getClineAccessToken).
+func NormalizeProviderToken(provider, token string) string {
+	if (provider == "cline" || provider == "clinepass") && token != "" {
+		t := strings.TrimSpace(token)
+		if isClineWorkOSJWT(t) {
+			return "workos:" + t
 		}
+		return t
 	}
-
-	// 2. Fallback to legacy connection proxy
-	if proxyURLStr == "" {
-		proxyEnabled := connData.ConnectionProxyEnabled
-		proxyURL := connData.ConnectionProxyURL
-		if !proxyEnabled && connData.ProviderSpecificData != nil {
-			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
-				proxyEnabled = en
-			}
-			if u, ok := connData.ProviderSpecificData["connectionProxyUrl"].(string); ok {
-				proxyURL = u
-			}
-			if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
-				strictProxy = sp
-			}
-		}
-		if proxyEnabled && proxyURL != "" {
-			proxyURLStr = proxyURL
-			proxyType = "http"
-		}
-	}
-
-	if proxyURLStr == "" {
-		return h.Client
-	}
-
-	parsedURL, err := url.Parse(proxyURLStr)
-	if err != nil {
-		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
-		if strictProxy {
-			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
-		}
-		return h.Client
-	}
-
-	if proxyType == "http" || proxyType == "" {
-		transport := &http.Transport{
-			Proxy: http.ProxyURL(parsedURL),
-		}
-		return &http.Client{
-			Transport: transport,
-			Timeout:   h.Client.Timeout,
-		}
-	}
-
-	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
-	// URL rewriting and x-relay headers are handled at request time.
-	return h.Client
+	return token
 }
 
-// ClientForUpstream returns the HTTP client that may dial targetURL.
-// Local-only providers and any loopback target use a direct dial that ignores
-// HTTP_PROXY and refuses redirects onto a public host.
+// isClineWorkOSJWT reports whether token looks like a Cline OAuth WorkOS JWT:
+// base64url "eyJ…" header followed by a dot (upstream parity:
+// open-sse/shared/clineAuth.js getClineAccessToken). Non-JWT ClinePass API
+// keys (e.g. "clp_…") fail this check and ride plain Bearer.
+func isClineWorkOSJWT(token string) bool {
+	if strings.HasPrefix(token, "workos:") || !strings.HasPrefix(token, "eyJ") {
+		return false
+	}
+	dot := strings.IndexByte(token, '.')
+	if dot <= 3 {
+		return false
+	}
+	for i := 0; i < dot; i++ {
+		c := token[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func extractAssignedModel(dataStr string) string {
+	if dataStr == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(dataStr), &m); err != nil {
+		return ""
+	}
+	if am, ok := m["assignedModel"].(string); ok && am != "" {
+		return am
+	}
+	if fm, ok := m["freebuffModel"].(string); ok && fm != "" {
+		return fm
+	}
+	if psd, ok := m["providerSpecificData"].(map[string]any); ok {
+		if am, ok := psd["assignedModel"].(string); ok && am != "" {
+			return am
+		}
+		if fm, ok := psd["freebuffModel"].(string); ok && fm != "" {
+			return fm
+		}
+	}
+	return ""
+}
+
+func filterConnectionsForModel(provider string, connections []*models.ProviderConnection, model string, settings *db.SettingsData) []*models.ProviderConnection {
+	if settings == nil || settings.ProviderStrategies == nil || model == "" {
+		return connections
+	}
+	strat, ok := settings.ProviderStrategies[provider]
+	if !ok || !strat.StrictModelAssignment {
+		return connections
+	}
+
+	var filtered []*models.ProviderConnection
+	for _, c := range connections {
+		if c == nil {
+			continue
+		}
+		if extractAssignedModel(c.Data) == model {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
+}
+
+// canonicalLockModel normalizes model names for providers sharing a backend
+// quota/capacity pool (such as Antigravity gemini-3.8-flash-low/high -> gemini-3.8-flash-tiered).
+func canonicalLockModel(provider, model string) string {
+	if model == "" {
+		return ""
+	}
+	if provider == "antigravity" {
+		return translator.NormalizeAntigravityModel(model)
+	}
+	return model
+}
+
+// ApplyConnectionStrategy rotates candidate connections according to the provider's configured strategy.
+func (h *ChatHandler) ApplyConnectionStrategy(conns []*models.ProviderConnection, strat db.ProviderStrategy) []*models.ProviderConnection {
+	return h.applyConnectionStrategy(conns, strat)
+}
+
+func (h *ChatHandler) applyConnectionStrategy(conns []*models.ProviderConnection, strat db.ProviderStrategy) []*models.ProviderConnection {
+	if len(conns) <= 1 {
+		return conns
+	}
+
+	switch strings.ToLower(strings.TrimSpace(strat.RotateStrategy)) {
+	case "round-robin", "roundrobin", "sticky":
+		stickyLimit := strat.StickyLimit
+		if stickyLimit <= 0 {
+			stickyLimit = 1
+		}
+		return h.selectByRecency(conns, stickyLimit)
+
+	case "random":
+		offset := rand.IntN(len(conns))
+		rotated := make([]*models.ProviderConnection, len(conns))
+		for i := range conns {
+			rotated[i] = conns[(offset+i)%len(conns)]
+		}
+		return rotated
+
+	default:
+		// "none", "fallback", or empty: keep DB priority order
+		return conns
+	}
+}
+
+// selectByRecency implements persistent round-robin, ported from upstream
+// getProviderCredentials (src/sse/services/auth.js:151-189). Upstream keeps no
+// in-memory rotation index: it picks the most recently used row, holds it while
+// its consecutive-use count is below the sticky limit, otherwise moves to the
+// least recently used one, and writes the winner's stamp back. The Go port
+// instead held a positional index keyed only by provider, which reset to the
+// top account on every restart and advanced on every internal selection rather
+// than once per request.
+func (h *ChatHandler) selectByRecency(conns []*models.ProviderConnection, stickyLimit int) []*models.ProviderConnection {
+	// Most recently used wins the tie-break by list order, which is priority
+	// order, so two rows stamped in the same second rotate deterministically.
+	currentIdx := -1
+	for i, c := range conns {
+		if c == nil || c.LastUsedAt == nil {
+			continue
+		}
+		if currentIdx < 0 || *conns[currentIdx].LastUsedAt <= *c.LastUsedAt {
+			currentIdx = i
+		}
+	}
+
+	winner := -1
+	consecutive := 1
+	if currentIdx >= 0 {
+		count := 0
+		if conns[currentIdx].ConsecutiveUseCount != nil {
+			count = *conns[currentIdx].ConsecutiveUseCount
+		}
+		if count < stickyLimit {
+			// Still inside the sticky window: keep serving the same account.
+			winner = currentIdx
+			consecutive = count + 1
+		}
+	}
+
+	if winner < 0 {
+		// Least recently used; a row that has never served sorts first, and
+		// rows stamped in the same pass keep priority order.
+		var oldest *string
+		for i, c := range conns {
+			if c == nil {
+				continue
+			}
+			if c.LastUsedAt == nil {
+				winner = i
+				oldest = nil
+				break
+			}
+			if oldest == nil || *c.LastUsedAt < *oldest {
+				winner = i
+				oldest = c.LastUsedAt
+			}
+		}
+		consecutive = 1
+	}
+
+	if h.Repo != nil {
+		if err := h.Repo.TouchConnectionRotation(conns[winner].ID, consecutive); err != nil {
+			log.Warn("connections", "persist round-robin stamp failed", "conn", conns[winner].ID, "error", err)
+		}
+	}
+	now := time.Now().UTC().Format(db.RotationTimestampFormat)
+	conns[winner].LastUsedAt = &now
+	conns[winner].ConsecutiveUseCount = &consecutive
+
+	rotated := make([]*models.ProviderConnection, 0, len(conns))
+	rotated = append(rotated, conns[winner])
+	for i, c := range conns {
+		if i != winner {
+			rotated = append(rotated, c)
+		}
+	}
+	return rotated
+}
+
 func (h *ChatHandler) ClientForUpstream(cfg *providers.ProviderConfig, targetURL string, connData *ConnectionData) (*http.Client, error) {
 	if cfg != nil && cfg.LocalOnly {
 		if err := providers.AssertLoopbackURL(targetURL); err != nil {

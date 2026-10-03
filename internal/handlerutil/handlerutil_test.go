@@ -2,8 +2,11 @@ package handlerutil
 
 import (
 	json "encoding/json/v2"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +85,50 @@ func TestWriteJSONError_marshalFallback(t *testing.T) {
 	// were to fail (the fallback string).
 	if _, ok := body["error"]; !ok {
 		t.Fatal("missing 'error' key")
+	}
+}
+
+func TestWriteJSON_deterministicMapKeyOrder(t *testing.T) {
+	keys := []string{
+		"oa-chat-df0bcbbc|glm-5.3|llm",
+		"oa-chat-df0bcbbc|gpt-5.2|llm",
+		"oa-chat-df0bcbbc|claude-sonnet-4.5|llm",
+		"oa-chat-df0bcbbc|deepseek-v4-flash|llm",
+		"oa-chat-df0bcbbc|gemini-3.7-flash|llm",
+		"oa-chat-df0bcbbc|qwen3-32b|llm",
+		"oa-chat-df0bcbbc|kimi-k3|llm",
+		"oa-chat-df0bcbbc|mistral-large|llm",
+		"oa-chat-df0bcbbc|llama-4-70b|llm",
+		"oa-chat-df0bcbbc|grok-5|llm",
+		"oa-chat-df0bcbbc|o4-mini|llm",
+		"oa-chat-df0bcbbc|command-a|llm",
+	}
+	data := make(map[string]any, len(keys))
+	for _, k := range keys {
+		data[k] = map[string]any{"id": k, "type": "llm"}
+	}
+
+	// Sorted keys, with each nested object's keys sorted as well.
+	sortedKeys := slices.Clone(keys)
+	slices.Sort(sortedKeys)
+	var want strings.Builder
+	want.WriteByte('{')
+	for i, k := range sortedKeys {
+		if i > 0 {
+			want.WriteByte(',')
+		}
+		fmt.Fprintf(&want, "%q:{\"id\":%q,\"type\":\"llm\"}", k, k)
+	}
+	want.WriteByte('}')
+
+	// Repeat so a randomized map iteration order would show up: with 12 keys an
+	// unordered encode essentially never produces the sorted bytes twice.
+	for i := 0; i < 25; i++ {
+		w := httptest.NewRecorder()
+		WriteJSON(w, http.StatusOK, data)
+		if got := w.Body.String(); got != want.String() {
+			t.Fatalf("response %d is not deterministic\nwant: %s\ngot:  %s", i, want.String(), got)
+		}
 	}
 }
 

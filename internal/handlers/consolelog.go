@@ -2,12 +2,14 @@ package handlers
 
 import (
 	json "encoding/json/v2"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/tracing"
 )
 
@@ -46,6 +48,46 @@ func HandleDebugTraces(w http.ResponseWriter, r *http.Request) {
 func HandleConsoleLogsDelete(w http.ResponseWriter, r *http.Request) {
 	log.ClearConsoleLogs()
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// HandleConsoleLogsLevelGet returns the current server log level so the
+// dashboard console-log page can show it without a restart.
+func HandleConsoleLogsLevelGet(w http.ResponseWriter, r *http.Request) {
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"level":   log.LevelString(),
+	})
+}
+
+// HandleConsoleLogsLevelPut changes the server log level at runtime
+// (no restart needed). Body: {"level": "debug"|"info"|"warn"|"error"}.
+func HandleConsoleLogsLevelPut(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		Level string `json:"level"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Level == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing log level")
+		return
+	}
+	lvl, ok := log.ParseLevel(req.Level)
+	if !ok {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid log level (debug, info, warn, error)")
+		return
+	}
+	log.SetLevel(lvl)
+	level := log.LevelString()
+	log.Info("server", "log level changed", "level", level)
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"level":   level,
+	})
 }
 
 // HandleConsoleLogsStream streams live console output over SSE. On connect it
@@ -93,6 +135,11 @@ func HandleConsoleLogsStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-shutdown.Done():
+			// Server is stopping: close the endless stream now instead of
+			// holding server.Shutdown until its deadline (the browser tab
+			// behind this connection never goes idle on its own).
 			return
 		case ev, ok := <-ch:
 			if !ok {

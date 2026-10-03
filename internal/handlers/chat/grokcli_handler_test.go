@@ -27,7 +27,7 @@ func TestForwardGrokCLIRequest_Success(t *testing.T) {
 			t.Errorf("expected Authorization: Bearer test-key, got %q", r.Header.Get("Authorization"))
 		}
 
-		var reqBody map[string]interface{}
+		var reqBody map[string]any
 		if err := json.UnmarshalRead(r.Body, &reqBody); err != nil {
 			t.Fatalf("parse body: %v", err)
 		}
@@ -96,5 +96,46 @@ func TestForwardGrokCLIRequest_UpstreamError(t *testing.T) {
 	}
 	if ue.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", ue.StatusCode)
+	}
+}
+
+func TestGrokCLI_BaseURL_ResponsesEndpoint(t *testing.T) {
+	cfg, ok := providers.KnownProviders["grok-cli"]
+	if !ok {
+		t.Fatal("expected grok-cli provider to be registered in KnownProviders")
+	}
+	expectedURL := "https://cli-chat-proxy.grok.com/v1/responses"
+	if cfg.BaseURL != expectedURL {
+		t.Errorf("expected grok-cli BaseURL %q, got %q", expectedURL, cfg.BaseURL)
+	}
+}
+
+func TestForwardGrokCLIRequest_EndpointPath(t *testing.T) {
+	var receivedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n[DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: srv.URL + "/v1/responses",
+	}
+	body := []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := executor.ForwardGrokCLI(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "test-key",
+		Body:     body,
+		IsStream: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedPath != "/v1/responses" {
+		t.Errorf("expected request path /v1/responses, got %q", receivedPath)
 	}
 }

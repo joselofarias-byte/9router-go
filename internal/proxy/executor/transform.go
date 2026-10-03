@@ -5,6 +5,8 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -14,7 +16,7 @@ func ExtractSimpleText(raw jsontext.Value) string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
-	var blocks []map[string]interface{}
+	var blocks []map[string]any
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		for _, b := range blocks {
 			if t, ok := b["text"].(string); ok && t != "" {
@@ -26,33 +28,33 @@ func ExtractSimpleText(raw jsontext.Value) string {
 }
 
 // convertUserContent converts OpenAI user message content to Responses API format.
-func convertUserContent(raw jsontext.Value) map[string]interface{} {
-	result := map[string]interface{}{
+func convertUserContent(raw jsontext.Value) map[string]any {
+	result := map[string]any{
 		"type": "message",
 		"role": "user",
 	}
 
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil && text != "" {
-		result["content"] = []map[string]interface{}{
+		result["content"] = []map[string]any{
 			{"type": "input_text", "text": text},
 		}
 		return result
 	}
 
-	var blocks []map[string]interface{}
+	var blocks []map[string]any
 	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var content []map[string]interface{}
+		var content []map[string]any
 		for _, b := range blocks {
 			if t, ok := b["text"].(string); ok && t != "" {
-				content = append(content, map[string]interface{}{
+				content = append(content, map[string]any{
 					"type": "input_text",
 					"text": t,
 				})
 			}
-			if img, ok := b["image_url"].(map[string]interface{}); ok {
+			if img, ok := b["image_url"].(map[string]any); ok {
 				if url, ok := img["url"].(string); ok {
-					content = append(content, map[string]interface{}{
+					content = append(content, map[string]any{
 						"type":      "input_image",
 						"image_url": url,
 					})
@@ -62,14 +64,14 @@ func convertUserContent(raw jsontext.Value) map[string]interface{} {
 		if len(content) > 0 {
 			result["content"] = content
 		} else {
-			result["content"] = []map[string]interface{}{
+			result["content"] = []map[string]any{
 				{"type": "input_text", "text": "..."},
 			}
 		}
 		return result
 	}
 
-	result["content"] = []map[string]interface{}{
+	result["content"] = []map[string]any{
 		{"type": "input_text", "text": "..."},
 	}
 	return result
@@ -84,9 +86,12 @@ func cleanResponsesModel(model string) string {
 	return clean
 }
 
+// maxCallIDLen clamps Responses API call_id values; longer IDs are truncated.
+const maxCallIDLen = 64
+
 func clampCallID(id string) string {
-	if len(id) > 64 {
-		return id[:64]
+	if len(id) > maxCallIDLen {
+		return id[:maxCallIDLen]
 	}
 	return id
 }
@@ -96,13 +101,13 @@ func clampCallID(id string) string {
 func buildResponsesBody(body []byte) ([]byte, string, error) {
 	// If the body is already in Responses API format (has input[]), normalize fields and return
 	var quickCheck struct {
-		Input               []any  `json:"input"`
+		Input               any    `json:"input"`
 		Model               string `json:"model"`
 		MaxTokens           *int   `json:"max_tokens,omitempty"`
 		MaxCompletionTokens *int   `json:"max_completion_tokens,omitempty"`
 		MaxOutputTokens     *int   `json:"max_output_tokens,omitempty"`
 	}
-	if err := json.Unmarshal(body, &quickCheck); err == nil && len(quickCheck.Input) > 0 {
+	if err := json.Unmarshal(body, &quickCheck); err == nil && quickCheck.Input != nil {
 		var m map[string]any
 		if err := json.Unmarshal(body, &m); err == nil {
 			cleanModel := cleanResponsesModel(quickCheck.Model)
@@ -116,20 +121,108 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					m["max_output_tokens"] = *quickCheck.MaxTokens
 				}
 			}
+			if mot, ok := m["max_output_tokens"].(float64); ok && mot < 16 && mot > 0 {
+				m["max_output_tokens"] = 16
+			} else if mot, ok := m["max_output_tokens"].(int); ok && mot < 16 && mot > 0 {
+				m["max_output_tokens"] = 16
+			}
 			delete(m, "max_tokens")
 			delete(m, "max_completion_tokens")
 
-			// Clamp call_id in existing input items
+			// Normalize input if string or empty array (OpenAI Responses API parity)
+			switch in := quickCheck.Input.(type) {
+			case string:
+				txt := strings.TrimSpace(in)
+				if txt == "" {
+					txt = "..."
+				}
+				m["input"] = []any{
+					map[string]any{
+						"type": "message",
+						"role": "user",
+						"content": []any{
+							map[string]any{
+								"type": "input_text",
+								"text": txt,
+							},
+						},
+					},
+				}
+			case []any:
+				if len(in) == 0 {
+					m["input"] = []any{
+						map[string]any{
+							"type": "message",
+							"role": "user",
+							"content": []any{
+								map[string]any{
+									"type": "input_text",
+									"text": "...",
+								},
+							},
+						},
+					}
+				}
+			}
+
+			// PR #4090: Repair missing call_id and clamp call_id in existing input items
 			if inList, ok := m["input"].([]any); ok {
+				var pendingCallIDs []string
+				toolSeq := 0
 				for _, item := range inList {
 					if itemMap, ok := item.(map[string]any); ok {
-						if cid, ok := itemMap["call_id"].(string); ok && len(cid) > 64 {
-							itemMap["call_id"] = cid[:64]
+						itemType, _ := itemMap["type"].(string)
+						switch itemType {
+						case "function_call", "custom_tool_call":
+							cid, _ := itemMap["call_id"].(string)
+							if cid == "" {
+								cid = fmt.Sprintf("call_%d", toolSeq)
+								toolSeq++
+								itemMap["call_id"] = cid
+							}
+							if len(cid) > maxCallIDLen {
+								cid = cid[:maxCallIDLen]
+								itemMap["call_id"] = cid
+							}
+							pendingCallIDs = append(pendingCallIDs, cid)
+						case "function_call_output", "custom_tool_call_output":
+							cid, _ := itemMap["call_id"].(string)
+							if cid != "" {
+								for idx, p := range pendingCallIDs {
+									if p == cid {
+										pendingCallIDs = slices.Delete(pendingCallIDs, idx, idx+1)
+										break
+									}
+								}
+							} else if len(pendingCallIDs) > 0 {
+								cid = pendingCallIDs[0]
+								pendingCallIDs = pendingCallIDs[1:]
+								itemMap["call_id"] = cid
+							} else {
+								cid = fmt.Sprintf("call_%d", toolSeq)
+								toolSeq++
+								itemMap["call_id"] = cid
+							}
+							if len(cid) > maxCallIDLen {
+								itemMap["call_id"] = cid[:maxCallIDLen]
+							}
 						}
 					}
 				}
 			}
 
+			// Strip Unicode property escapes from existing tools parameters (Codex /responses validator parity #3922)
+			if tools, ok := m["tools"].([]any); ok {
+				for _, t := range tools {
+					if tMap, ok := t.(map[string]any); ok {
+						if params, ok := tMap["parameters"].(map[string]any); ok {
+							tMap["parameters"] = StripCodexUnsupportedPatterns(params)
+						}
+					}
+				}
+			}
+
+			applyCodexModelShape(m, cleanModel)
 			out, err := json.Marshal(m)
 			return out, cleanModel, err
 		}
@@ -171,10 +264,12 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		log.Warn("executor", "unmarshal messages", "error", err)
 	}
 
-	var inputItems []map[string]interface{}
+	var inputItems []map[string]any
 	instructions := oreq.Instructions
+	var pendingToolCallIDs []string
+	toolSeq := 0
 
-	for _, msg := range messages {
+	for i, msg := range messages {
 		switch msg.Role {
 		case "system", "developer":
 			if instructions == "" {
@@ -185,28 +280,28 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		case "assistant":
 			var textContent string
 			if err := json.Unmarshal(msg.Content, &textContent); err == nil && textContent != "" {
-				inputItems = append(inputItems, map[string]interface{}{
+				inputItems = append(inputItems, map[string]any{
 					"type": "message",
 					"role": "assistant",
-					"content": []map[string]interface{}{{
+					"content": []map[string]any{{
 						"type": "output_text",
 						"text": textContent,
 					}},
 				})
 			} else {
-				var blocks []map[string]interface{}
+				var blocks []map[string]any
 				if err := json.Unmarshal(msg.Content, &blocks); err == nil && len(blocks) > 0 {
-					var contentList []map[string]interface{}
+					var contentList []map[string]any
 					for _, b := range blocks {
 						if t, ok := b["text"].(string); ok && t != "" {
-							contentList = append(contentList, map[string]interface{}{
+							contentList = append(contentList, map[string]any{
 								"type": "output_text",
 								"text": t,
 							})
 						}
 					}
 					if len(contentList) > 0 {
-						inputItems = append(inputItems, map[string]interface{}{
+						inputItems = append(inputItems, map[string]any{
 							"type":    "message",
 							"role":    "assistant",
 							"content": contentList,
@@ -216,29 +311,49 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 
 			// Add assistant tool calls
-			for _, tc := range msg.ToolCalls {
+			for tcIdx, tc := range msg.ToolCalls {
 				name := strings.TrimSpace(tc.Function.Name)
 				if name == "" {
 					continue // Skip nameless calls — strict Responses upstreams reject them (#444)
 				}
-				inputItems = append(inputItems, map[string]interface{}{
+				cid := tc.ID
+				if cid == "" {
+					cid = fmt.Sprintf("call_%d_%d", toolSeq, tcIdx)
+				}
+				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+				inputItems = append(inputItems, map[string]any{
 					"type":      "function_call",
-					"call_id":   clampCallID(tc.ID),
+					"call_id":   clampCallID(cid),
 					"name":      name,
 					"arguments": tc.Function.Arguments,
 				})
 			}
+			toolSeq++
 		case "tool":
 			text := ExtractSimpleText(msg.Content)
-			inputItems = append(inputItems, map[string]interface{}{
+			cid := msg.ToolCallID
+			if cid != "" {
+				for idx, p := range pendingToolCallIDs {
+					if p == cid {
+						pendingToolCallIDs = slices.Delete(pendingToolCallIDs, idx, idx+1)
+						break
+					}
+				}
+			} else if len(pendingToolCallIDs) > 0 {
+				cid = pendingToolCallIDs[0]
+				pendingToolCallIDs = pendingToolCallIDs[1:]
+			} else {
+				cid = fmt.Sprintf("call_tool_%d", i)
+			}
+			inputItems = append(inputItems, map[string]any{
 				"type":    "function_call_output",
-				"call_id": clampCallID(msg.ToolCallID),
+				"call_id": clampCallID(cid),
 				"output":  text,
 			})
 		}
 	}
 
-	respReq := map[string]interface{}{
+	respReq := map[string]any{
 		"model":  cleanModel,
 		"input":  inputItems,
 		"stream": true,
@@ -256,6 +371,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	} else if oreq.MaxTokens != nil {
 		respReq["max_output_tokens"] = *oreq.MaxTokens
 	}
+	if mot, ok := respReq["max_output_tokens"].(int); ok && mot < 16 && mot > 0 {
+		respReq["max_output_tokens"] = 16
+	}
 
 	if oreq.Temperature != nil {
 		respReq["temperature"] = *oreq.Temperature
@@ -269,7 +387,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		if rEffort == "max" {
 			rEffort = "xhigh"
 		}
-		respReq["reasoning"] = map[string]interface{}{
+		respReq["reasoning"] = map[string]any{
 			"effort":  rEffort,
 			"summary": "auto",
 		}
@@ -285,9 +403,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			Name     string         `json:"name,omitempty"`
 		}
 		if err := json.Unmarshal(oreq.Tools, &tools); err == nil {
-			var apiTools []map[string]interface{}
+			var apiTools []map[string]any
 			for _, t := range tools {
-				tool := map[string]interface{}{
+				tool := map[string]any{
 					"type": "function",
 					"name": t.Name,
 				}
@@ -312,7 +430,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 								fn.Parameters["properties"] = map[string]any{}
 							}
 						}
-						tool["parameters"] = fn.Parameters
+						tool["parameters"] = StripCodexUnsupportedPatterns(fn.Parameters)
 					}
 				}
 				apiTools = append(apiTools, tool)
@@ -323,8 +441,59 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		}
 	}
 
+	applyCodexModelShape(respReq, cleanModel)
 	reqBody, err := json.Marshal(respReq)
 	return reqBody, cleanModel, err
+}
+
+var unicodePropertyEscapeRegex = regexp.MustCompile(`(^|[^\\])(\\\\)*\\[pP]\{`)
+
+// HasUnicodePropertyEscape reports whether a regex pattern string uses Unicode property escapes like \p{...}.
+func HasUnicodePropertyEscape(pattern string) bool {
+	return unicodePropertyEscapeRegex.MatchString(pattern)
+}
+
+// StripCodexUnsupportedPatterns strips \p{...} / \P{...} patterns from JSON Schema parameters (parity with #3922).
+func StripCodexUnsupportedPatterns(schema map[string]any) map[string]any {
+	cleaned := stripCodexNode(schema)
+	if m, ok := cleaned.(map[string]any); ok {
+		return m
+	}
+	return schema
+}
+
+func stripCodexNode(node any) any {
+	switch v := node.(type) {
+	case map[string]any:
+		next := make(map[string]any, len(v))
+		for k, val := range v {
+			if k == "pattern" {
+				if str, ok := val.(string); ok && HasUnicodePropertyEscape(str) {
+					continue
+				}
+			}
+			if k == "properties" {
+				if props, ok := val.(map[string]any); ok {
+					cleanedProps := make(map[string]any, len(props))
+					for propName, propSchema := range props {
+						cleanedProps[propName] = stripCodexNode(propSchema)
+					}
+					next[k] = cleanedProps
+					continue
+				}
+			}
+			next[k] = stripCodexNode(val)
+		}
+		return next
+	case []any:
+		next := make([]any, len(v))
+		for i, item := range v {
+			next[i] = stripCodexNode(item)
+		}
+		return next
+	default:
+		return v
+	}
 }
 
 // Kimchi body cleaning helpers

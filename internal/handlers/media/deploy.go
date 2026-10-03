@@ -41,10 +41,14 @@ export default async function handler(req) {
 
   const targetUrl = target.replace(/\/$/, "") + relayPath;
 
-  const headers = new Headers(req.headers);
-  headers.delete("x-relay-target");
-  headers.delete("x-relay-path");
-  headers.delete("host");
+  // Lossless forwarding (upstream 6af26a9): copy to a plain object
+  // first so no header is dropped, then strip only routing keys.
+  const rawHeaders = {};
+  for (const [k, v] of req.headers.entries()) rawHeaders[k] = v;
+  delete rawHeaders["x-relay-target"];
+  delete rawHeaders["x-relay-path"];
+  delete rawHeaders["host"];
+  const headers = rawHeaders;
 
   const response = await fetch(targetUrl, {
     method: req.method,

@@ -18,26 +18,22 @@ type ModelInfo struct {
 	ComboModels  []string // non-empty when resolved from a combo; each entry is "provider/model"
 	Strategy     string   // combo routing strategy: "fallback", "round-robin", "sticky", "fusion"
 	StickyLimit  int      // sticky round-robin: consecutive requests per model before rotating (default 1)
-	// VirtualFree is set only for the built-in free / free-best pool.
-	// Fallback hops re-check that each entry is still free and connected.
-	// An explicit user alias or combo leaves this false, even when its name is free.
-	VirtualFree bool
+	JudgeModel   string   // optional judge model for fusion strategy
+	VirtualFree  bool     // built-in free/free-best dynamic pool
 }
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey                 string                 `json:"apiKey"`
-	AccessToken            string                 `json:"accessToken"`
-	BaseURL                string                 `json:"baseUrl,omitempty"`
-	// LocalOnly opts this connection into the loopback lock even when the
-	// provider id is a custom OpenAI-compatible node. It carries no credentials.
-	LocalOnly              bool                   `json:"localOnly,omitempty"`
-	ProxyPoolID            string                 `json:"proxyPoolId,omitempty"`
-	ConnectionProxyEnabled bool                   `json:"connectionProxyEnabled,omitempty"`
-	ConnectionProxyURL     string                 `json:"connectionProxyUrl,omitempty"`
-	ConnectionNoProxy      string                 `json:"connectionNoProxy,omitempty"`
-	StrictProxy            bool                   `json:"strictProxy,omitempty"`
-	ProviderSpecificData   map[string]interface{} `json:"providerSpecificData,omitempty"`
+	APIKey                 string         `json:"apiKey"`
+	AccessToken            string         `json:"accessToken"`
+	BaseURL                string         `json:"baseUrl,omitempty"`
+	LocalOnly              bool           `json:"localOnly,omitempty"`
+	ProxyPoolID            string         `json:"proxyPoolId,omitempty"`
+	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled,omitempty"`
+	ConnectionProxyURL     string         `json:"connectionProxyUrl,omitempty"`
+	ConnectionNoProxy      string         `json:"connectionNoProxy,omitempty"`
+	StrictProxy            bool           `json:"strictProxy,omitempty"`
+	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 }
 
 // UsageLogInfo holds request context needed to log a usage record.
@@ -83,6 +79,16 @@ func (b *ResponseBuf) Write(p []byte) (int, error) {
 // String returns the captured content.
 func (b *ResponseBuf) String() string {
 	return string(b.buf)
+}
+
+// Len returns the number of captured bytes.
+func (b *ResponseBuf) Len() int {
+	return len(b.buf)
+}
+
+// Bytes returns the captured slice.
+func (b *ResponseBuf) Bytes() []byte {
+	return b.buf
 }
 
 // StreamMetrics captures timing and content during a proxied stream.

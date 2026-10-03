@@ -72,6 +72,10 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			id INTEGER PRIMARY KEY,
+			data TEXT NOT NULL
+		);`,
 	}
 
 	for _, query := range schema {
@@ -926,5 +930,84 @@ func TestUpdateConnectionLastUsed_NonExistent(t *testing.T) {
 	err := repo.UpdateConnectionLastUsed("no-such-connection")
 	if err != nil {
 		t.Errorf("expected no error for non-existent connection, got %v", err)
+	}
+}
+
+func TestGetProviderNodePrefixMap(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	node1Data := `{"prefix":"oa","apiType":"openai-compatible","baseUrl":"https://oa.example.com"}`
+	node2Data := `{"prefix":"cc","apiType":"anthropic-compatible","baseUrl":"https://cc.example.com"}`
+	node3Data := `{"apiType":"no-prefix","baseUrl":"https://noprefix.example.com"}`
+	_, err := db.Exec(`INSERT INTO providerNodes (id, type, name, data, createdAt, updatedAt) VALUES
+		('node-oa', 'openai-compatible', 'OA Node', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'),
+		('node-cc', 'anthropic-compatible', 'CC Node', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'),
+		('node-raw', 'generic', 'Raw Node', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		node1Data, node2Data, node3Data)
+	if err != nil {
+		t.Fatalf("failed to seed providerNodes: %v", err)
+	}
+
+	repo := NewRepo(db)
+	prefixMap, err := repo.GetProviderNodePrefixMap()
+	if err != nil {
+		t.Fatalf("GetProviderNodePrefixMap failed: %v", err)
+	}
+
+	if prefixMap["node-oa"] != "oa" {
+		t.Errorf("expected node-oa -> oa, got %q", prefixMap["node-oa"])
+	}
+	if prefixMap["node-cc"] != "cc" {
+		t.Errorf("expected node-cc -> cc, got %q", prefixMap["node-cc"])
+	}
+	if _, exists := prefixMap["node-raw"]; exists {
+		t.Errorf("expected node-raw to be omitted since prefix is empty")
+	}
+}
+
+func TestGetCustomModels_KeyFallbackAndNonLLM(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Seed 1: JSON body has all fields
+	val1 := `{"providerAlias":"node-oa","id":"deepseek-v4","type":"llm","caps":{"vision":true}}`
+	// Seed 2: JSON body is empty {}, values parsed from key "node-cc|glm-5.3|chat"
+	val2 := `{}`
+	// Seed 3: key with "/" separator "node-ar/qwen-2.5/custom"
+	val3 := `{"caps":{"reasoning":true}}`
+
+	_, err := db.Exec(`INSERT INTO kv (scope, key, value) VALUES
+		('customModels', 'node-oa|deepseek-v4|llm', ?),
+		('customModels', 'node-cc|glm-5.3|chat', ?),
+		('customModels', 'node-ar/qwen-2.5/custom', ?)`,
+		val1, val2, val3)
+	if err != nil {
+		t.Fatalf("failed to seed customModels: %v", err)
+	}
+
+	repo := NewRepo(db)
+	customs, err := repo.GetCustomModels()
+	if err != nil {
+		t.Fatalf("GetCustomModels failed: %v", err)
+	}
+
+	if len(customs) != 3 {
+		t.Fatalf("expected 3 custom models, got %d", len(customs))
+	}
+
+	foundMap := make(map[string]*CustomModel)
+	for _, cm := range customs {
+		foundMap[cm.ProviderAlias+"/"+cm.ID] = cm
+	}
+
+	if cm, ok := foundMap["node-oa/deepseek-v4"]; !ok || !cm.Caps["vision"] {
+		t.Errorf("expected node-oa/deepseek-v4 with vision cap, got %+v", cm)
+	}
+	if cm, ok := foundMap["node-cc/glm-5.3"]; !ok || cm.Type != "chat" {
+		t.Errorf("expected node-cc/glm-5.3 with type chat, got %+v", cm)
+	}
+	if cm, ok := foundMap["node-ar/qwen-2.5"]; !ok || !cm.Caps["reasoning"] {
+		t.Errorf("expected node-ar/qwen-2.5 with reasoning cap, got %+v", cm)
 	}
 }

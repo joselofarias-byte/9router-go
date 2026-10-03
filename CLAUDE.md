@@ -1,3 +1,9 @@
+# 9router-go — Agent & Developer Guide
+
+> **Upstream Source of Truth**: This repository (`9router-go`) is the high-performance Go implementation of [**decolua/9router**](https://github.com/decolua/9router).
+> The upstream reference implementation is cloned locally at `/Users/luqmannul.hakim/htdocs/9router`.
+> For complete codebase mapping, Golang optimization standards, Svelte 5 frontend standards, standard Go unit testing conventions, and upstream sync protocols, **ALWAYS READ `AGENTS.md`**.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

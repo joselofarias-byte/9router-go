@@ -7,6 +7,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/usagetracker"
 )
 
@@ -57,6 +58,9 @@ func HandleUsageStream(repo *db.Repo) http.HandlerFunc {
 			select {
 			case <-ctx.Done():
 				return
+			case <-shutdown.Done():
+				// Same as console-log stream: never hold Shutdown hostage.
+				return
 			case b, ok := <-ch:
 				if !ok {
 					return
@@ -71,14 +75,5 @@ func HandleUsageStream(repo *db.Repo) http.HandlerFunc {
 				flusher.Flush()
 			}
 		}
-	}
-}
-
-// HandleUsageStats returns current active and pending stats as JSON.
-func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tracker := usagetracker.GetTracker()
-		state := tracker.GetActiveState(repo)
-		handlerutil.WriteJSON(w, http.StatusOK, state)
 	}
 }

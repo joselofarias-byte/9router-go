@@ -36,6 +36,20 @@ func TestCaptureConsole_RingBufferBounded(t *testing.T) {
 	}
 }
 
+func TestCaptureConsole_StripsANSI(t *testing.T) {
+	ClearConsoleLogs()
+
+	captureConsole("\x1b[32mINF\x1b[0m [request] GET / status=200")
+
+	logs := ConsoleLogs()
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 buffered line, got %d", len(logs))
+	}
+	if logs[0] != "INF [request] GET / status=200" {
+		t.Errorf("expected ANSI codes stripped, got %q", logs[0])
+	}
+}
+
 func TestSubscribeConsole_DeliversLinesAndClear(t *testing.T) {
 	ClearConsoleLogs()
 
