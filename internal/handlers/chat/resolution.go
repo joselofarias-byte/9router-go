@@ -218,16 +218,18 @@ func stripModelContextMarker(modelStr string) string {
 type virtualFreeProfile string
 
 const (
-	virtualFreeProfileBest      virtualFreeProfile = "best"
-	virtualFreeProfileFast      virtualFreeProfile = "fast"
-	virtualFreeProfileReasoning virtualFreeProfile = "reasoning"
+	virtualFreeProfileBest        virtualFreeProfile = "best"
+	virtualFreeProfileFast        virtualFreeProfile = "fast"
+	virtualFreeProfileReasoning   virtualFreeProfile = "reasoning"
+	virtualFreeProfileCoding      virtualFreeProfile = "coding"
+	virtualFreeProfileLongContext virtualFreeProfile = "long-context"
 )
 
 // isVirtualFreeRoute reports the built-in free-only virtual names.
 // Matching trims space and ignores case.
 func isVirtualFreeRoute(modelStr string) bool {
 	switch canonicalVirtualName(modelStr) {
-	case "free", "free-best", "fast-free", "reasoning-free":
+	case "free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free":
 		return true
 	default:
 		return false
@@ -244,6 +246,10 @@ func virtualFreeProfileFromName(modelStr string) virtualFreeProfile {
 		return virtualFreeProfileFast
 	case "reasoning-free":
 		return virtualFreeProfileReasoning
+	case "coding-best-free":
+		return virtualFreeProfileCoding
+	case "long-context-free":
+		return virtualFreeProfileLongContext
 	default:
 		return virtualFreeProfileBest
 	}
@@ -281,6 +287,10 @@ func (h *ChatHandler) resolveDynamicFreeProfile(profile virtualFreeProfile) (*Mo
 	switch profile {
 	case virtualFreeProfileFast:
 		models = h.rankFreeRouteEntriesByFast(models, baseScores)
+	case virtualFreeProfileCoding:
+		models = h.rankFreeRouteEntriesByProfileBonus(models, baseScores, freeRouteCodingBonus, "coding")
+	case virtualFreeProfileLongContext:
+		models = h.rankFreeRouteEntriesByProfileBonus(models, baseScores, freeRouteLongContextBonus, "long-context")
 	default:
 		models = h.rankFreeRouteEntriesByRecentHealth(models, baseScores)
 	}
@@ -600,6 +610,103 @@ func (h *ChatHandler) rankFreeRouteEntriesByFast(models []string, baseScores map
 			"base", baseScores[ordered[0]], "latency_bonus", freeRouteFastLatencyBonus(health[ordered[0]]))
 	}
 	return ordered
+}
+
+func (h *ChatHandler) rankFreeRouteEntriesByProfileBonus(
+	models []string,
+	baseScores map[string]float64,
+	bonus func(string) float64,
+	label string,
+) []string {
+	if h == nil || h.Repo == nil || len(models) < 2 {
+		return models
+	}
+	health := h.collectFreeRouteRecentHealth(models)
+	ordered := append([]string(nil), models...)
+	effective := make(map[string]float64, len(ordered))
+	for _, entry := range ordered {
+		adjustment := freeRouteReliabilityAdjustment(health[entry]) + bonus(entry)
+		adjustment = clampFreeRouteAdaptiveAdjustment(adjustment)
+		effective[entry] = baseScores[entry] + adjustment
+		if _, quarantined := virtualFreeModelQuarantined(entry); quarantined {
+			effective[entry] -= 1000
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if effective[left] != effective[right] {
+			return effective[left] > effective[right]
+		}
+		lh, rh := health[left], health[right]
+		if lh == nil || rh == nil || lh.samples == 0 || rh.samples == 0 {
+			return false
+		}
+		leftRate := float64(lh.successes) / float64(lh.samples)
+		rightRate := float64(rh.successes) / float64(rh.samples)
+		if leftRate != rightRate {
+			return leftRate > rightRate
+		}
+		leftLatency, leftMeasured := freeRouteAverageSuccessLatency(lh)
+		rightLatency, rightMeasured := freeRouteAverageSuccessLatency(rh)
+		if leftMeasured != rightMeasured {
+			return leftMeasured
+		}
+		if leftMeasured && leftLatency != rightLatency {
+			return leftLatency < rightLatency
+		}
+		if lh.latestSuccess != rh.latestSuccess {
+			return lh.latestSuccess
+		}
+		return lh.latestAt.After(rh.latestAt)
+	})
+	if len(ordered) > 0 && ordered[0] != models[0] {
+		log.Info("routing", "virtual free profile rerank",
+			"profile", label, "from", models[0], "to", ordered[0],
+			"base", baseScores[ordered[0]], "profile_bonus", bonus(ordered[0]))
+	}
+	return ordered
+}
+
+func freeRouteCodingBonus(entry string) float64 {
+	parts := strings.SplitN(entry, "/", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	model := strings.ToLower(parts[1])
+	bonus := 0.0
+	for _, marker := range []string{"coder", "codex", "codestral", "devstral", "starcoder", "-code", "code-"} {
+		if strings.Contains(model, marker) {
+			bonus = 6
+			break
+		}
+	}
+	caps := providers.GetCapabilitiesForModel(parts[0], parts[1])
+	if caps.Reasoning && caps.Tools && bonus < 2 {
+		bonus = 2
+	}
+	return bonus
+}
+
+func freeRouteLongContextBonus(entry string) float64 {
+	parts := strings.SplitN(entry, "/", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	ctx := providers.GetCapabilitiesDetailForModel(parts[0], parts[1]).ContextWindow
+	switch {
+	case ctx >= 1_000_000:
+		return 6
+	case ctx >= 512_000:
+		return 5
+	case ctx >= 256_000:
+		return 4
+	case ctx >= 200_000:
+		return 3
+	case ctx > 128_000:
+		return 2
+	default:
+		return 0
+	}
 }
 
 func freeRouteAverageSuccessLatency(stat *freeRouteRecentHealth) (int64, bool) {
