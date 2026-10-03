@@ -478,8 +478,14 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				continue
 			}
 			sawEligibleFreeHop = true
+			if virtualFree {
+				log.Info("routing", "virtual free hop attempt", "entry", entry)
+			}
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
+				if virtualFree {
+					log.Warn("routing", "virtual free hop unresolved", "entry", entry)
+				}
 				continue
 			}
 
@@ -575,6 +581,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						continue
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
+					log.Warn("fallback", "upstream failed without structured status", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID, "error", fwdErr)
 					if isKnownNoAuth {
 						break
 					}
