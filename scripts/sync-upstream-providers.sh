@@ -64,10 +64,10 @@ comm -13 "$tmp/current.ids" "$tmp/upstream.ids" > "$tmp/missing.ids"
 {
   echo "# 9router-go upstream provider sync"
   echo
-  echo "- Mode: `$MODE`"
-  echo "- Upstream: `$UPSTREAM_URL@$UPSTREAM_BRANCH`"
-  echo "- Watermark: `$STATE_SHA`"
-  echo "- Upstream HEAD: `$UPSTREAM_SHA`"
+  printf '%s\n' "- Mode: $MODE"
+  printf '%s\n' "- Upstream: $UPSTREAM_URL@$UPSTREAM_BRANCH"
+  printf '%s\n' "- Watermark: $STATE_SHA"
+  printf '%s\n' "- Upstream HEAD: $UPSTREAM_SHA"
   echo
 } > "$REPORT_FILE"
 
@@ -78,7 +78,7 @@ fi
 
 echo "Missing provider IDs:" | tee -a "$REPORT_FILE"
 while IFS= read -r id; do
-  echo "- `$id`" | tee -a "$REPORT_FILE"
+  echo "- $id" | tee -a "$REPORT_FILE"
 done < "$tmp/missing.ids"
 echo >> "$REPORT_FILE"
 
@@ -107,9 +107,9 @@ for sha in "${commits[@]}"; do
   {
     echo "## Candidate commit"
     echo
-    echo "- Commit: `$sha`"
+    echo "- Commit: $sha"
     echo "- Subject: $subject"
-    echo "- New providers: `$ids`"
+    echo "- New providers: $ids"
     echo
   } >> "$REPORT_FILE"
 
@@ -145,7 +145,7 @@ if [[ "$MODE" == "apply" ]]; then
     {
       echo
       echo "Providers still missing after applying candidate commits:"
-      while IFS= read -r id; do echo "- `$id`"; done < "$tmp/missing.ids"
+      while IFS= read -r id; do echo "- $id"; done < "$tmp/missing.ids"
     } | tee -a "$REPORT_FILE"
     exit 42
   fi
