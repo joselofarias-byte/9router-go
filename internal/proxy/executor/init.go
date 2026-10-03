@@ -51,6 +51,7 @@ func RegisterAll() {
 	Register("ollama-local", func() Executor { return ForwardOpenAI })
 	Register("llamacpp", func() Executor { return ForwardOpenAI })
 	Register("minimax-cn", func() Executor { return ForwardOpenAI })
+	Register("muse", func() Executor { return ForwardMuse })
 	Register("kimi-coding", func() Executor { return ForwardOpenAI })
 	Register("claude", func() Executor { return ForwardOpenAI })
 	Register("perplexity-agent", func() Executor { return ForwardCodex })
