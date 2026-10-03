@@ -331,7 +331,7 @@ func ensureGoogleBackupFolder(ctx context.Context, accessToken string) (string, 
 	var listed struct {
 		Files []googleDriveFile `json:"files"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&listed); err != nil {
+	if err := decodeGoogleDriveJSON(resp.Body, 1<<20, &listed); err != nil {
 		return "", err
 	}
 	if len(listed.Files) > 0 && listed.Files[0].ID != "" {
@@ -355,7 +355,7 @@ func ensureGoogleBackupFolder(ctx context.Context, accessToken string) (string, 
 		return "", fmt.Errorf("create backup folder: status %d", createResp.StatusCode)
 	}
 	var folder googleDriveFile
-	if err := json.NewDecoder(io.LimitReader(createResp.Body, 1<<20)).Decode(&folder); err != nil || folder.ID == "" {
+	if err := decodeGoogleDriveJSON(createResp.Body, 1<<20, &folder); err != nil || folder.ID == "" {
 		return "", errors.New("Google Drive did not return backup folder id")
 	}
 	return folder.ID, nil
@@ -411,7 +411,7 @@ func uploadGoogleBackup(ctx context.Context, accessToken, folderID, name string,
 		return nil, fmt.Errorf("upload backup: status %d", resp.StatusCode)
 	}
 	var file googleDriveFile
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&file); err != nil || file.ID == "" {
+	if err := decodeGoogleDriveJSON(resp.Body, 1<<20, &file); err != nil || file.ID == "" {
 		return nil, errors.New("Google Drive did not return uploaded file id")
 	}
 	return &file, nil
@@ -443,7 +443,7 @@ func rotateGoogleBackups(ctx context.Context, accessToken, folderID string, keep
 	var listed struct {
 		Files []googleDriveFile `json:"files"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&listed); err != nil {
+	if err := decodeGoogleDriveJSON(resp.Body, 2<<20, &listed); err != nil {
 		return 0, err
 	}
 
@@ -481,6 +481,14 @@ func rotateGoogleBackups(ctx context.Context, accessToken, folderID string, keep
 		deleted++
 	}
 	return deleted, firstErr
+}
+
+func decodeGoogleDriveJSON(r io.Reader, limit int64, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(r, limit))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, dst)
 }
 
 func googleDriveRequest(ctx context.Context, method, target, accessToken string, body io.Reader, contentType string) (*http.Request, error) {
