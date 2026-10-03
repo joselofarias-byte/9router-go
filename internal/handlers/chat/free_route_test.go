@@ -202,6 +202,91 @@ func TestRankFreeRouteEntriesByFastKeepsThirtyPointRiskGap(t *testing.T) {
 	}
 }
 
+func TestResolveModel_CodingBestFreePrefersCodingModel(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+
+	registry.GetActiveState().ProviderModels["groq"]["qwen-coder-free"] = &registry.ProviderModel{
+		ProviderID:    "groq",
+		ModelID:       "qwen-coder-free",
+		UpstreamModel: "qwen2.5-coder-32b-free",
+		PricingMode:   "free",
+		IsActive:      true,
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	for _, name := range []string{"coding-best-free", "CODING-BEST-FREE"} {
+		info, err := h.resolveModel(name)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", name, err)
+		}
+		if len(info.ComboModels) < 3 {
+			t.Fatalf("%s pool = %#v, expected coding plus fallback free models", name, info.ComboModels)
+		}
+		if info.ComboModels[0] != "groq/qwen2.5-coder-32b-free" {
+			t.Fatalf("%s first = %q, want coding-specialized model; pool=%#v", name, info.ComboModels[0], info.ComboModels)
+		}
+		for _, entry := range info.ComboModels {
+			if entry == "deepseek/deepseek-chat" {
+				t.Fatalf("%s leaked paid model into coding profile: %#v", name, info.ComboModels)
+			}
+		}
+	}
+}
+
+func TestResolveModel_LongContextFreePrefersLargerContext(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+
+	registry.GetActiveState().ProviderModels["groq"]["longcat-free"] = &registry.ProviderModel{
+		ProviderID:    "groq",
+		ModelID:       "longcat-free",
+		UpstreamModel: "longcat-flash-free",
+		PricingMode:   "free",
+		IsActive:      true,
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	info, err := h.resolveModel("long-context-free")
+	if err != nil {
+		t.Fatalf("resolve long-context-free: %v", err)
+	}
+	if info.ComboModels[0] != "groq/longcat-flash-free" {
+		t.Fatalf("long-context-free first = %q, want 200k LongCat; pool=%#v", info.ComboModels[0], info.ComboModels)
+	}
+}
+
+func TestProfileBonusCannotEraseThirtyPointRiskGap(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	models := []string{"safe/unknown-free", "risky/coder-free"}
+	base := map[string]float64{
+		"safe/unknown-free": 60,
+		"risky/coder-free":   30,
+	}
+	if err := repo.InsertRequestDetail(
+		"profile-risky-success", "risky", "coder-free", "", "success",
+		`{"latency":{"total":200},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.rankFreeRouteEntriesByProfileBonus(models, base, func(entry string) float64 {
+		if entry == "risky/coder-free" {
+			return 100
+		}
+		return 0
+	}, "test")
+	if got[0] != "safe/unknown-free" {
+		t.Fatalf("profile bonus erased 30-point base risk gap: %#v", got)
+	}
+}
+
 func TestResolveModel_ExplicitFreeComboWins(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -267,7 +352,7 @@ func TestHandleModels_ListsVirtualFreeRoutes(t *testing.T) {
 	for _, m := range resp.Data {
 		found[m.ID] = m.OwnedBy
 	}
-	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free"} {
+	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free"} {
 		if found[id] != "fabric" {
 			t.Errorf("model %s owned_by=%q, want fabric", id, found[id])
 		}
@@ -293,7 +378,7 @@ func TestResolveModel_PaidAndUnclassifiedPoolFailsClosed(t *testing.T) {
 	}
 
 	h := NewChatHandler(db.NewRepo(database))
-	for _, name := range []string{"free", "free-best", "fast-free", "reasoning-free", "FREE", " Free-Best ", " FAST-FREE ", "REASONING-FREE"} {
+	for _, name := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free", "FREE", " Free-Best ", " FAST-FREE ", "REASONING-FREE", " CODING-BEST-FREE ", "LONG-CONTEXT-FREE"} {
 		info, err := h.resolveModel(name)
 		if !errors.Is(err, ErrFreeRouteUnavailable) || info != nil {
 			t.Fatalf("%s resolved to %+v err=%v, want free_route_unavailable", name, info, err)

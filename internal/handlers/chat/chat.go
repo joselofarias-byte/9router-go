@@ -445,7 +445,7 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	for _, m := range result.Models {
 		seen[strings.ToLower(m.ID)] = true
 	}
-	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free"} {
+	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free"} {
 		if !seen[id] {
 			result.Models = append(result.Models, ModelInfoObject{ID: id, Object: "model", OwnedBy: "fabric"})
 		}
