@@ -194,6 +194,51 @@ func (r *Repo) GetRecentUsageHistory(limit int) ([]UsageHistoryRow, error) {
 	return res, nil
 }
 
+// RoutingRequestMetric is the compact recent-request shape used by adaptive
+// routing. Data is kept raw so policy-specific consumers can extract only the
+// latency/error fields they need without expanding the DB API surface.
+type RoutingRequestMetric struct {
+	Timestamp string
+	Provider  string
+	Model     string
+	Status    string
+	Data      string
+}
+
+// GetRecentRoutingRequestMetrics returns the newest request outcomes used to
+// bias dynamic routing toward models that have actually been healthy recently.
+// The hard cap protects the request path from accidentally scanning an
+// unbounded history table.
+func (r *Repo) GetRecentRoutingRequestMetrics(limit int) ([]RoutingRequestMetric, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := r.db.Query(`
+		SELECT COALESCE(timestamp, ''), COALESCE(provider, ''), COALESCE(model, ''),
+		       COALESCE(status, ''), COALESCE(data, '{}')
+		FROM requestDetails
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent routing request metrics: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]RoutingRequestMetric, 0, limit)
+	for rows.Next() {
+		var row RoutingRequestMetric
+		if err := rows.Scan(&row.Timestamp, &row.Provider, &row.Model, &row.Status, &row.Data); err != nil {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 // GetRequestDetailsPaged returns paged raw json strings and total count from requestDetails.
 func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]string, int, error) {
 	var total int
