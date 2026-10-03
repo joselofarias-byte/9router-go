@@ -3994,9 +3994,9 @@
           {providerId === 'freebuff'
             ? 'Authorization link & manual check'
             : isClineOAuth
-              ? 'Log in via Cline, then paste the callback'
+              ? 'Log in via Cline; manual fallback if needed'
               : oauthAuthUrl
-                ? 'Or paste callback URL manually'
+                ? 'If automatic connection fails'
                 : 'Manual token import'}
         </span>
         <div class="flex-1 h-px bg-border"></div>
@@ -4115,25 +4115,27 @@
             {providerId === 'freebuff'
               ? 'Step 2: Finish in the browser / paste URL / Code / Token'
               : isClineOAuth
-                ? 'Step 2: Paste the callback URL here'
+                ? 'Step 2: Paste the code or callback URL here'
                 : oauthAuthUrl
-                  ? 'Step 2: Paste the callback URL here'
+                  ? 'Step 2: Paste the code or callback URL here'
                   : 'Manual token import (no browser login for this provider)'}
           </p>
           <input
             bind:value={callbackInput}
             placeholder={providerId === 'freebuff'
               ? 'https://freebuff.com/onboard?auth_code=... or paste authToken'
-              : `${dashboardCallback()}?code=...&state=...`}
+              : providerId === 'antigravity'
+                ? 'Paste the authorization code (4/...) or the full callback URL'
+                : 'Paste the authorization code or the full callback URL'}
             class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"
           />
           <p class="text-[11px] text-text-muted mt-1">
             {providerId === 'freebuff'
               ? 'If the browser lands on /onboard, finish onboarding in the Freebuff tab, then paste the URL above or click Check & Connect.'
               : isClineOAuth
-                ? 'Log in via the Cline tab that opened — the connection completes automatically. If it fails, copy the redirect URL (containing code=...) here and click Connect.'
+                ? 'Complete the login in the browser tab. The callback is normally sent automatically. If it does not connect, tap Copy code on the callback page, return here, paste the code (or full callback URL), then click Connect.'
                 : oauthAuthUrl
-                  ? 'Complete the login in the browser tab — the connection completes automatically. If it fails, copy the full URL from the browser here.'
+                  ? 'Complete the login in the browser tab. The callback is normally sent automatically. If it does not connect, tap Copy code on the callback page, return here, paste the code (or full callback URL), then click Connect.'
                   : 'Paste the access token here, then click Connect.'}
           </p>
         </div>
