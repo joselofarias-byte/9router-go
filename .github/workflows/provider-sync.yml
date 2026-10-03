@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  issues: write
 
 concurrency:
   group: upstream-provider-sync
@@ -34,7 +33,7 @@ jobs:
           PROVIDER_SYNC_REPORT: /tmp/9router-provider-sync-report.md
         run: |
           set +e
-          ./scripts/sync-upstream-providers.sh --apply
+          bash scripts/sync-upstream-providers.sh --apply
           rc=$?
           set -e
 
@@ -49,19 +48,11 @@ jobs:
             exit "$rc"
           fi
 
-      - name: Open or update reconciliation issue
+      - name: Stop for manual reconciliation
         if: steps.sync.outputs.rc == '42'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          title="Upstream provider sync needs manual reconciliation"
-          body_file=/tmp/9router-provider-sync-report.md
-          issue="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
-          if [ -n "$issue" ]; then
-            gh issue comment "$issue" --body-file "$body_file"
-          else
-            gh issue create --title "$title" --body-file "$body_file"
-          fi
+          echo "Provider sync needs manual reconciliation; see the workflow summary." >&2
+          exit 1
 
       - name: Push provider sync branch
         if: steps.sync.outputs.rc == '0'
