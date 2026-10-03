@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"9router/proxy/internal/controlplane/routing"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -445,7 +446,7 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	for _, m := range result.Models {
 		seen[strings.ToLower(m.ID)] = true
 	}
-	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free"} {
+	for _, id := range routing.FreeProfiles() {
 		if !seen[id] {
 			result.Models = append(result.Models, ModelInfoObject{ID: id, Object: "model", OwnedBy: "fabric"})
 		}

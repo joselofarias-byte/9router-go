@@ -97,11 +97,15 @@ func (h *ChatHandler) handleAccountFallback(
 			}
 		}
 	}
+	sortConnectionsByCapacity(provider, model, allConns)
 
 	var excludeIDs []string
 	var lastErr error
 	for _, c := range allConns {
 		if slices.Contains(excludeIDs, c.ID) {
+			continue
+		}
+		if model != "" && !h.accountRouteEligible(ctx, provider, model, capacityAccountID(provider, c.ID)) {
 			continue
 		}
 		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
@@ -220,6 +224,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	connectionID, connData := f.ConnectionID, f.ConnData
 	body, isStream := f.Body, f.IsStream
 	translateResponse, endpoint := f.TranslateResponse, f.Endpoint
+	if model != "" && !h.accountRouteEligible(ctx, provider, model, capacityAccountID(provider, connectionID)) {
+		return fmt.Errorf("connection no longer eligible")
+	}
 	ctx = translator.WithUsageCapture(ctx)
 
 	providerCfg, err := h.getProviderConfig(provider, connData)
@@ -387,6 +394,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		recordVirtualFreeTraffic(ctx, provider, model, connectionID, fwdErr, int(time.Since(start).Milliseconds()), int(metrics.TTFT))
+	}()
 	sessionID := handlerutil.GetSessionID(ctx)
 
 	if exec := executor.Get(provider); exec != nil {

@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"sort"
 
+	"9router/proxy/internal/controlplane/availability"
+	"9router/proxy/internal/controlplane/capacity"
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/scoring"
 	"9router/proxy/internal/controlplane/trust"
@@ -46,11 +48,14 @@ type RouteNode struct {
 	UpstreamModel string
 	AccountID     string
 	Score         scoring.Score
+	LatencyMs     float64
+	Quota         capacity.Snapshot
 }
 
 // Engine evaluates and selects routing candidates based on policies.
 type Engine struct {
 	TrustManager *trust.Manager
+	Availability *availability.Store
 }
 
 // SelectCandidates evaluates a requested model/pool against the active registry snapshot,
@@ -102,6 +107,10 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 			riskProfile := providers.GetProviderRiskProfile(provID)
 
 			appendCandidate := func(accountID string) {
+				observed, quota, ok := e.accountView(provID, accountID, pm)
+				if !ok {
+					return
+				}
 				trustLvl := e.TrustManager.GetTrustLevel(provID, pm.ModelID, accountID)
 
 				if policy == PolicyTrusted && trustLvl != trust.TrustTrusted && trustLvl != trust.TrustVerified {
@@ -112,7 +121,10 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					TrustLevel:         trustLvl,
 					IsFreeTier:         isFree,
 					AccountRiskPenalty: riskProfile.ScorePenalty,
-					// TTFT, Latency, etc., would be pulled from a metrics store
+					TTFTMs:             int(observed.TTFTMs),
+				}
+				if observed.Attempts > 0 {
+					factors.SuccessRate = float64(observed.Successes) / float64(observed.Attempts)
 				}
 
 				score := scoring.Calculate(factors)
@@ -132,6 +144,8 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					UpstreamModel: pm.UpstreamModel,
 					AccountID:     accountID,
 					Score:         score,
+					LatencyMs:     observed.LatencyMs,
+					Quota:         quota,
 				})
 			}
 
@@ -159,10 +173,47 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
 
-	// Sort candidates by score descending (stable due to preceding shuffle)
+	// Sort candidates by score descending (stable due to preceding shuffle).
+	// A known positive balance only breaks a score tie inside one provider/model.
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].Score.Total > candidates[j].Score.Total
+		return preferCandidate(candidates[i], candidates[j])
 	})
 
 	return candidates
+}
+
+// accountView drops an account that is freshly exhausted or inside an observed
+// cooldown. Unknown and stale quota stay eligible; they are not a balance.
+func (e *Engine) accountView(providerID, accountID string, pm *registry.ProviderModel) (availability.State, capacity.Snapshot, bool) {
+	wire := pm.UpstreamModel
+	if wire == "" {
+		wire = pm.ModelID
+	}
+	quota := capacity.Inspect(providerID, accountID, wire)
+	if !capacity.Eligible(quota) {
+		return availability.State{}, quota, false
+	}
+	var observed availability.State
+	if e != nil && e.Availability != nil {
+		observed = e.Availability.Get(availability.Key{Provider: providerID, Model: pm.ModelID, Account: accountID})
+		if !observed.BlockedUntil.IsZero() {
+			return observed, quota, false
+		}
+	}
+	return observed, quota, true
+}
+
+func preferCandidate(a, b RouteNode) bool {
+	if a.Score.Total != b.Score.Total {
+		return a.Score.Total > b.Score.Total
+	}
+	aKnown := a.Quota.Status == capacity.Available
+	bKnown := b.Quota.Status == capacity.Available
+	if aKnown != bKnown {
+		return aKnown
+	}
+	if !aKnown || a.ProviderID != b.ProviderID || a.ModelID != b.ModelID {
+		return false
+	}
+	return a.Quota.RemainingPercentage > b.Quota.RemainingPercentage
 }

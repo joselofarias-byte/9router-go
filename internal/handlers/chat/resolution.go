@@ -223,13 +223,14 @@ const (
 	virtualFreeProfileReasoning   virtualFreeProfile = "reasoning"
 	virtualFreeProfileCoding      virtualFreeProfile = "coding"
 	virtualFreeProfileLongContext virtualFreeProfile = "long-context"
+	virtualFreeProfileLocal       virtualFreeProfile = "local"
 )
 
 // isVirtualFreeRoute reports the built-in free-only virtual names.
 // Matching trims space and ignores case.
 func isVirtualFreeRoute(modelStr string) bool {
 	switch canonicalVirtualName(modelStr) {
-	case "free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free":
+	case "free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free", "long-context", "local":
 		return true
 	default:
 		return false
@@ -248,8 +249,10 @@ func virtualFreeProfileFromName(modelStr string) virtualFreeProfile {
 		return virtualFreeProfileReasoning
 	case "coding-best-free":
 		return virtualFreeProfileCoding
-	case "long-context-free":
+	case "long-context-free", "long-context":
 		return virtualFreeProfileLongContext
+	case "local":
+		return virtualFreeProfileLocal
 	default:
 		return virtualFreeProfileBest
 	}
@@ -281,6 +284,10 @@ func (h *ChatHandler) resolveDynamicFreeProfile(profile virtualFreeProfile) (*Mo
 		if len(models) == 0 {
 			return nil, freeRouteUnavailable("no eligible reasoning-capable free models")
 		}
+	}
+	models = retainDeclaredProfile(state, models, profile)
+	if len(models) == 0 {
+		return nil, freeRouteUnavailable("no eligible free or free-tier models with an active local connection")
 	}
 
 	baseScores := freeRouteBaseScores(state, candidates)

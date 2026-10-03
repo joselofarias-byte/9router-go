@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"9router/proxy/internal/controlplane/capacity"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/translator"
 	"bytes"
@@ -85,6 +86,7 @@ func applyActiveStrikeBlocks(connectionID string, quotas map[string]AntigravityM
 		}
 		if blockUntil.After(now) {
 			model := strings.TrimPrefix(key, connectionID+"|")
+			observeAntigravityCooldown(connectionID, model, blockUntil.Sub(now))
 			quotas[model] = AntigravityModelQuota{
 				RemainingPercentage: 0,
 				ResetAt:             blockUntil,
@@ -100,14 +102,15 @@ func applyActiveStrikeBlocks(connectionID string, quotas map[string]AntigravityM
 // ClearAntigravityQuotaCache resets the in-memory cache (primarily for unit tests).
 func ClearAntigravityQuotaCache() {
 	agQuotaMu.Lock()
-	defer agQuotaMu.Unlock()
 	agQuotaCache = make(map[string]map[string]AntigravityModelQuota)
 	agLastRefreshAt = make(map[string]time.Time)
+	agQuotaMu.Unlock()
 
 	agWeeklyMu.Lock()
 	agWeeklyCache = make(map[string]map[string]AntigravityWeeklyQuota)
 	agWeeklyAt = make(map[string]time.Time)
 	agWeeklyMu.Unlock()
+	capacity.ClearProvider("antigravity")
 }
 
 // BlockAntigravityModelUntil caches an exhausted model quota in memory until resetAt.
@@ -205,6 +208,7 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 	if connectionID == "" || accessToken == "" {
 		return nil, fmt.Errorf("missing connectionID or accessToken")
 	}
+	capacity.SetScope("antigravity", connectionID, capacity.Scope{Project: projectID})
 
 	now := time.Now().UTC()
 
@@ -294,8 +298,8 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 		Models map[string]struct {
 			IsInternal bool `json:"isInternal"`
 			QuotaInfo  *struct {
-				RemainingFraction float64 `json:"remainingFraction"`
-				ResetTime         string  `json:"resetTime"`
+				RemainingFraction *float64 `json:"remainingFraction"`
+				ResetTime         string   `json:"resetTime"`
 			} `json:"quotaInfo"`
 		} `json:"models"`
 	}
@@ -306,7 +310,8 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 
 	quotas := make(map[string]AntigravityModelQuota)
 	for modelKey, modelData := range data.Models {
-		if modelData.QuotaInfo == nil || modelData.IsInternal {
+		remaining, ok := reportedAntigravityFraction(modelData.QuotaInfo, modelData.IsInternal)
+		if !ok {
 			continue
 		}
 		var resetAt time.Time
@@ -316,7 +321,7 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 			}
 		}
 		quotas[modelKey] = AntigravityModelQuota{
-			RemainingPercentage: modelData.QuotaInfo.RemainingFraction * 100,
+			RemainingPercentage: remaining * 100,
 			ResetAt:             resetAt,
 		}
 	}
@@ -334,6 +339,10 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 		}
 	}
 
+	// Publish only the provider-reported balance. Strike blocks are a cooldown,
+	// not a fabricated remaining percentage.
+	publishAntigravityCapacity(connectionID, quotas)
+
 	// Re-assert active strike blocks so optimistic quota cannot resurrect blocked pair
 	quotas = applyActiveStrikeBlocks(connectionID, quotas)
 
@@ -342,6 +351,43 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 	agQuotaMu.Unlock()
 
 	return quotas, nil
+}
+
+func reportedAntigravityFraction(info *struct {
+	RemainingFraction *float64 `json:"remainingFraction"`
+	ResetTime         string   `json:"resetTime"`
+}, internal bool) (float64, bool) {
+	if info == nil || info.RemainingFraction == nil || internal {
+		return 0, false
+	}
+	remaining := *info.RemainingFraction
+	if math.IsNaN(remaining) || math.IsInf(remaining, 0) || remaining < 0 || remaining > 1 {
+		return 0, false
+	}
+	return remaining, true
+}
+
+func publishAntigravityCapacity(connectionID string, quotas map[string]AntigravityModelQuota) {
+	for model, q := range quotas {
+		capacity.Update("antigravity", connectionID, model, q.RemainingPercentage, q.ResetAt)
+		for alias, canonical := range translator.AntigravityModelSynonyms {
+			if canonical == model && alias != model {
+				capacity.Update("antigravity", connectionID, alias, q.RemainingPercentage, q.ResetAt)
+			}
+		}
+	}
+}
+
+func observeAntigravityCooldown(connectionID, model string, delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	capacity.ObserveCooldown("antigravity", connectionID, model, delay)
+	for alias, canonical := range translator.AntigravityModelSynonyms {
+		if canonical == model && alias != model {
+			capacity.ObserveCooldown("antigravity", connectionID, alias, delay)
+		}
+	}
 }
 
 // Quota-error marker constants backing agQuotaErrorMarkers.
@@ -434,6 +480,7 @@ func HandleAntigravityQuotaError(p AntigravityQuotaError) *time.Time {
 					blockUntil := now.Add(agStrikeBlockDuration)
 					agStrikeBlocks[key] = blockUntil
 					agStrikeMu.Unlock()
+					observeAntigravityCooldown(p.ConnectionID, m, agStrikeBlockDuration)
 					// Store blocked quota so IsAntigravityModelBlocked sees it even after optimistic refresh
 					agQuotaMu.Lock()
 					if _, ok := agQuotaCache[p.ConnectionID]; !ok {

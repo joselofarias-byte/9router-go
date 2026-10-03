@@ -525,6 +525,7 @@ func keysString(m map[string]bool) string {
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, freePool ...bool) {
 	virtualFree := len(freePool) > 0 && freePool[0]
+	ctx = withFreeProfile(ctx, comboName, virtualFree)
 	sawEligibleFreeHop := false
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
@@ -568,7 +569,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 
 		for _, entry := range models {
-			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+			if !h.allowFreeProfileHop(ctx, virtualFree, entry) {
 				continue
 			}
 			if virtualFree {
@@ -734,6 +735,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, freePool ...bool) {
 	virtualFree := len(freePool) > 0 && freePool[0]
+	ctx = withFreeProfile(ctx, comboName, virtualFree)
 	sawEligibleFreeHop := false
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
@@ -772,7 +774,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 
 		for _, entry := range models {
-			if !h.AllowVirtualFreeHop(virtualFree, entry) {
+			if !h.allowFreeProfileHop(ctx, virtualFree, entry) {
 				continue
 			}
 			if virtualFree {
