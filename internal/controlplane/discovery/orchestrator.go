@@ -24,13 +24,14 @@ func NewOrchestrator(db *sql.DB, adapters []Adapter) *Orchestrator {
 
 func (o *Orchestrator) Start(ctx context.Context) {
 	go func() {
-		// Wait 30s before first run
+		// Refresh network-backed catalogs immediately in the background. Startup
+		// already has the last-known-good snapshot plus the local built-in seed,
+		// so there is no reason to leave free-best on the tiny seed pool for 30s.
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(30 * time.Second):
+		default:
 		}
-
 		o.RunSync(ctx)
 
 		ticker := time.NewTicker(24 * time.Hour)
@@ -281,5 +282,8 @@ func deactivateUnseenModels(state *registry.RegistryState, adapter Adapter, seen
 }
 
 func ownedByAdapter(pm *registry.ProviderModel, sourceID string) bool {
-	return pm.SourceID == "" || pm.SourceID == sourceID || pm.SourceID == "models.dev"
+	// A source may only deactivate observations it owns. In particular, the
+	// built-in startup seed must not erase a last-known-good models.dev model
+	// merely because both happen to use the same provider ID.
+	return pm.SourceID == "" || pm.SourceID == sourceID
 }
