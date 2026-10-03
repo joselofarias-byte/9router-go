@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/controlplane/discovery"
 	"9router/proxy/internal/controlplane/registry"
