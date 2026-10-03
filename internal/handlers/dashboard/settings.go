@@ -120,7 +120,7 @@ func backupPassphraseFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if passphrase := backupPassphraseFromRequest(r); passphrase != "" {
+	if passphrase := r.Header.Get(backupPassphraseHeader); passphrase != "" {
 		return passphrase
 	}
 	// Compatibility path for the current dashboard UI: its re-auth password is
@@ -135,7 +135,7 @@ func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	passphrase := r.Header.Get(backupPassphraseHeader)
+	passphrase := backupPassphraseFromRequest(r)
 	if err := validateBackupPassphrase(passphrase); err != nil {
 		writePlainError(w, http.StatusBadRequest, err.Error())
 		return
