@@ -10,13 +10,107 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
+
+var virtualFreeUnsupportedTTL = 30 * time.Minute
+
+type virtualFreeQuarantineEntry struct {
+	quarantinedAt time.Time
+	until         time.Time
+}
+
+var virtualFreeModelQuarantine sync.Map
+
+func unsupportedVirtualFreeModelError(ue *upstreamError) bool {
+	if ue == nil || len(ue.Body) == 0 {
+		return false
+	}
+	body := strings.ToLower(string(ue.Body))
+	if !strings.Contains(body, "model") {
+		return false
+	}
+	for _, marker := range []string{
+		"is not supported",
+		"unsupported model",
+		"model_not_found",
+		"model not found",
+		"does not exist",
+		"no such model",
+		"has been removed",
+		"is no longer available",
+	} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func quarantineUnsupportedVirtualFreeModel(entry string, ue *upstreamError) bool {
+	if !unsupportedVirtualFreeModelError(ue) {
+		return false
+	}
+	now := time.Now().UTC()
+	until := now.Add(virtualFreeUnsupportedTTL)
+	virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{
+		quarantinedAt: now,
+		until:         until,
+	})
+	log.Warn("routing", "virtual free model quarantined", "entry", entry, "status", ue.StatusCode, "until", until.Format(time.RFC3339))
+	return true
+}
+
+func virtualFreeModelQuarantined(entry string) (time.Time, bool) {
+	raw, ok := virtualFreeModelQuarantine.Load(entry)
+	if !ok {
+		return time.Time{}, false
+	}
+	q, ok := raw.(virtualFreeQuarantineEntry)
+	if !ok {
+		virtualFreeModelQuarantine.Delete(entry)
+		return time.Time{}, false
+	}
+	now := time.Now().UTC()
+	if !now.Before(q.until) {
+		virtualFreeModelQuarantine.Delete(entry)
+		return time.Time{}, false
+	}
+	if virtualFreeCatalogRefreshedAfter(entry, q.quarantinedAt) {
+		virtualFreeModelQuarantine.Delete(entry)
+		log.Info("routing", "virtual free quarantine cleared after catalog refresh", "entry", entry)
+		return time.Time{}, false
+	}
+	return q.until, true
+}
+
+func virtualFreeCatalogRefreshedAfter(entry string, quarantinedAt time.Time) bool {
+	parts := strings.SplitN(entry, "/", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	state := registry.GetActiveState()
+	if state == nil {
+		return false
+	}
+	for _, pm := range state.ProviderModels[parts[0]] {
+		if pm == nil {
+			continue
+		}
+		if pm.ModelID != parts[1] && pm.UpstreamModel != parts[1] {
+			continue
+		}
+		return pm.UpdatedAt.After(quarantinedAt)
+	}
+	return false
+}
 
 // detectNewTurn reports whether the request body starts a new conversation
 // turn. A turn boundary is the most recent plain-text user message; a request
@@ -477,6 +571,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			if !h.AllowVirtualFreeHop(virtualFree, entry) {
 				continue
 			}
+			if virtualFree {
+				if until, quarantined := virtualFreeModelQuarantined(entry); quarantined {
+					log.Info("routing", "virtual free hop quarantined", "entry", entry, "until", until.Format(time.RFC3339))
+					continue
+				}
+			}
 			sawEligibleFreeHop = true
 			if virtualFree {
 				log.Info("routing", "virtual free hop attempt", "entry", entry)
@@ -504,8 +604,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				var connID string
 				var connData *ConnectionData
 				isKnownNoAuth := false
+				isNoAuthProvider := false
 				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 					isKnownNoAuth = true
+					isNoAuthProvider = cfg.NoAuth
 					connData = &ConnectionData{
 						APIKey:      cfg.DefaultAPIKey,
 						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
@@ -566,6 +668,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
+						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
+							lastErr = ue
+							break
+						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
@@ -669,6 +775,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			if !h.AllowVirtualFreeHop(virtualFree, entry) {
 				continue
 			}
+			if virtualFree {
+				if until, quarantined := virtualFreeModelQuarantined(entry); quarantined {
+					log.Info("routing", "virtual free hop quarantined", "entry", entry, "until", until.Format(time.RFC3339))
+					continue
+				}
+			}
 			sawEligibleFreeHop = true
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
@@ -690,8 +802,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				var connID string
 				var connData *ConnectionData
 				isKnownNoAuth := false
+				isNoAuthProvider := false
 				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 					isKnownNoAuth = true
+					isNoAuthProvider = cfg.NoAuth
 					connData = &ConnectionData{
 						APIKey:      cfg.DefaultAPIKey,
 						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
@@ -742,6 +856,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
+						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
+							lastErr = ue
+							break
+						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
