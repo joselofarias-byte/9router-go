@@ -390,6 +390,7 @@ const (
 type freeRouteRecentHealth struct {
 	samples          int
 	successes        int
+	latencySamples   int
 	successLatencyMs int64
 	latestAt         time.Time
 	latestSuccess    bool
@@ -445,6 +446,7 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 		if success {
 			stat.successes++
 			if detail.Latency.Total > 0 {
+				stat.latencySamples++
 				stat.successLatencyMs += detail.Latency.Total
 			}
 		}
@@ -462,6 +464,9 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 	effective := make(map[string]float64, len(ordered))
 	for _, entry := range ordered {
 		effective[entry] = baseScores[entry] + freeRouteHealthAdjustment(health[entry])
+		if _, quarantined := virtualFreeModelQuarantined(entry); quarantined {
+			effective[entry] -= 1000
+		}
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return effective[ordered[i]] > effective[ordered[j]]
@@ -501,8 +506,8 @@ func freeRouteHealthAdjustment(stat *freeRouteRecentHealth) float64 {
 		adjustment -= 12
 	}
 
-	if stat.successes > 0 && stat.successLatencyMs > 0 {
-		avgLatency := stat.successLatencyMs / int64(stat.successes)
+	if stat.latencySamples > 0 && stat.successLatencyMs > 0 {
+		avgLatency := stat.successLatencyMs / int64(stat.latencySamples)
 		switch {
 		case avgLatency <= 1500:
 			adjustment += 5
