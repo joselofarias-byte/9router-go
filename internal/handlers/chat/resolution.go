@@ -465,7 +465,36 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 		}
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return effective[ordered[i]] > effective[ordered[j]]
+		left, right := ordered[i], ordered[j]
+		if effective[left] != effective[right] {
+			return effective[left] > effective[right]
+		}
+
+		// Health adjustments intentionally use coarse buckets, so two proven
+		// models can still tie (for example, two successful responses both above
+		// the 7s latency bonus threshold). Break those ties deterministically
+		// instead of falling back to the Control Plane pre-shuffle.
+		lh, rh := health[left], health[right]
+		if lh == nil || rh == nil || lh.samples == 0 || rh.samples == 0 {
+			return false
+		}
+		leftRate := float64(lh.successes) / float64(lh.samples)
+		rightRate := float64(rh.successes) / float64(rh.samples)
+		if leftRate != rightRate {
+			return leftRate > rightRate
+		}
+		leftLatency, leftMeasured := freeRouteAverageSuccessLatency(lh)
+		rightLatency, rightMeasured := freeRouteAverageSuccessLatency(rh)
+		if leftMeasured && rightMeasured && leftLatency != rightLatency {
+			return leftLatency < rightLatency
+		}
+		if lh.latestSuccess != rh.latestSuccess {
+			return lh.latestSuccess
+		}
+		if !lh.latestAt.Equal(rh.latestAt) {
+			return lh.latestAt.After(rh.latestAt)
+		}
+		return false
 	})
 
 	if len(ordered) > 0 && ordered[0] != models[0] {
@@ -474,6 +503,13 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 			"base", baseScores[ordered[0]], "health_adjustment", freeRouteHealthAdjustment(health[ordered[0]]))
 	}
 	return ordered
+}
+
+func freeRouteAverageSuccessLatency(stat *freeRouteRecentHealth) (int64, bool) {
+	if stat == nil || stat.latencySamples == 0 || stat.successLatencyMs <= 0 {
+		return 0, false
+	}
+	return stat.successLatencyMs / int64(stat.latencySamples), true
 }
 
 func routingFailureCountsForHealth(status int) bool {
