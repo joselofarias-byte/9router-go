@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -138,19 +139,7 @@ func decryptBackup(data []byte, passphrase string) ([]byte, error) {
 }
 
 // cipherGCM is split out so all encrypted-backup code uses the same AEAD
-// construction without exporting crypto internals to the handler.
-func cipherGCM(block interface{ BlockSize() int; Encrypt([]byte, []byte); Decrypt([]byte, []byte) }) (interface {
-	Seal(dst, nonce, plaintext, additionalData []byte) []byte
-	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error)
-}, error) {
-	typed, ok := block.(interface {
-		BlockSize() int
-		Encrypt([]byte, []byte)
-		Decrypt([]byte, []byte)
-	})
-	if !ok {
-		return nil, errors.New("unsupported backup cipher")
-	}
-	_ = typed
-	return nil, errors.New("unreachable")
+// construction without exporting crypto details to the HTTP handler.
+func cipherGCM(block cipher.Block) (cipher.AEAD, error) {
+	return cipher.NewGCM(block)
 }
