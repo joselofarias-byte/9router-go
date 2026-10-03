@@ -69,8 +69,15 @@ func ProvideServer(p ServerParams) *http.Server {
 				log.Printf("[config] registry init warning: %v", err)
 			}
 
-			adapters := []discovery.Adapter{
+			// Seed the compiled zero-credential free lanes immediately. The
+			// network discovery orchestrator intentionally waits before its
+			// first pass; without this local-only seed a fresh process would
+			// return free_route_unavailable during that startup window.
+			discovery.NewOrchestrator(p.DB, []discovery.Adapter{
 				discovery.NewBuiltinFreeAdapter(),
+			}).RunSync(ctx)
+
+			adapters := []discovery.Adapter{
 				discovery.NewModelsDevAdapter(nil),
 				discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
 				discovery.NewClineFreeAdapter(nil),
