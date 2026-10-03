@@ -113,6 +113,95 @@ func TestResolveModel_FreeBestUsesDiscoveredFreeModels(t *testing.T) {
 	}
 }
 
+func TestResolveModel_ReasoningFreeFiltersNonReasoningModels(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+
+	h := NewChatHandler(db.NewRepo(database))
+	for _, name := range []string{"reasoning-free", "REASONING-FREE", " Reasoning-Free "} {
+		info, err := h.resolveModel(name)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", name, err)
+		}
+		if !info.VirtualFree {
+			t.Fatalf("%s was not marked virtual free", name)
+		}
+		if len(info.ComboModels) != 1 || info.ComboModels[0] != "deepseek/deepseek-reasoner-free" {
+			t.Fatalf("%s pool = %#v, want reasoning-only deepseek", name, info.ComboModels)
+		}
+	}
+}
+
+func TestResolveModel_ReasoningFreeFailsClosedWithoutReasoningCandidate(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+	registry.GetActiveState().ProviderModels["deepseek"]["deepseek-reasoner-free"].IsActive = false
+
+	h := NewChatHandler(db.NewRepo(database))
+	info, err := h.resolveModel("reasoning-free")
+	if !errors.Is(err, ErrFreeRouteUnavailable) || info != nil {
+		t.Fatalf("reasoning-free resolved to %+v err=%v, want free_route_unavailable", info, err)
+	}
+}
+
+func TestResolveModel_FastFreePrefersMeasuredFastHealthyModel(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+	repo := db.NewRepo(database)
+
+	if err := repo.InsertRequestDetail(
+		"fast-slow", "groq", "llama-3.1-8b-instant", "", "success",
+		`{"latency":{"total":9000},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.InsertRequestDetail(
+		"fast-quick", "deepseek", "deepseek-reasoner-free", "", "success",
+		`{"latency":{"total":1000},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewChatHandler(repo)
+	info, err := h.resolveModel("fast-free")
+	if err != nil {
+		t.Fatalf("resolve fast-free: %v", err)
+	}
+	if len(info.ComboModels) != 2 {
+		t.Fatalf("fast-free pool = %#v, want two free candidates", info.ComboModels)
+	}
+	if info.ComboModels[0] != "deepseek/deepseek-reasoner-free" {
+		t.Fatalf("fast-free first = %q, want measured faster model; pool=%#v", info.ComboModels[0], info.ComboModels)
+	}
+}
+
+func TestRankFreeRouteEntriesByFastKeepsThirtyPointRiskGap(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	models := []string{"safe/unknown-free", "risky/fast-free"}
+	base := map[string]float64{
+		"safe/unknown-free": 60,
+		"risky/fast-free":    30,
+	}
+	if err := repo.InsertRequestDetail(
+		"fast-risky-success", "risky", "fast-free", "", "success",
+		`{"latency":{"total":300},"response":{"content":"ok"}}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.rankFreeRouteEntriesByFast(models, base)
+	if got[0] != "safe/unknown-free" {
+		t.Fatalf("fast profile erased 30-point base risk gap: %#v", got)
+	}
+}
+
 func TestResolveModel_ExplicitFreeComboWins(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -178,7 +267,7 @@ func TestHandleModels_ListsVirtualFreeRoutes(t *testing.T) {
 	for _, m := range resp.Data {
 		found[m.ID] = m.OwnedBy
 	}
-	for _, id := range []string{"free", "free-best"} {
+	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free"} {
 		if found[id] != "fabric" {
 			t.Errorf("model %s owned_by=%q, want fabric", id, found[id])
 		}
@@ -204,7 +293,7 @@ func TestResolveModel_PaidAndUnclassifiedPoolFailsClosed(t *testing.T) {
 	}
 
 	h := NewChatHandler(db.NewRepo(database))
-	for _, name := range []string{"free", "free-best", "FREE", " Free-Best "} {
+	for _, name := range []string{"free", "free-best", "fast-free", "reasoning-free", "FREE", " Free-Best ", " FAST-FREE ", "REASONING-FREE"} {
 		info, err := h.resolveModel(name)
 		if !errors.Is(err, ErrFreeRouteUnavailable) || info != nil {
 			t.Fatalf("%s resolved to %+v err=%v, want free_route_unavailable", name, info, err)
