@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 )
 
 var ModelsDevCatalogURL = "https://models.dev/api.json"
@@ -98,7 +99,10 @@ func (a *ModelsDevAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 			// Jev is the important counterexample: jev-1.13-free is a System One
 			// structured-evaluation model, not a chat completion model.
 			if explicitFreeModelID(modelID) && isChatProviderModel(provID, modelID) {
-				pricingMode = "free"
+				cfg, known := providers.KnownProviders[provID]
+				if !known || !cfg.NoAuth || noAuthFreeProviderReady(provID) {
+					pricingMode = "free"
+				}
 			}
 
 			candidates = append(candidates, Candidate{
