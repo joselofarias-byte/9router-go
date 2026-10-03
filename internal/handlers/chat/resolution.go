@@ -401,8 +401,8 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 		return models
 	}
 	rows, err := h.Repo.GetRecentRoutingRequestMetrics(freeRouteHealthHistoryLimit)
-	if err != nil || len(rows) == 0 {
-		return models
+	if err != nil {
+		rows = nil
 	}
 
 	cutoff := time.Now().UTC().Add(-freeRouteHealthWindow)
@@ -454,10 +454,6 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 			stat.latestAt = stamp
 			stat.latestSuccess = success
 		}
-	}
-
-	if len(health) == 0 {
-		return models
 	}
 
 	ordered := append([]string(nil), models...)
