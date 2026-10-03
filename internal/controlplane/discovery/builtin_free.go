@@ -24,7 +24,7 @@ func (a *BuiltinFreeAdapter) Discover(ctx context.Context) ([]Candidate, error) 
 	now := time.Now().UTC()
 	var out []Candidate
 	for providerID, cfg := range providers.KnownProviders {
-		if !cfg.NoAuth {
+		if !cfg.NoAuth || !noAuthFreeProviderReady(providerID) {
 			continue
 		}
 		for _, modelID := range providers.ProviderModels[providerID] {
@@ -55,7 +55,7 @@ func (a *BuiltinFreeAdapter) Discover(ctx context.Context) ([]Candidate, error) 
 func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 	var ids []string
 	for providerID, cfg := range providers.KnownProviders {
-		if !cfg.NoAuth {
+		if !cfg.NoAuth || !noAuthFreeProviderReady(providerID) {
 			continue
 		}
 		for _, modelID := range providers.ProviderModels[providerID] {
@@ -71,6 +71,21 @@ func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 	return ids
 }
 
+
+
+func noAuthFreeProviderReady(providerID string) bool {
+	// Only expose zero-credential providers whose current data plane knows how
+	// to satisfy a chat request. opencode-zen is intentionally held back on
+	// this branch until its multi-transport executor (/chat, /messages,
+	// /responses) is reconciled from upstream; otherwise Fabric advertises
+	// free models that the generic forwarder cannot fingerprint/route safely.
+	switch providerID {
+	case "opencode", "mimo-free", "llamacpp":
+		return true
+	default:
+		return false
+	}
+}
 
 func isChatProviderModel(providerID, modelID string) bool {
 	kinds := providers.ProviderModelKinds[providerID]
