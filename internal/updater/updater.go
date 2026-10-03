@@ -224,7 +224,14 @@ func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
 
 	latestVersion := strings.TrimPrefix(versionStr, "v")
 	current := strings.TrimPrefix(CurrentVersion, "v")
-	hasUpdate := CompareVersions(latestVersion, current) > 0
+	comparison := CompareVersions(latestVersion, current)
+	hasUpdate := comparison > 0
+	// A fork/dev build can legitimately be ahead of the published manifest.
+	// Never describe an older remote version as "Latest version"; that made
+	// 1.9.6-fabric print "Latest version: 1.8.9" while also saying up to date.
+	if comparison < 0 {
+		latestVersion = current
+	}
 
 	platformKey := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
 	downloadURL := ""
@@ -288,7 +295,11 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(CurrentVersion, "v")
-	hasUpdate := CompareVersions(latestVersion, current) > 0
+	comparison := CompareVersions(latestVersion, current)
+	hasUpdate := comparison > 0
+	if comparison < 0 {
+		latestVersion = current
+	}
 
 	downloadURL := matchReleaseAsset(release.Assets, runtime.GOOS, runtime.GOARCH)
 
