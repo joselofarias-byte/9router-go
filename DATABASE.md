@@ -267,20 +267,24 @@ Upstream uses it for backup/migration/app metadata. Go neither creates nor reads
 
 There are two different things called “backup” in the product. Neither should be mistaken for a complete physical SQLite snapshot unless verified.
 
-### Dashboard JSON export/import
+### Encrypted dashboard export/import
 
-`GET /api/settings/database` exports a shared dashboard payload containing:
+`GET /api/settings/database` serializes the shared dashboard payload and returns only the encrypted `.9rbak` format. Version 1 derives a 256-bit key from the caller-supplied backup password with Argon2id (fixed KDF parameters per format version) and encrypts/authenticates the payload with AES-256-GCM. The random salt and nonce are stored in the versioned header; provider credentials, tokens, API keys, proxy credentials, and configuration JSON exist only inside the authenticated ciphertext on disk.
 
-- `settings`;
+The encrypted payload contains:
+
+- `settings` (with the existing password/OIDC-secret sanitiser rules);
 - `providerConnections` and `providerNodes` with their `data` JSON merged into rows;
 - `proxyPools`;
 - client `apiKeys`;
 - `combos`; and
 - the `modelAliases`, `customModels`, `mitmAlias`, and `pricing` KV scopes.
 
-The payload is sensitive: it can contain provider API keys/tokens, proxy credentials, client API keys, and the dashboard password hash. It does **not** include `usageHistory`, `usageDaily`, `requestDetails`, `upstream_leases`, `_meta`, or every KV scope. Import is destructive: it deletes and replaces the listed configuration data in one transaction. Treat it as configuration export/restore, not a full disaster-recovery backup.
+It does **not** include `usageHistory`, `usageDaily`, `requestDetails`, `upstream_leases`, `_meta`, or every KV scope. Import is destructive after successful authentication/decryption: it deletes and replaces the listed configuration data in one transaction. A wrong backup password or modified ciphertext fails authentication before the database is touched.
 
-The route is always protected from client API keys and unauthenticated access; it requires a valid dashboard session/local CLI token plus current-password re-authentication where applicable (`internal/middleware/dashboard_auth.go`, `internal/handlers/dashboard/settings.go`).
+Historical plaintext JSON/ZIP backups remain **import-only** for compatibility. The Go runtime no longer generates new plaintext JSON or ZIP backups, including when a legacy caller requests `?format=zip`.
+
+Dashboard requests may reuse the current dashboard password as the backup-encryption password for compatibility; callers can supply the separate `x-9r-backup-passphrase` header instead. The backup password is not persisted by the server. The route remains protected from client API keys and unauthenticated access (`internal/middleware/dashboard_auth.go`, `internal/handlers/dashboard/settings.go`, `internal/handlers/dashboard/backup_crypto.go`).
 
 ### Physical SQLite backup
 
