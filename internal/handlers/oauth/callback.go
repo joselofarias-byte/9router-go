@@ -7,11 +7,12 @@ import (
 // callbackPage is a self-contained OAuth landing page. Providers redirect the
 // user's browser here (e.g. /callback?code=... or /callback#access_token=...)
 // after login; there is no server-side session, so the page extracts the
-// values client-side and asks the user to paste them into the dashboard modal.
-// Served without API key (browsers carry none). All DOM writes use
+// values client-side, hands them back to the dashboard automatically, and keeps
+// a visible copy available for manual fallback. Served without API key (browsers
+// carry none). All DOM writes use
 // textContent — query values are never injected as HTML (XSS-safe).
 const callbackPage = `<!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -39,17 +40,18 @@ ol li{margin:4px 0}
 <body>
 <div class="card">
 <h1>9router — OAuth callback</h1>
-<p class="sub" id="status">Memproses…</p>
-<textarea id="code" readonly placeholder="(no code in URL)"></textarea>
+<p class="sub" id="status">Processing…</p>
+<p class="label">Authorization code</p>
+<textarea id="code" readonly placeholder="(authorization code appears here)"></textarea>
 <div class="row">
-<button class="primary" id="copy">Copy</button>
+<button class="primary" id="copy">Copy code</button>
 <button id="copied-url">Copy full URL</button>
 </div>
 <div id="meta"></div>
 <ol>
-<li>Click Log in on the dashboard — the connection completes <b>automatically</b> and this tab closes itself.</li>
-<li>If auto-submit fails: click <b>Copy</b>, paste into the callback field in the provider modal, then click <b>Connect</b>.</li>
-<li>This tab can be closed once Connect succeeds.</li>
+<li>The dashboard normally receives this code <b>automatically</b>.</li>
+<li>If the connection does not complete, tap <b>Copy code</b>, return to the dashboard, paste it into <b>Code or callback URL</b>, then tap <b>Connect</b>.</li>
+<li>You may use <b>Copy full URL</b> instead; either the code or the full callback URL is accepted.</li>
 </ol>
 <p class="hint">The token in this URL is a credential — do not share it with anyone.</p>
 </div>
@@ -83,7 +85,7 @@ ol li{margin:4px 0}
     setStatus(false,"Login failed: "+err+(errDesc?" — "+errDesc:""));
     handOff({state:state,raw:"",error:err,errorDesc:errDesc,at:Date.now()});
   }else if(code){
-    setStatus(true,"Login successful! Sending to the dashboard — this tab closes automatically…");
+    setStatus(true,"Login successful. The code was sent to the dashboard.");
     codeEl.value=code;
     var extra=[];
     if(state)extra.push("state: "+state);
@@ -92,24 +94,14 @@ ol li{margin:4px 0}
       while(padded.length%4)padded+="=";
       var obj=JSON.parse(atob(padded));
       if(obj&&obj.accessToken){
-        extra.push("terdeteksi token Cline"+(obj.email?" ("+obj.email+")":""));
+        extra.push("Cline token detected"+(obj.email?" ("+obj.email+")":""));
       }
     }catch(e){}
     handOff({state:state,raw:code,at:Date.now()});
-    // Auto-handoff: the dashboard tab auto-submits; this tab then closes (only
-    // reliable when it was opened via window.open — otherwise the user closes it).
-    var n=3;
-    metaEl.textContent=(extra.length?extra.join(" · ")+" · ":"")+"Closing in "+n+"…";
-    var timer=setInterval(function(){
-      n-=1;
-      if(n<=0){
-        clearInterval(timer);
-        try{window.close()}catch(e){}
-        metaEl.textContent=(extra.length?extra.join(" · ")+" · ":"")+"Koneksi diproses di tab dashboard — tab ini boleh ditutup.";
-      }else{
-        metaEl.textContent=(extra.length?extra.join(" · ")+" · ":"")+"Closing in "+n+"…";
-      }
-    },1000);
+    // Keep the callback visible on mobile. Auto-closing after a few seconds
+    // made the only recoverable copy of the authorization code disappear before
+    // users could understand what needed to be pasted back into the dashboard.
+    metaEl.textContent=(extra.length?extra.join(" · ")+" · ":"")+"Keep this tab open until the dashboard confirms the connection.";
   }else{
     setStatus(false,"No code in this URL. Repeat the login from the dashboard and make sure you paste the full URL.");
   }
@@ -117,13 +109,13 @@ ol li{margin:4px 0}
   $("copy").addEventListener("click",function(){
     if(!codeEl.value)return;
     navigator.clipboard.writeText(codeEl.value).then(
-      function(){flash($("copy"),"Tersalin!")},
-      function(){codeEl.select();document.execCommand("copy");flash($("copy"),"Tersalin!")});
+      function(){flash($("copy"),"Copied!")},
+      function(){codeEl.select();document.execCommand("copy");flash($("copy"),"Copied!")});
   });
   $("copied-url").addEventListener("click",function(){
     navigator.clipboard.writeText(location.href).then(
-      function(){flash($("copied-url"),"URL tersalin!")},
-      function(){flash($("copied-url"),"Gagal — copy manual dari address bar")});
+      function(){flash($("copied-url"),"URL copied!")},
+      function(){flash($("copied-url"),"Copy failed — use the address bar")});
   });
 })();
 </script>
