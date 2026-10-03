@@ -70,3 +70,17 @@ func TestNoAuthFreeProviderReady(t *testing.T) {
 		t.Fatal("opencode-zen must stay fail-closed until its executor is reconciled")
 	}
 }
+
+
+func TestBuiltinFreeAdapterScopesRetiredMimoForCleanup(t *testing.T) {
+	found := false
+	for _, providerID := range NewBuiltinFreeAdapter().ScopedProviderIDs() {
+		if providerID == "mimo-free" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("mimo-free must remain scoped so stale builtin-free snapshots are deactivated")
+	}
+}
