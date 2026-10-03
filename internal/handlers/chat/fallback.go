@@ -299,6 +299,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// alone would wrongly inject a top-level "system" the upstream ignores.
 	claudeNative := isAnthropic && (endpoint == "/v1/v1/messages" || endpoint == "/v1/messages")
 	pipedBody := h.applyTokenSavers(body, claudeNative)
+	pipedBody, err = applySelectedPromptProfile(ctx, provider, model, pipedBody)
+	if err != nil {
+		return err
+	}
 	var claudeToolMap map[string]string
 	if isAnthropic {
 		if !claudeNative {

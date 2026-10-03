@@ -96,6 +96,11 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := h.newResponsesContext(r, reqBody.Model, modelInfo, &body)
+	ctx, profileErr := withRequestPromptProfile(ctx, r)
+	if profileErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, profileErr.Error())
+		return
+	}
 
 	var workingBody map[string]any
 	if err := json.Unmarshal(body, &workingBody); err != nil {
