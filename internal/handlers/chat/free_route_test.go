@@ -596,6 +596,55 @@ func TestHandleComboFallback_SkipsCandidateThatBecamePaid(t *testing.T) {
 	}
 }
 
+func TestHandleComboFallback_SkipsQuarantinedVirtualFreeModel(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedFreeRouteRegistry(t)
+
+	var groqHits, deepseekHits atomic.Int32
+	groqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groqHits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"groq","choices":[{"message":{"role":"assistant","content":"should-not-run"}}]}`))
+	}))
+	defer groqSrv.Close()
+	deepseekSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deepseekHits.Add(1)
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"deepseek","choices":[{"message":{"role":"assistant","content":"fallback-ok"}}]}`))
+	}))
+	defer deepseekSrv.Close()
+
+	pointConnectionAt(t, database, "conn-2", "gsk-test-groq-key", groqSrv.URL)
+	pointConnectionAt(t, database, "conn-1", "sk-test-deepseek-key", deepseekSrv.URL)
+
+	entry := "groq/llama-3.1-8b-instant"
+	virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{
+		quarantinedAt: time.Now().UTC(),
+		until:         time.Now().UTC().Add(time.Minute),
+	})
+	defer virtualFreeModelQuarantine.Delete(entry)
+
+	h := NewChatHandler(db.NewRepo(database))
+	rec := httptest.NewRecorder()
+	body := []byte(`{"model":"free-best","messages":[{"role":"user","content":"hola"}]}`)
+	h.handleComboFallback(t.Context(), rec, body,
+		[]string{entry, "deepseek/deepseek-reasoner-free"},
+		"fallback", false, false, "free-best", 0, true)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if groqHits.Load() != 0 {
+		t.Fatalf("quarantined model was called %d times", groqHits.Load())
+	}
+	if deepseekHits.Load() != 1 {
+		t.Fatalf("healthy fallback hits = %d, want 1", deepseekHits.Load())
+	}
+}
+
 func TestHandleComboFallback_AllHopsBecameIneligibleFailsClosed(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
