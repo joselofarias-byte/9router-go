@@ -90,6 +90,15 @@ func (a *ModelsDevAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 
 			capsBytes, _ := json.Marshal(caps)
 
+			pricingMode := "unknown"
+			// models.dev does not publish a pricing field, but a small subset
+			// encodes the free lane in the model id itself (:free, /free,
+			// *-free, *-free-*). Treat only those explicit markers as free;
+			// everything else remains unknown and therefore fails closed.
+			if explicitFreeModelID(modelID) {
+				pricingMode = "free"
+			}
+
 			candidates = append(candidates, Candidate{
 				SourceID:      a.SourceID(),
 				Provenance:    "https://models.dev API",
@@ -98,7 +107,7 @@ func (a *ModelsDevAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 				ProviderID:    provID,
 				ModelID:       base,
 				UpstreamModel: modelID,
-				PricingMode:   "unknown", // Models.dev doesn't provide granular pricing in this endpoint
+				PricingMode:   pricingMode,
 				Capabilities:  string(capsBytes),
 			})
 		}
