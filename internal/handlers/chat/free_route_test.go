@@ -734,6 +734,9 @@ func TestResolveModel_FreeBestBuiltinPoolIncludesMimoFree(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
+	if err := db.RunMigrations(database); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
 	if err := registry.InitRegistry(database); err != nil {
 		t.Fatalf("init registry: %v", err)
 	}
