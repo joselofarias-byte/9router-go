@@ -215,13 +215,19 @@ func stripModelContextMarker(modelStr string) string {
 	return modelStr
 }
 
-// isVirtualFreeRoute reports the built-in names. free and free-best are the
-// same dynamic pool: score order puts the current best candidate first, and
-// both names then fall back through the rest of that free-only chain.
+type virtualFreeProfile string
+
+const (
+	virtualFreeProfileBest      virtualFreeProfile = "best"
+	virtualFreeProfileFast      virtualFreeProfile = "fast"
+	virtualFreeProfileReasoning virtualFreeProfile = "reasoning"
+)
+
+// isVirtualFreeRoute reports the built-in free-only virtual names.
 // Matching trims space and ignores case.
 func isVirtualFreeRoute(modelStr string) bool {
 	switch canonicalVirtualName(modelStr) {
-	case "free", "free-best":
+	case "free", "free-best", "fast-free", "reasoning-free":
 		return true
 	default:
 		return false
@@ -232,32 +238,52 @@ func canonicalVirtualName(modelStr string) string {
 	return strings.ToLower(strings.TrimSpace(modelStr))
 }
 
-// resolveDynamicFreeBest builds a transient fallback combo from discovered
-// free and free-tier models that also have an active local provider connection.
-// An explicit alias or combo named free / free-best is resolved earlier and wins.
-// The error return is fail-closed: callers must not continue into the
-// openai/anthropic/deepseek fallback with the virtual name.
+func virtualFreeProfileFromName(modelStr string) virtualFreeProfile {
+	switch canonicalVirtualName(modelStr) {
+	case "fast-free":
+		return virtualFreeProfileFast
+	case "reasoning-free":
+		return virtualFreeProfileReasoning
+	default:
+		return virtualFreeProfileBest
+	}
+}
+
+// resolveDynamicFreeBest keeps the original helper contract for tests and
+// callers while delegating to the generalized profile resolver.
 func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
+	return h.resolveDynamicFreeProfile(virtualFreeProfileBest)
+}
+
+// resolveDynamicFreeProfile builds a transient fallback combo from discovered
+// free/free-tier models with an active local provider connection. Every profile
+// remains fail-closed: it can narrow or reorder the free pool, never escape it.
+func (h *ChatHandler) resolveDynamicFreeProfile(profile virtualFreeProfile) (*ModelInfo, error) {
 	candidates := getPolicyCandidates(nil, h.Repo.RawDB(), "", routing.PolicyFreeOnly)
 	if len(candidates) == 0 {
 		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
 	}
 
-	// Second gate. SelectCandidates already drops non-free rows; this re-reads
-	// the current registry so a paid, unknown, inactive, or disconnected model
-	// cannot enter the chain if the policy filter or a stale candidate is wrong.
 	state := registry.GetActiveState()
 	models := freeRouteEntries(state, candidates)
 	if len(models) == 0 {
 		return nil, freeRouteUnavailable("no discovered free or free-tier models with an active local connection")
 	}
 
-	// Keep the Control Plane score as the base (trust/risk/free policy), then
-	// add a bounded health adjustment from the last few hours of real traffic.
-	// A known-good model rises above equal peers; a recent failing model sinks,
-	// but the health bonus is intentionally too small to erase a large risk
-	// penalty from the base score.
-	models = h.rankFreeRouteEntriesByRecentHealth(models, freeRouteBaseScores(state, candidates))
+	if profile == virtualFreeProfileReasoning {
+		models = filterFreeRouteEntriesByReasoning(models)
+		if len(models) == 0 {
+			return nil, freeRouteUnavailable("no eligible reasoning-capable free models")
+		}
+	}
+
+	baseScores := freeRouteBaseScores(state, candidates)
+	switch profile {
+	case virtualFreeProfileFast:
+		models = h.rankFreeRouteEntriesByFast(models, baseScores)
+	default:
+		models = h.rankFreeRouteEntriesByRecentHealth(models, baseScores)
+	}
 
 	var first *ModelInfo
 	resolved := make([]string, 0, len(models))
@@ -277,8 +303,22 @@ func (h *ChatHandler) resolveDynamicFreeBest() (*ModelInfo, error) {
 	first.ComboModels = resolved
 	first.Strategy = "fallback"
 	first.VirtualFree = true
-	log.Info("routing", "virtual free pool resolved", "entries", strings.Join(resolved, ","), "count", len(resolved))
+	log.Info("routing", "virtual free pool resolved", "profile", profile, "entries", strings.Join(resolved, ","), "count", len(resolved))
 	return first, nil
+}
+
+func filterFreeRouteEntriesByReasoning(models []string) []string {
+	out := make([]string, 0, len(models))
+	for _, entry := range models {
+		parts := strings.SplitN(entry, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if providers.GetCapabilitiesForModel(parts[0], parts[1]).Reasoning {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // freeEntryStillEligible re-reads Fabric pricing and the active local account
@@ -396,13 +436,14 @@ type freeRouteRecentHealth struct {
 	latestSuccess    bool
 }
 
-func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseScores map[string]float64) []string {
-	if h == nil || h.Repo == nil || len(models) < 2 {
-		return models
+func (h *ChatHandler) collectFreeRouteRecentHealth(models []string) map[string]*freeRouteRecentHealth {
+	health := make(map[string]*freeRouteRecentHealth, len(models))
+	if h == nil || h.Repo == nil || len(models) == 0 {
+		return health
 	}
 	rows, err := h.Repo.GetRecentRoutingRequestMetrics(freeRouteHealthHistoryLimit)
 	if err != nil {
-		rows = nil
+		return health
 	}
 
 	cutoff := time.Now().UTC().Add(-freeRouteHealthWindow)
@@ -410,7 +451,6 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 	for _, entry := range models {
 		targets[entry] = true
 	}
-	health := make(map[string]*freeRouteRecentHealth, len(models))
 
 	for _, row := range rows {
 		entry := row.Provider + "/" + row.Model
@@ -455,7 +495,14 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 			stat.latestSuccess = success
 		}
 	}
+	return health
+}
 
+func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseScores map[string]float64) []string {
+	if h == nil || h.Repo == nil || len(models) < 2 {
+		return models
+	}
+	health := h.collectFreeRouteRecentHealth(models)
 	ordered := append([]string(nil), models...)
 	effective := make(map[string]float64, len(ordered))
 	for _, entry := range ordered {
@@ -505,6 +552,56 @@ func (h *ChatHandler) rankFreeRouteEntriesByRecentHealth(models []string, baseSc
 	return ordered
 }
 
+func (h *ChatHandler) rankFreeRouteEntriesByFast(models []string, baseScores map[string]float64) []string {
+	if h == nil || h.Repo == nil || len(models) < 2 {
+		return models
+	}
+	health := h.collectFreeRouteRecentHealth(models)
+	ordered := append([]string(nil), models...)
+	effective := make(map[string]float64, len(ordered))
+	for _, entry := range ordered {
+		adjustment := freeRouteReliabilityAdjustment(health[entry]) + freeRouteFastLatencyBonus(health[entry])
+		adjustment = clampFreeRouteAdaptiveAdjustment(adjustment)
+		effective[entry] = baseScores[entry] + adjustment
+		if _, quarantined := virtualFreeModelQuarantined(entry); quarantined {
+			effective[entry] -= 1000
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if effective[left] != effective[right] {
+			return effective[left] > effective[right]
+		}
+		lh, rh := health[left], health[right]
+		if lh == nil || rh == nil || lh.samples == 0 || rh.samples == 0 {
+			return false
+		}
+		leftRate := float64(lh.successes) / float64(lh.samples)
+		rightRate := float64(rh.successes) / float64(rh.samples)
+		if leftRate != rightRate {
+			return leftRate > rightRate
+		}
+		leftLatency, leftMeasured := freeRouteAverageSuccessLatency(lh)
+		rightLatency, rightMeasured := freeRouteAverageSuccessLatency(rh)
+		if leftMeasured != rightMeasured {
+			return leftMeasured
+		}
+		if leftMeasured && leftLatency != rightLatency {
+			return leftLatency < rightLatency
+		}
+		if lh.latestSuccess != rh.latestSuccess {
+			return lh.latestSuccess
+		}
+		return lh.latestAt.After(rh.latestAt)
+	})
+	if len(ordered) > 0 && ordered[0] != models[0] {
+		log.Info("routing", "virtual free fast rerank",
+			"from", models[0], "to", ordered[0],
+			"base", baseScores[ordered[0]], "latency_bonus", freeRouteFastLatencyBonus(health[ordered[0]]))
+	}
+	return ordered
+}
+
 func freeRouteAverageSuccessLatency(stat *freeRouteRecentHealth) (int64, bool) {
 	if stat == nil || stat.latencySamples == 0 || stat.successLatencyMs <= 0 {
 		return 0, false
@@ -524,22 +621,23 @@ func routingFailureCountsForHealth(status int) bool {
 	return false
 }
 
-func freeRouteHealthAdjustment(stat *freeRouteRecentHealth) float64 {
+func freeRouteReliabilityAdjustment(stat *freeRouteRecentHealth) float64 {
 	if stat == nil || stat.samples == 0 {
 		return 0
 	}
-
 	successRate := float64(stat.successes) / float64(stat.samples)
 	adjustment := (successRate - 0.5) * 30 // -15 .. +15
-
 	if stat.latestSuccess {
 		adjustment += 8
 	} else {
 		adjustment -= 12
 	}
+	return adjustment
+}
 
-	if stat.latencySamples > 0 && stat.successLatencyMs > 0 {
-		avgLatency := stat.successLatencyMs / int64(stat.latencySamples)
+func freeRouteHealthAdjustment(stat *freeRouteRecentHealth) float64 {
+	adjustment := freeRouteReliabilityAdjustment(stat)
+	if avgLatency, ok := freeRouteAverageSuccessLatency(stat); ok {
 		switch {
 		case avgLatency <= 1500:
 			adjustment += 5
@@ -550,6 +648,39 @@ func freeRouteHealthAdjustment(stat *freeRouteRecentHealth) float64 {
 		}
 	}
 	return adjustment
+}
+
+func freeRouteFastLatencyBonus(stat *freeRouteRecentHealth) float64 {
+	avgLatency, ok := freeRouteAverageSuccessLatency(stat)
+	if !ok {
+		return 0
+	}
+	switch {
+	case avgLatency <= 750:
+		return 6
+	case avgLatency <= 1500:
+		return 5
+	case avgLatency <= 3000:
+		return 4
+	case avgLatency <= 5000:
+		return 3
+	case avgLatency <= 8000:
+		return 2
+	case avgLatency <= 15000:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func clampFreeRouteAdaptiveAdjustment(v float64) float64 {
+	if v > 29 {
+		return 29
+	}
+	if v < -29 {
+		return -29
+	}
+	return v
 }
 
 func eligibleFreeProviderModel(state *registry.RegistryState, c routing.RouteNode) (*registry.ProviderModel, bool) {
@@ -643,7 +774,7 @@ func (h *ChatHandler) concreteAliasTarget(target string) *ModelInfo {
 // already run. Alias wins over combo, matching the exact-case order.
 func (h *ChatHandler) resolveFoldedVirtualOverride(modelStr string) (*ModelInfo, error, bool) {
 	canonical := canonicalVirtualName(modelStr)
-	if canonical != "free" && canonical != "free-best" {
+	if !isVirtualFreeRoute(canonical) {
 		return nil, nil, false
 	}
 
@@ -807,7 +938,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		if info, overrideErr, ok := h.resolveFoldedVirtualOverride(modelStr); ok {
 			return info, overrideErr
 		}
-		return h.resolveDynamicFreeBest()
+		return h.resolveDynamicFreeProfile(virtualFreeProfileFromName(modelStr))
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
