@@ -225,8 +225,12 @@
     isDownloadingBackup = true
     const password = dbPassword
     try {
-      const res = await fetch('/api/settings/database?format=zip', {
-        headers: { ...getAuthHeaders(), 'x-9r-password': password },
+      const res = await fetch('/api/settings/database', {
+        headers: {
+          ...getAuthHeaders(),
+          'x-9r-password': password,
+          'Accept': 'application/vnd.9router.backup',
+        },
       })
       if (!res.ok) {
         throw new Error(await responseErrorMessage(res, 'Failed to export database'))
@@ -236,7 +240,7 @@
       const a = document.createElement('a')
       const stamp = new Date().toISOString().replace(/[.:]/g, '-')
       a.href = url
-      a.download = `9router-backup-${stamp}.zip`
+      a.download = `9router-backup-${stamp}.9rbak`
       document.body.appendChild(a)
       a.click()
       setTimeout(() => {
@@ -274,12 +278,18 @@
     isImportingBackup = true
     try {
       let res: Response
-      const isZip = file.name.endsWith('.zip') || file.type === 'application/zip'
-      if (isZip) {
+      const lowerName = file.name.toLowerCase()
+      const isEncrypted = lowerName.endsWith('.9rbak') || file.type === 'application/vnd.9router.backup'
+      const isZip = lowerName.endsWith('.zip') || file.type === 'application/zip'
+      if (isEncrypted || isZip) {
         const buffer = await file.arrayBuffer()
         res = await fetch('/api/settings/database', {
           method: 'POST',
-          headers: { ...getAuthHeaders(), 'x-9r-password': password, 'Content-Type': 'application/zip' },
+          headers: {
+            ...getAuthHeaders(),
+            'x-9r-password': password,
+            'Content-Type': isEncrypted ? 'application/vnd.9router.backup' : 'application/zip',
+          },
           body: buffer,
         })
       } else {
@@ -373,7 +383,7 @@
             The native server does not run upstream's versioned schema migration. A new empty database must be initialized with a compatible upstream schema before use.
           </div>
           <div class="text-[11px] text-text-subtle pt-1">
-            Backups are dashboard-data payloads, not a byte-for-byte copy of the live SQLite file.
+            Backups are encrypted .9rbak dashboard-data payloads, not a byte-for-byte copy of the live SQLite file.
           </div>
         </div>
 
@@ -390,7 +400,7 @@
 
           <input
             type="file"
-            accept=".zip,.json,application/zip,application/json"
+            accept=".9rbak,.zip,.json,application/vnd.9router.backup,application/zip,application/json"
             bind:this={fileInput}
             onchange={handleFileSelected}
             class="hidden"
@@ -730,7 +740,7 @@
         <p class="text-text-muted">
           {pendingImportFile
             ? `Import "${pendingImportFile.name}"? This will overwrite existing server data.`
-            : 'Download a full backup of the dashboard database (.zip archive)?'}
+            : 'Download an encrypted dashboard backup (.9rbak)?'}
         </p>
         <Input
           type="password"
