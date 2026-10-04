@@ -12,12 +12,14 @@ DL="$HOME/storage/downloads"
 TS="$(date +%Y%m%d-%H%M%S)"
 REPORT="$DL/9ROUTER-PHYSICAL-MAIN-C6DC0C0-$TS.txt"
 WORK="$HOME/.9router-physical-c6dc0c0"
+TMP_BASE="${TMPDIR:-$PREFIX/tmp}"
+HELP_OUT="$TMP_BASE/9router-help.$"
 ARTDIR="$WORK/artifact"
 DATA="$WORK/data"
 BIN="$ARTDIR/9router-go-termux-arm64"
 SERVER_LOG="$WORK/server.log"
 
-mkdir -p "$DL" "$WORK" "$ARTDIR" "$DATA"
+mkdir -p "$DL" "$WORK" "$ARTDIR" "$DATA" "$TMP_BASE"
 exec > >(tee "$REPORT") 2>&1
 
 echo "===== 9ROUTER-GO PHYSICAL SMOKE TEST ====="
@@ -82,14 +84,14 @@ echo "SHA256=OK"
 
 echo
 echo "=== EXECUTION ==="
-if ! "$BIN" --help >/tmp/9router-help.$$ 2>&1; then
-  cat /tmp/9router-help.$$ 2>/dev/null || true
-  rm -f /tmp/9router-help.$$
+if ! "$BIN" --help >"$HELP_OUT" 2>&1; then
+  cat "$HELP_OUT" 2>/dev/null || true
+  rm -f "$HELP_OUT"
   echo "RESULTADO=FAIL_EXEC"
   exit 1
 fi
-head -n 18 /tmp/9router-help.$$ 2>/dev/null || true
-rm -f /tmp/9router-help.$$
+head -n 18 "$HELP_OUT" 2>/dev/null || true
+rm -f "$HELP_OUT"
 
 echo
 echo "=== START ISOLATED INSTANCE ==="
