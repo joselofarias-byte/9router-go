@@ -67,7 +67,7 @@ Required semantics:
 
 ## Lane C — Generic account strategy design
 
-**Status:** DESIGN IN PARALLEL; CODE AFTER Lane B  
+**Status:** IMPLEMENTATION VALIDATED IN #57; HOLD FOR RUNTIME WIRING UNTIL Lane B  
 **Reference project:** Soju06/codex-lb  
 **Agent brief:** `docs/agent-briefs/CODEX_LB_STRATEGIES.md`
 
@@ -102,7 +102,7 @@ Rule: if the capability already exists upstream or in Fabric, integrate/adapt ra
 
 ## Lane E — Product evidence
 
-**Status:** ACTIVE  
+**Status:** ACTIVE — #58 auditable cost evidence landed  
 **Landed foundation:** #49 measurement harness
 
 Define auditable metrics:
@@ -131,6 +131,7 @@ Prompt rewriting is not core differentiation. Keep #51 draft/stacked until Lane 
 - #53 LICENSE + product strategy
 - #49 measurement harness
 - #56 POSIX-safe live-test opt-in into #54 integration branch
+- #58 auditable cost evidence (known-free vs unknown-price + explicit baseline comparison)
 
 ## Collision rule
 
