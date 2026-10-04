@@ -1,6 +1,7 @@
 package accountstrategy
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -163,6 +164,90 @@ func TestRelativeAvailabilityIsStableForSameHashKeyAndTopK(t *testing.T) {
 		if e.ID == "c" && e.Weight != 0 {
 			t.Fatalf("excluded candidate c has non-zero weight: %+v", e)
 		}
+	}
+}
+
+func TestCapacityWeightedHashDistribution(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	tests := []struct {
+		name       string
+		aWeight    float64
+		bWeight    float64
+		higherID   string
+		minWinners int
+		maxWinners int
+	}{
+		{name: "80/20", aWeight: 80, bWeight: 20, higherID: "account-prefix-a", minWinners: 7500, maxWinners: 8500},
+		{name: "20/80", aWeight: 20, bWeight: 80, higherID: "account-prefix-b", minWinners: 7500, maxWinners: 8500},
+		{name: "equal", aWeight: 1, bWeight: 1, higherID: "account-prefix-a", minWinners: 4500, maxWinners: 5500},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidates := []Candidate{
+				{ID: "account-prefix-a", Status: StatusAvailable, Remaining: tt.aWeight, HasRemaining: true},
+				{ID: "account-prefix-b", Status: StatusAvailable, Remaining: tt.bWeight, HasRemaining: true},
+			}
+			winners := 0
+			for i := 0; i < 10_000; i++ {
+				decision, err := Select(candidates, StrategyCapacityWeighted, Options{
+					Now: now, AutoSwitch: true, HashKey: fmt.Sprintf("request-%d", i),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decision.SelectedID == tt.higherID {
+					winners++
+				}
+			}
+			t.Logf("%s selected %d/10000 times", tt.higherID, winners)
+			if winners < tt.minWinners || winners > tt.maxWinners {
+				t.Fatalf("%s selected %d/10000 times, want range [%d,%d]", tt.higherID, winners, tt.minWinners, tt.maxWinners)
+			}
+		})
+	}
+}
+
+func TestWeightedHashIsCandidateOrderIndependent(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	forward := []Candidate{
+		{ID: "shared-prefix-alpha", Status: StatusAvailable, Remaining: 80, HasRemaining: true},
+		{ID: "shared-prefix-beta", Status: StatusAvailable, Remaining: 20, HasRemaining: true},
+	}
+	reverse := []Candidate{forward[1], forward[0]}
+	for i := 0; i < 1_000; i++ {
+		opts := Options{Now: now, AutoSwitch: true, HashKey: fmt.Sprintf("request-%d", i)}
+		a, err := Select(forward, StrategyCapacityWeighted, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := Select(reverse, StrategyCapacityWeighted, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.SelectedID != b.SelectedID {
+			t.Fatalf("key %q selected %q then %q after permutation", opts.HashKey, a.SelectedID, b.SelectedID)
+		}
+	}
+}
+
+func TestWeightedHashPairEncodingSeparatesDelimiters(t *testing.T) {
+	if hashUnit("a|b", "c") == hashUnit("a", "b|c") {
+		t.Fatal("length-prefixed hash pair encoding aliased delimiter-bearing inputs")
+	}
+}
+
+func TestCapacityWeightedWithoutHashRemainsDeterministic(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	candidates := []Candidate{
+		{ID: "lower", Status: StatusAvailable, Remaining: 20, HasRemaining: true},
+		{ID: "higher", Status: StatusAvailable, Remaining: 80, HasRemaining: true},
+	}
+	decision, err := Select(candidates, StrategyCapacityWeighted, Options{Now: now, AutoSwitch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.SelectedID != "higher" {
+		t.Fatalf("selected %q without hash key, want higher", decision.SelectedID)
 	}
 }
 

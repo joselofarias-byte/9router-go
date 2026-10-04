@@ -5,8 +5,9 @@
 package accountstrategy
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
-	"hash/fnv"
 	"math"
 	"sort"
 	"strings"
@@ -298,7 +299,7 @@ func weightedRendezvous(cs []Candidate, weights map[string]float64, key string) 
 		if w <= 0 {
 			continue
 		}
-		u := hashUnit(key + "|" + c.ID)
+		u := hashUnit(key, c.ID)
 		// Weighted rendezvous via an exponential race. Higher weight makes a
 		// candidate more likely to win while the same key remains stable.
 		score := w / -math.Log(u)
@@ -310,12 +311,23 @@ func weightedRendezvous(cs []Candidate, weights map[string]float64, key string) 
 	return bestID
 }
 
-func hashUnit(s string) float64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(s))
+func hashUnit(key, accountID string) float64 {
+	// Domain separation and length prefixes make the pair encoding unambiguous:
+	// ("a|b", "c") and ("a", "b|c") cannot share the same encoded input.
+	const domain = "9router-go/accountstrategy/weighted-rendezvous/v1\x00"
+	payload := make([]byte, 0, len(domain)+16+len(key)+len(accountID))
+	payload = append(payload, domain...)
+	var fieldLength [8]byte
+	binary.BigEndian.PutUint64(fieldLength[:], uint64(len(key)))
+	payload = append(payload, fieldLength[:]...)
+	payload = append(payload, key...)
+	binary.BigEndian.PutUint64(fieldLength[:], uint64(len(accountID)))
+	payload = append(payload, fieldLength[:]...)
+	payload = append(payload, accountID...)
+	digest := sha256.Sum256(payload)
 	// Keep u strictly inside (0,1) so -log(u) is finite and positive.
 	const denom = float64(uint64(1) << 53)
-	return (float64(h.Sum64()>>11) + 0.5) / denom
+	return (float64(binary.BigEndian.Uint64(digest[:8])>>11) + 0.5) / denom
 }
 
 func selectSequentialDrain(cs []Candidate) string {
