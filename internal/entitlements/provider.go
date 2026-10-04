@@ -46,24 +46,29 @@ func (CommunityProvider) Status() Status {
 type LicenseProvider struct {
 	license *License
 	enabled map[Capability]struct{}
+	now     func() time.Time
 }
 
 func NewLicenseProvider(license *License) *LicenseProvider {
 	p := &LicenseProvider{
-		license: license,
+		now:     time.Now,
 		enabled: make(map[Capability]struct{}),
 	}
 	if license == nil {
 		return p
 	}
-	for _, feature := range license.Features {
+	// Keep the verified input immutable for the lifetime of this provider.
+	snapshot := *license
+	snapshot.Features = append([]Capability(nil), license.Features...)
+	p.license = &snapshot
+	for _, feature := range snapshot.Features {
 		p.enabled[feature] = struct{}{}
 	}
 	return p
 }
 
 func (p *LicenseProvider) Enabled(capability Capability) bool {
-	if p == nil || p.license == nil {
+	if !p.active() {
 		return false
 	}
 	_, ok := p.enabled[capability]
@@ -71,7 +76,7 @@ func (p *LicenseProvider) Enabled(capability Capability) bool {
 }
 
 func (p *LicenseProvider) Status() Status {
-	if p == nil || p.license == nil {
+	if !p.active() {
 		return Status{Mode: "community"}
 	}
 	expiresAt := p.license.ExpiresAt
@@ -84,4 +89,13 @@ func (p *LicenseProvider) Status() Status {
 		ExpiresAt: &expiresAt,
 		Features:  features,
 	}
+}
+
+// active rechecks expiry on every capability/status read so a running process
+// degrades to Community without requiring a restart or license reload.
+func (p *LicenseProvider) active() bool {
+	if p == nil || p.license == nil || p.now == nil {
+		return false
+	}
+	return p.now().Before(p.license.ExpiresAt)
 }
