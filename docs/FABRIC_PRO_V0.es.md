@@ -161,3 +161,35 @@ La prueba de valor no es "tenemos paywall".
 La prueba es:
 
 > Un usuario con varios recursos de IA trabaja durante una semana y puede mostrar, con datos, que Fabric redujo cambios manuales, absorbió fallos o aprovechó mejor capacidad que de otro modo hubiera quedado ociosa.
+
+
+## Base técnica existente encontrada
+
+La implementación no parte de cero. Antes de crear estructuras nuevas, reutilizar y generalizar estas piezas existentes:
+
+- `internal/codexquota/quota.go`: parser común de ventanas Codex con porcentaje usado/restante y `ResetAt`.
+- `internal/handlers/chat/codex_quota.go`: cache de cuota por conexión, ventanas de sesión/semanal y bloqueo hasta reset.
+- `internal/handlers/chat/antigravity_quota.go`: cuota por conexión/modelo, ventanas semanales/sesión y strike breaker para 429 de cuota.
+- `internal/db/accounts.go`: `rateLimitedUntil`, model locks, backoff y cooldown por conexión.
+- `internal/usagetracker/tracker.go`: actividad por modelo/cuenta y requests recientes.
+- `internal/controlplane/sync/accounts.go`: sincronización de cuentas al registry/control plane.
+
+### Dirección de refactor
+
+No crear un tercer tracker de cuotas paralelo.
+
+Crear una abstracción normalizada de capacidad en/control plane y **adaptadores** desde las señales actuales de Codex, Antigravity y futuras fuentes. La capa común debe distinguir:
+
+- capacidad conocida vs desconocida;
+- fresca vs stale;
+- agotada vs en cooldown;
+- account-level vs model-level vs shared-scope;
+- señal observada por API vs señal inferida por error.
+
+Las implementaciones provider-specific siguen siendo responsables de obtener/interpretar la señal nativa. Fabric sólo consume una vista normalizada para scoring, explain-route y políticas.
+
+Primer objetivo de ingeniería recomendado:
+
+> Exponer un `CapacitySnapshot` provider-agnostic generado a partir de la lógica ya existente, sin cambiar todavía el algoritmo de routing.
+
+Eso permite agregar tests y observabilidad antes de modificar decisiones de producción.
