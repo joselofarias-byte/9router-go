@@ -20,6 +20,8 @@ This file is the coordination source of truth for the active 9router-go fork wor
 
 **Checkpoint (2026-10-04):** exact head `f49dc983c5abd1e24147f39107af86a69802f34c` remains draft, the PR diff still contains no `internal/controlplane/` tree, and no exact-head GitHub Actions run is evidenced. Fabric reapplication is not complete.
 
+**Physical baseline evidence (current main only):** `c6dc0c0692401b9be1e39c2d6ee5a63338fcde85` passed an on-device Termux smoke test on HONOR ELI-NX9 / Android 16 / arm64-v8a: artifact SHA matched, native execution succeeded, `/health` returned OK, dashboard returned HTTP 200, and `/api/version` reported `1.9.6-fabric` on `android/arm64`. This does **not** validate #54 until repeated on #54's exact integration SHA, and does not claim authenticated-provider inference.
+
 Freeze this cycle on upstream:
 
 `bfa0e9544f5f6cbfd8943ef397e43acd2322de13`
