@@ -104,3 +104,35 @@ Before adding a subsystem, every PR must answer:
 8. Are discovery/probes off the request hot path?
 
 If those questions do not justify new code, integration wins.
+
+
+## Companion coding client boundary
+
+The rule "do not build an IDE" is scoped to the `9router-go` repository and runtime.
+
+A separate companion coding client is allowed when it is built by adapting a mature permissively licensed project rather than reimplementing an IDE or coding agent from scratch. OpenCode is the current primary candidate to evaluate.
+
+Boundary rules:
+
+1. The companion client has its own repository and release lifecycle.
+2. It must remain useful without 9router through BYOK/direct providers.
+3. When 9router is present, it should discover it and use the existing OpenAI-compatible API and `/v1/models`.
+4. Fabric remains exclusively in 9router; the client must not duplicate quota, health, scoring, account or routing logic.
+5. The client is an acquisition/UX surface, not the canonical control plane.
+6. Android/Termux support is a strategic differentiator when technically sustainable.
+7. Prefer plugins/adapters and upstreamable changes over a deep permanent fork.
+8. Licensing and attribution of the upstream client must be preserved.
+
+Commercially, this enables a modular product:
+
+```text
+Companion coding client (free/open or low-friction)
+                  |
+                  v
+       9router Community (free)
+                  |
+                  v
+          Fabric Pro (paid)
+```
+
+The paid value is orchestration of resources the user already owns: multi-account capacity, quota/reset/cooldown awareness, intent routing, explainability, policies, budgeting and advanced telemetry. Initial Pro validation should not depend on reselling inference.
