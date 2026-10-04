@@ -68,7 +68,8 @@ Required semantics:
 ## Lane C — Generic account strategy design
 
 **Status:** DESIGN IN PARALLEL; CODE AFTER Lane B  
-**Reference project:** Soju06/codex-lb
+**Reference project:** Soju06/codex-lb  
+**Agent brief:** `docs/agent-briefs/CODEX_LB_STRATEGIES.md`
 
 Mine algorithms, not product-specific behavior:
 
@@ -84,7 +85,8 @@ First output must be a design note and acceptance-test matrix mapped to our gene
 ## Lane D — Gateway feature mining
 
 **Status:** DESIGN IN PARALLEL  
-**Reference project:** ENTERPILOT/GoModel
+**Reference project:** ENTERPILOT/GoModel  
+**Agent brief:** `docs/agent-briefs/GOMODEL_MINING.md`
 
 Produce a gap matrix against current Fabric for:
 
