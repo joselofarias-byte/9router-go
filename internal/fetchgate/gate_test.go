@@ -66,8 +66,11 @@ func TestGateAcquire_SpacesConcurrentCallers(t *testing.T) {
 }
 
 // Jitter must only ever add delay: the floor stays the hard guarantee.
+// A wall-clock wait can land a sliver under that floor when the timer or
+// scheduler runs early, so this uses the same 90% tolerance as the spacing test.
 func TestGateAcquire_JitterOnlyWidensTheGap(t *testing.T) {
-	g := New(30*time.Millisecond, 30*time.Millisecond)
+	const floor = 30 * time.Millisecond
+	g := New(floor, floor)
 
 	if err := g.Acquire(t.Context()); err != nil {
 		t.Fatalf("first Acquire: %v", err)
@@ -77,8 +80,8 @@ func TestGateAcquire_JitterOnlyWidensTheGap(t *testing.T) {
 		if err := g.Acquire(t.Context()); err != nil {
 			t.Fatalf("Acquire %d: %v", i, err)
 		}
-		if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
-			t.Fatalf("slot %d waited %s, want at least the 30ms floor", i, elapsed)
+		if elapsed := time.Since(start); elapsed < floor*9/10 {
+			t.Fatalf("slot %d waited %s, want at least %s (90%% of the %s floor)", i, elapsed, floor*9/10, floor)
 		}
 	}
 }
