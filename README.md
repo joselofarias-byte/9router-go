@@ -21,6 +21,13 @@
 
 Same idea as [9Router](https://github.com/decolua/9router), minus the Node.js runtime: **one Go binary** serves the proxy APIs + an embedded Svelte dashboard.
 
+
+### This fork's direction
+
+This fork is evolving beyond provider aggregation into an **adaptive AI resource orchestrator**: connect accounts, free/paid APIs and local models, then route by availability, quality, cost, health and operator policy. The differentiating layer is Fabric: discovery, verification, quota/cooldown state, trust/quarantine, explainable scoring and intent-oriented virtual routes.
+
+See [Product strategy (ES)](docs/PRODUCT_STRATEGY.es.md) and [Ecosystem strategy](docs/ECOSYSTEM_STRATEGY.md).
+
 **Stop wasting money, tokens and hitting limits:**
 
 - ❌ Subscription quota expires unused every month
