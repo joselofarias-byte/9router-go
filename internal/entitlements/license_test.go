@@ -165,3 +165,65 @@ func TestProviders(t *testing.T) {
 		t.Fatal("licensed provider enabled absent feature")
 	}
 }
+
+func TestLicenseProviderExpiresWithoutReload(t *testing.T) {
+	raw, publicKey, now := signedFixture(t, nil)
+	license, err := VerifySignedLicense(raw, publicKey, now)
+	if err != nil {
+		t.Fatalf("VerifySignedLicense() error = %v", err)
+	}
+	provider := NewLicenseProvider(license)
+	current := now
+	provider.now = func() time.Time { return current }
+
+	tests := []struct {
+		name    string
+		at      time.Time
+		enabled bool
+		mode    string
+	}{
+		{"before expiry", license.ExpiresAt.Add(-time.Nanosecond), true, "licensed"},
+		{"exact expiry", license.ExpiresAt, false, "community"},
+		{"after expiry", license.ExpiresAt.Add(time.Hour), false, "community"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current = tt.at
+			if got := provider.Enabled(CapabilityAdvancedRouting); got != tt.enabled {
+				t.Errorf("Enabled() = %v, want %v", got, tt.enabled)
+			}
+			status := provider.Status()
+			if status.Mode != tt.mode {
+				t.Errorf("Status().Mode = %q, want %q", status.Mode, tt.mode)
+			}
+			if !tt.enabled && (len(status.Features) != 0 || status.LicenseID != "" || status.ExpiresAt != nil) {
+				t.Errorf("expired provider exposed licensed status: %+v", status)
+			}
+		})
+	}
+}
+
+func TestLicenseProviderSnapshotsVerifiedInput(t *testing.T) {
+	raw, publicKey, now := signedFixture(t, nil)
+	license, err := VerifySignedLicense(raw, publicKey, now)
+	if err != nil {
+		t.Fatalf("VerifySignedLicense() error = %v", err)
+	}
+	expiry := license.ExpiresAt
+	provider := NewLicenseProvider(license)
+	provider.now = func() time.Time { return now }
+
+	license.ExpiresAt = expiry.Add(time.Hour)
+	license.Features[0] = CapabilityBudgetPolicy
+	status := provider.Status()
+	if status.ExpiresAt == nil || !status.ExpiresAt.Equal(expiry) {
+		t.Fatal("caller mutation changed provider expiry")
+	}
+	if status.Features[0] != CapabilityAdvancedRouting || provider.Enabled(CapabilityBudgetPolicy) {
+		t.Fatal("caller mutation changed verified capabilities")
+	}
+	now = expiry
+	if provider.Enabled(CapabilityAdvancedRouting) || provider.Status().Mode != "community" {
+		t.Fatal("caller mutation extended provider validity")
+	}
+}
