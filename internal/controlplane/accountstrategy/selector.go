@@ -314,7 +314,8 @@ func hashUnit(s string) float64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(s))
 	// Keep u strictly inside (0,1) so -log(u) is finite and positive.
-	const denom = float64(uint64(1) << 53)\n\treturn (float64(h.Sum64()>>11) + 0.5) / denom
+	const denom = float64(uint64(1) << 53)
+	return (float64(h.Sum64()>>11) + 0.5) / denom
 }
 
 func selectSequentialDrain(cs []Candidate) string {
