@@ -320,3 +320,163 @@ Antes de cobrar, debemos demostrar en uso real:
 Si esas condiciones se cumplen, ya no estamos vendiendo “un fork”.
 
 Estamos vendiendo **la capa que administra todos los recursos de IA del usuario como un solo sistema**.
+
+
+## Posicionamiento comercial inicial — nicho que podemos ganar
+
+Fecha de decisión: 2026-10-04.
+
+No competir como "otro editor con IA" ni como revendedor de tokens. El cliente objetivo inicial es más estrecho y verificable:
+
+> **Desarrolladores que ya usan o pagan dos o más recursos de IA y pierden tiempo o dinero administrando cuentas, cuotas, modelos, proveedores y fallbacks manualmente.**
+
+La promesa comercial es:
+
+> **Una sola capa para toda la IA que ya tenés.**
+
+El valor de pago no es el acceso a un modelo. El usuario conserva sus propias cuentas, APIs y modelos locales. Pro cobra por convertir recursos dispersos en un sistema coordinado, observable y automático.
+
+### Por qué un usuario pagaría a un proyecto pequeño
+
+El producto debe reducir explícitamente la desventaja de confianza frente a proveedores grandes:
+
+- local-first por defecto;
+- claves y credenciales bajo control del usuario;
+- configuración exportable;
+- datos y routing funcionando localmente;
+- BYOK real;
+- posibilidad de seguir usando Community si se cancela Pro;
+- reglas de routing explicables;
+- sin dependencia obligatoria de un modelo, proveedor o editor concreto.
+
+El mensaje no es "somos mejores que Cursor/OpenCode/Kilo en todo". Es:
+
+> **Ellos venden o integran IA. Nosotros administramos, aprovechamos y orquestamos la IA que ya pagaste o ya tenés.**
+
+### Diferenciación que debe ser demostrable
+
+Fabric debe decidir usando una unidad más rica que "modelo":
+
+`provider + account + quota + reset + cooldown + health + cost + capability + user policy + intent`.
+
+Ejemplos de intención de usuario:
+
+- Mejor para programar.
+- Máxima calidad.
+- Cero gasto adicional.
+- Rápido.
+- Local / privado.
+- Reservar Claude.
+- Usar primero cuotas que vencen.
+- Mantener presupuesto mensual.
+- Evitar cuentas en cooldown.
+- Continuar trabajando aunque cambie el proveedor.
+
+La selección debe ser auditable: cada decisión importante debe poder responder "por qué se eligió esto" y "por qué se descartó aquello".
+
+### Edición Community — gratuita y útil
+
+Community no debe ser una demo mutilada.
+
+Debe incluir:
+
+- gateway local;
+- endpoint OpenAI-compatible;
+- BYOK;
+- modelos locales;
+- proveedores;
+- selección manual;
+- routing/fallback básico;
+- métricas esenciales;
+- configuración exportable;
+- interoperabilidad con clientes externos.
+
+Objetivo: generar confianza, comunidad y adopción sin coste marginal de inferencia para el proyecto.
+
+### Edición Pro — hipótesis de lanzamiento: USD 7,99/mes
+
+Rango de validación inicial: USD 5–10/mes.
+
+Pro vende automatización y optimización, no tokens. Candidatos:
+
+- Fabric completo;
+- multi-account avanzado;
+- quota/reset/cooldown-aware routing;
+- perfiles por intención;
+- selección adaptativa;
+- políticas "usar primero lo que vence";
+- presupuestos y prioridades;
+- health/trust/quarantine avanzados;
+- explain-route detallado;
+- estadísticas y reglas avanzadas;
+- estimación auditable de coste evitado cuando exista baseline;
+- sincronización opcional entre dispositivos;
+- perfiles compartibles;
+- backups/configuración avanzada.
+
+No incluir inferencia propia en la primera versión Pro. Esto mantiene bajo el coste marginal y permite validar disposición a pagar antes de financiar capacidad de modelos.
+
+### Business
+
+Business monetiza administración, no el editor:
+
+- equipos y roles;
+- políticas centrales;
+- proveedores/modelos permitidos;
+- límites y presupuestos por usuario/API key;
+- auditoría;
+- SSO cuando exista demanda;
+- configuración compartida;
+- retención y exportación;
+- soporte y SLA según plan.
+
+### Métrica de renovación
+
+El dashboard debe demostrar valor mensual. Métricas candidatas:
+
+- cuota utilizable recuperada;
+- porcentaje de tráfico resuelto sin coste API adicional;
+- requests desviados desde recursos escasos hacia abundantes;
+- fallbacks automáticos;
+- interrupciones absorbidas;
+- tiempo ahorrado en reconfiguración;
+- consumo por cuenta/proveedor;
+- coste real conocido;
+- coste evitado sólo cuando exista baseline fiable.
+
+Nunca convertir una suscripción en "USD ahorrados" mediante una equivalencia inventada. Cuando no exista precio auditable, mostrar uso aprovechado o capacidad recuperada.
+
+### Objetivo comercial inicial
+
+No buscar mercado masivo. Validar primero una cohorte pequeña de usuarios intensivos multi-proveedor.
+
+Hitos sugeridos:
+
+1. 20 usuarios activos que conecten al menos dos recursos distintos.
+2. 10 usuarios que usen routing automático durante una semana.
+3. 10 entrevistas de renovación: qué valor concreto echarían de menos al volver a Community.
+4. Primeros 20 clientes Pro.
+5. Llegar a 200 clientes Pro antes de ampliar el producto hacia servicios de inferencia propios.
+
+A USD 5/mes, 200 clientes = USD 1.000 MRR.
+A USD 7,99/mes, 200 clientes = USD 1.598 MRR.
+A USD 10/mes, 200 clientes = USD 2.000 MRR.
+
+Estas cifras son ingresos brutos recurrentes, antes de comisiones, impuestos y costes operativos.
+
+## Cliente compañero de programación
+
+La regla "no crear un IDE" aplica al repositorio `9router-go`: no debe incorporar ni reimplementar un IDE/agente de coding dentro del router.
+
+Sí se permite un **producto compañero independiente**, preferentemente basado en un proyecto maduro y permisivamente licenciado (por ejemplo OpenCode), con estas reglas:
+
+- repositorio y ciclo de release separados;
+- puede funcionar sin 9router mediante BYOK/proveedores directos;
+- detecta 9router y lo ofrece como integración preferente;
+- consume `/v1/models` y endpoints compatibles;
+- no duplica Fabric;
+- no almacena la lógica de cuotas/routing que pertenece a 9router;
+- Android/Termux puede tratarse como plataforma de primera clase si la base técnica lo permite;
+- las mejoras genéricas deben upstream-earse o mantenerse como plugins/adaptadores cuando sea viable.
+
+El cliente compañero es una superficie de adquisición y UX. **Fabric/9router sigue siendo el activo diferencial y monetizable.**
