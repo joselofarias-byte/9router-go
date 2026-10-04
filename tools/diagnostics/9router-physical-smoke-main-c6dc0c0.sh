@@ -12,14 +12,13 @@ DL="$HOME/storage/downloads"
 TS="$(date +%Y%m%d-%H%M%S)"
 REPORT="$DL/9ROUTER-PHYSICAL-MAIN-C6DC0C0-$TS.txt"
 WORK="$HOME/.9router-physical-c6dc0c0"
-TMP_BASE="${TMPDIR:-$PREFIX/tmp}"
-HELP_OUT="$TMP_BASE/9router-help.$"
+HELP_OUT="$WORK/9router-help.txt"
 ARTDIR="$WORK/artifact"
 DATA="$WORK/data"
 BIN="$ARTDIR/9router-go-termux-arm64"
 SERVER_LOG="$WORK/server.log"
 
-mkdir -p "$DL" "$WORK" "$ARTDIR" "$DATA" "$TMP_BASE"
+mkdir -p "$DL" "$WORK" "$ARTDIR" "$DATA"
 exec > >(tee "$REPORT") 2>&1
 
 echo "===== 9ROUTER-GO PHYSICAL SMOKE TEST ====="
