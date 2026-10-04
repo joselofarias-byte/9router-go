@@ -18,6 +18,8 @@ This file is the coordination source of truth for the active 9router-go fork wor
 **PR:** #54  
 **Role:** integration implementer / Jules lane
 
+**Checkpoint (2026-10-04):** exact head `f49dc983c5abd1e24147f39107af86a69802f34c` remains draft, the PR diff still contains no `internal/controlplane/` tree, and no exact-head GitHub Actions run is evidenced. Fabric reapplication is not complete.
+
 Freeze this cycle on upstream:
 
 `bfa0e9544f5f6cbfd8943ef397e43acd2322de13`
@@ -49,7 +51,7 @@ Exact-head gate before merge:
 ## Lane B — Capacity / account availability
 
 **Status:** READY — hold for port  
-**Reference PR:** #50  
+**Reference PR:** #50 (draft/HOLD)  
 **Role:** Cursor capacity lane
 
 #50 is the validated reference implementation on its older base. Do not expand it and do not cherry-pick it wholesale into #54.
@@ -132,6 +134,10 @@ Prompt rewriting is not core differentiation. Keep #51 draft/stacked until Lane 
 - #49 measurement harness
 - #56 POSIX-safe live-test opt-in into #54 integration branch
 - #58 auditable cost evidence (known-free vs unknown-price + explicit baseline comparison)
+- #59 beta/product strategy documentation
+- #60 isolated entitlement/license foundation (no runtime wiring)
+- #61 entitlement expiry enforcement + immutable verified-license snapshot
+- Coordination cleanup (2026-10-04): superseded/reference-only PRs #12, #13, #14, #15, #16, #19, #21, #24, #28, #31, #32, #33 and #34 were closed; their branches/history remain available for selective reference.
 
 ## Collision rule
 
