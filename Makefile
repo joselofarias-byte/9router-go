@@ -124,7 +124,7 @@ test-short:
 # left inactive will make every test skip for the wrong reason.
 ## test-live — run the live upstream tests against real providers (local only)
 test-live:
-	9ROUTER_LIVE_TESTS=1 go test -count=1 -v ./internal/handlers/chat/ -run 'Live|MuseSpark'
+	env 9ROUTER_LIVE_TESTS=1 go test -count=1 -v ./internal/handlers/chat/ -run 'Live|MuseSpark'
 
 ## vet-svelte — svelte-check ratchet: blocks unresolved identifiers, pins type debt
 vet-svelte:
