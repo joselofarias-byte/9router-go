@@ -111,3 +111,35 @@ Se puede empezar a reclutar testers ya.
 No conviene distribuir una beta Pro externa hasta que B0, B1 y una UI B2 mínima pasen tests y el build esté claramente identificado como beta.
 
 No se fija una fecha inventada. El gate es funcional: cuando esos puntos estén verificados, la beta puede salir.
+
+
+## Nota crítica: MIT y protección real de Pro
+
+El runtime heredado está bajo MIT. Esa licencia permite usar, modificar, redistribuir, sublicenciar y vender el software preservando los avisos requeridos.
+
+Consecuencia técnica: si el código de las funciones Pro y el chequeo de licencia se publican completos dentro del mismo repositorio MIT, un usuario con conocimientos puede eliminar el gate y recompilar.
+
+Por eso la licencia firmada no debe presentarse como DRM imposible de romper. Su objetivo en beta es controlar distribución normal, expiración y capacidades para testers confiables.
+
+Para un producto comercial existen tres caminos compatibles con una base MIT:
+
+1. **Community público + Pro privado**  
+   Mantener el núcleo y las integraciones Community en el repo público. Las capacidades Pro diferenciadas viven en un módulo/repositorio privado que se incorpora a los builds Pro.
+
+2. **Community público + servicio Pro**  
+   Parte del valor Pro depende de un control plane/servicio administrado. El cliente local sigue funcionando como Community si la suscripción termina.
+
+3. **Binario distribuido + fuente Community**  
+   Distribuir builds Pro con componentes propios que no se publiquen bajo la licencia MIT del repo Community, manteniendo los avisos de las partes heredadas. Antes de comercializar, revisar la estructura exacta de licencias con asesoramiento legal.
+
+### Recomendación para la beta
+
+Para los primeros testers:
+
+- repo Community sigue público;
+- entitlement B0 vive como interfaz en Community;
+- implementación de licencia firmada puede existir en el binario beta;
+- las funciones Pro verdaderamente diferenciadas no deben quedar todas publicadas bajo MIT si queremos que la licencia tenga valor comercial real;
+- no convertir el producto en DRM agresivo: al vencer, vuelve a Community sin tocar datos.
+
+La separación de repos/módulos debe diseñarse antes del primer release Pro público.
