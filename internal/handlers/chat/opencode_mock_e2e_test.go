@@ -380,7 +380,7 @@ func TestE2E_Opencode_SpaceBunny_ChatCompletions_Shape(t *testing.T) {
 	defer cleanup()
 
 	ocData, _ := json.Marshal(map[string]any{
-		"apiKey":  "public",
+		"apiKey":  "mock-opencode-key",
 		"baseUrl": upstream.URL + "/chat/completions",
 	})
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
