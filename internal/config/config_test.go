@@ -124,6 +124,27 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+
+func TestRTKEnabledByDefault(t *testing.T) {
+	t.Setenv("RTK_ENABLED", "")
+	t.Setenv("CAVEMAN_ENABLED", "")
+	t.Setenv("PONYTAIL_ENABLED", "")
+	t.Setenv("DATA_DIR", t.TempDir())
+	t.Setenv("JWT_SECRET", "test-rtk-default-secret")
+
+	v := NewViperWithFile("")
+	cfg := LoadConfigFromViper(v)
+	if !cfg.RTKEnabled {
+		t.Fatal("RTK must be enabled by default when RTK_ENABLED is unset")
+	}
+	if cfg.CavemanEnabled {
+		t.Fatal("Caveman must remain opt-in by default")
+	}
+	if cfg.PonytailEnabled {
+		t.Fatal("Ponytail must remain opt-in by default")
+	}
+}
+
 func TestLoadConfigInvalidPort(t *testing.T) {
 	origPort := os.Getenv("PORT")
 	defer os.Setenv("PORT", origPort)

@@ -68,26 +68,44 @@ func CompressMessages(body []byte) ([]byte, bool) {
 			continue
 		}
 
-		// Claude tool_result in content array
+		// Claude tool_result in content array.
+		//
+		// Important: normal Claude user text also uses {type:"text"} blocks.
+		// RTK must never truncate or rewrite those instructions just because they
+		// are long. Only tool_result payloads are safe compression targets.
 		contentArr, ok := msg["content"].([]any)
 		if !ok {
 			continue
 		}
 		for _, part := range contentArr {
 			block, ok := part.(map[string]any)
-			if !ok {
+			if !ok || block["type"] != "tool_result" {
 				continue
 			}
-			if block["type"] == "tool_result" {
-				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressText(text)
-					compressed = true
-				}
+
+			// Anthropic's canonical shape is tool_result.content. Keep support
+			// for the historical .text shape too because older adapters/tests
+			// may still emit it.
+			if content, ok := block["content"].(string); ok && len(content) > MinCompressSize {
+				block["content"] = CompressText(content)
+				compressed = true
 			}
-			if block["type"] == "text" {
-				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressText(text)
-					compressed = true
+			if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
+				block["text"] = CompressText(text)
+				compressed = true
+			}
+
+			// tool_result.content may itself be an array of text blocks.
+			if nested, ok := block["content"].([]any); ok {
+				for _, nestedPart := range nested {
+					textBlock, ok := nestedPart.(map[string]any)
+					if !ok || textBlock["type"] != "text" {
+						continue
+					}
+					if text, ok := textBlock["text"].(string); ok && len(text) > MinCompressSize {
+						textBlock["text"] = CompressText(text)
+						compressed = true
+					}
 				}
 			}
 		}
@@ -150,7 +168,11 @@ func isGrepOutput(s string) bool {
 	}
 	count := 0
 	for _, l := range lines[:3] {
-		if len(strings.SplitN(l, ":", 3)) >= 2 {
+		// Be conservative: ordinary build/log lines often contain colons and
+		// timestamps. Treat output as grep only when it looks like a path
+		// (slash, backslash or dot) followed by :line:content.
+		matched, _ := regexp.MatchString(`^[^:]*[./\\][^:]*:\d+:`, l)
+		if matched {
 			count++
 		}
 	}
