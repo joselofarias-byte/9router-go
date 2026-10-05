@@ -130,7 +130,7 @@ func TestResolveProviderProxyPoolID_CrossAlias(t *testing.T) {
 	}
 }
 
-func TestGetBestConnection_Opencode_InheritsProxyFromStrategy(t *testing.T) {
+func TestGetBestConnection_Opencode_UsesAccountProxyPool(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -150,13 +150,13 @@ func TestGetBestConnection_Opencode_InheritsProxyFromStrategy(t *testing.T) {
 	}
 
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
-		('conn-oc-proxy', 'opencode', 'api_key', 'Zen', 1, 1, '{"apiKey":"test-key"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		('conn-oc-proxy', 'opencode', 'api_key', 'Zen', 1, 1, '{"apiKey":"test-key","proxyPoolId":"pool-vercel-relay-xyz"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("seed Zen connection: %v", err)
 	}
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
 
-	// A configured Zen account inherits the proxy strategy
+	// A configured Zen account carries its explicit proxy pool
 	conn, connData, err := h.GetBestConnection("opencode", "", nil, "")
 	if err != nil {
 		t.Fatalf("GetBestConnection(opencode) failed: %v", err)
