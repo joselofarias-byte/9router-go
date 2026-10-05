@@ -393,6 +393,68 @@ func TestCodexProxy_escapesProviderErrorInResultPage(t *testing.T) {
 	}
 }
 
+func TestHandleCodexBegin_redirectsWithRegisteredSession(t *testing.T) {
+	old := codexLoopback
+	codexLoopback = &codexProxy{port: 0, sessions: map[string]*codexSession{}}
+	defer func() {
+		codexLoopback.stop()
+		codexLoopback = old
+	}()
+
+	handler := NewOAuthHandler(nil)
+	req := httptest.NewRequest(
+		"GET",
+		"/api/oauth/codex/begin?app_port=20128&state=mobile-state",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	handler.HandleCodexBegin(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302: %s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.HasPrefix(location, pkceProviders["codex"].authorizeURL+"?") {
+		t.Fatalf("Location = %q, want Codex authorize URL", location)
+	}
+	u, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if got := u.Query().Get("state"); got != "mobile-state" {
+		t.Errorf("state = %q, want mobile-state", got)
+	}
+	if got := u.Query().Get("redirect_uri"); got != codexRedirectURI {
+		t.Errorf("redirect_uri = %q, want %q", got, codexRedirectURI)
+	}
+	if got := u.Query().Get("code_challenge"); got == "" {
+		t.Error("authorize URL is missing PKCE code_challenge")
+	}
+
+	sess, ok := codexLoopback.lookup("mobile-state")
+	if !ok {
+		t.Fatal("mobile begin did not register the callback session")
+	}
+	if sess.status != "pending" || sess.codeVerifier == "" {
+		t.Fatalf("unexpected registered session: %+v", sess)
+	}
+	if sess.redirectURI != codexRedirectURI {
+		t.Errorf("session redirect = %q, want %q", sess.redirectURI, codexRedirectURI)
+	}
+}
+
+func TestHandleCodexBegin_requiresAppPort(t *testing.T) {
+	handler := NewOAuthHandler(nil)
+	rec := httptest.NewRecorder()
+	handler.HandleCodexBegin(
+		rec,
+		httptest.NewRequest("GET", "/api/oauth/codex/begin?state=s", nil),
+	)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleCodexStartProxy_validations(t *testing.T) {
 	handler := NewOAuthHandler(nil)
 	tests := []struct {
