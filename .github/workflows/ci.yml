@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # docker/build-push-action uploads a .dockerbuild record by default. It is
+  # useful for BuildKit debugging but pure storage noise for this repo.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -65,7 +74,7 @@ jobs:
         with:
           name: 9router-go-termux-arm64-${{ github.event_name == 'pull_request' && format('pr{0}', github.event.pull_request.number) || format('run{0}', github.run_id) }}
           path: /tmp/9router-go-termux-arm64
-          retention-days: 7
+          retention-days: 3
 
       - name: Assert PGO is applied
         run: |
