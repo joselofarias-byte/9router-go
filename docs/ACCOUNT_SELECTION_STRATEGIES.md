@@ -10,6 +10,7 @@ Implemented strategies:
 - `relative_availability`: ranks fresh known capacity relative to the best candidate, applies configurable power/top-K, then uses the same stable weighted selection.
 - `sequential_drain`: drains the smallest fresh positive capacity first, preserving larger pools.
 - `reset_drain`: prefers the nearest **future** reset among fresh positive-capacity accounts. An elapsed reset never proves replenishment.
+- `expiry_pressure`: prefers the largest amount of known capacity at risk of expiring, using `remaining / hours_until_reset`. This avoids wasting a nearly-full window just because another smaller window resets a few minutes earlier.
 - `fill_first`: stable operator priority, then account ID.
 - `single_account`: explicit account only.
 
@@ -32,6 +33,7 @@ After the capacity/availability bridge is ported onto the final #54 integration 
 - `capacity.Exhausted` -> `StatusExhausted`;
 - `BlockedUntil` -> `CooldownUntil`;
 - `ResetAt` is copied as evidence only; selection never turns elapsed reset into fresh capacity.
+- For `expiry_pressure`, callers should map the most urgent applicable provider window into `Remaining` + `ResetAt` (for example, the maximum pressure across model/session/weekly windows) and mark stale observations as `StatusStale`.
 
 The first runtime wiring should live behind one account-selector interface and expose the chosen strategy plus skip reasons through explain-route.
 
