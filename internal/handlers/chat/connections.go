@@ -191,11 +191,11 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		// Rotate only runtime-eligible accounts.
 		if len(eligibleConnections) > 1 && settingsErr == nil && settings != nil {
 			strat := db.ProviderStrategy{}
-			hasStrat := false
+			hasExplicitRotateStrategy := false
 			if settings.ProviderStrategies != nil {
 				if configured, ok := settings.ProviderStrategies[provider]; ok {
 					strat = configured
-					hasStrat = true
+					hasExplicitRotateStrategy = configured.RotateStrategy != ""
 				}
 			}
 
@@ -203,14 +203,17 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			// add every Google AI Pro account once and 9router-go consumes them
 			// as one rotating pool without requiring dashboard setup.
 			//
-			// An explicit provider strategy still wins, including "none". If no
-			// provider strategy exists, an explicit global fallback strategy is
-			// honored; otherwise Antigravity defaults to one-request round-robin.
-			if !hasStrat || strat.RotateStrategy == "" {
+			// Only an explicit *rotation* strategy for this provider wins,
+			// including "none". Provider settings that exist solely for proxy
+			// pools or strict model assignment must not silently disable the
+			// default Antigravity rotation. A non-default global fallback
+			// strategy is honored; "fill-first" is treated as the dashboard's
+			// baseline/default so Antigravity can still auto-rotate.
+			if !hasExplicitRotateStrategy {
 				if settings.FallbackStrategy != "" && settings.FallbackStrategy != "fill-first" {
 					strat.RotateStrategy = settings.FallbackStrategy
 					strat.StickyLimit = settings.StickyRoundRobinLimit
-				} else if provider == "antigravity" && !hasStrat {
+				} else if provider == "antigravity" {
 					strat.RotateStrategy = "round-robin"
 					strat.StickyLimit = 1
 				}
