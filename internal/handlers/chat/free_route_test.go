@@ -1108,7 +1108,7 @@ func assertExactPool(t *testing.T, info *ModelInfo, want []string) {
 }
 
 
-func TestResolveModel_FreeBestBuiltinPoolExcludesRetiredMimoFree(t *testing.T) {
+func TestResolveModel_FreeBestBuiltinPoolRequiresConnection(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -1124,29 +1124,7 @@ func TestResolveModel_FreeBestBuiltinPoolExcludesRetiredMimoFree(t *testing.T) {
 	}).RunSync(t.Context())
 
 	h := NewChatHandler(db.NewRepo(database))
-	info, err := h.resolveModel("free-best")
-	if err != nil {
-		t.Fatalf("resolve free-best: %v", err)
-	}
-
-	got := map[string]bool{}
-	for _, entry := range info.ComboModels {
-		got[entry] = true
-	}
-
-	for _, want := range []string{
-		"opencode/muse-spark-1.3-contributor-free",
-		"opencode/muse-spark-1.2-contributor-free",
-	} {
-		if !got[want] {
-			t.Errorf("free-best missing %s in %#v", want, info.ComboModels)
-		}
-	}
-
-	if got["mimo-free/mimo-auto"] {
-		t.Fatalf("retired mimo-auto leaked into builtin free-best pool: %#v", info.ComboModels)
-	}
-	if len(got) != 2 {
-		t.Fatalf("free-best builtin pool = %#v, want exactly 2 entries", info.ComboModels)
+	if _, err := h.resolveModel("free-best"); err == nil {
+		t.Fatal("free-best must be unavailable without a connected free provider")
 	}
 }
