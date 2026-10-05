@@ -299,6 +299,7 @@
   let callbackInput = $state('')
   let oauthError = $state<string | null>(null)
   let isConnecting = $state(false)
+  let isLaunchingOAuth = $state(false)
   let clineCodeVerifier = $state('')
   let clineRedirectUri = $state('')
   let pkceCodeVerifier = $state('')
@@ -1310,10 +1311,47 @@
     openAntigravityOAuth()
   }
 
+  function openOAuthPlaceholder(): Window | null {
+    if (typeof window === 'undefined') return null
+    try {
+      const popup = window.open('', '_blank')
+      if (popup) {
+        try {
+          popup.document.title = '9router-go login'
+          popup.document.body.innerHTML =
+            '<div style="font-family:system-ui;padding:24px">Preparing secure login…</div>'
+        } catch {
+          // Cross-origin or browser restrictions: the handle is still useful.
+        }
+      }
+      return popup
+    } catch {
+      return null
+    }
+  }
+
+  function sendPopupTo(popup: Window | null, url: string): boolean {
+    if (!url) return false
+    try {
+      if (popup && !popup.closed) {
+        popup.location.href = url
+        return true
+      }
+    } catch {
+      // The dashboard modal still exposes an explicit Open button as fallback.
+    }
+    return false
+  }
+
   async function openAntigravityOAuth() {
     oauthError = null
     callbackInput = ''
     copiedAuthUrl = false
+    showOAuthModal = true
+    isLaunchingOAuth = true
+    // Open synchronously while the tap is still a trusted user gesture.
+    // Mobile Chrome blocks window.open() after an await/fetch.
+    const popup = openOAuthPlaceholder()
     try {
       const redirectUri = antigravityCallback()
       const res = await api.getAntigravityAuthorizeUrl(redirectUri)
@@ -1324,12 +1362,12 @@
           redirectUri: res.redirectUri || redirectUri,
         })
       }
-      showOAuthModal = true
-      if (typeof window !== 'undefined' && oauthAuthUrl) {
-        window.open(oauthAuthUrl, '_blank', 'width=600,height=700')
-      }
+      sendPopupTo(popup, oauthAuthUrl)
     } catch (err) {
-      alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
+      try { popup?.close() } catch {}
+      oauthError = `Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      isLaunchingOAuth = false
     }
   }
 
@@ -1337,6 +1375,13 @@
     oauthError = null
     callbackInput = ''
     copiedAuthUrl = false
+    showOAuthModal = true
+    isLaunchingOAuth = true
+    // The popup must be created before the first await. On Android Chrome,
+    // opening it after fetch()/startCodexLoopback() loses the user gesture and
+    // the browser silently blocks the tab — exactly the "button does nothing"
+    // symptom seen on the HONOR 200.
+    const popup = openOAuthPlaceholder()
     try {
       // Codex cannot use the dashboard callback: OpenAI only accepts the
       // redirect URI registered for the Codex CLI client.
@@ -1369,12 +1414,12 @@
           clientSecret: gitlabClientSecret.trim(),
         },
       })
-      showOAuthModal = true
-      if (typeof window !== 'undefined' && oauthAuthUrl) {
-        window.open(oauthAuthUrl, '_blank', 'width=600,height=700')
-      }
+      sendPopupTo(popup, oauthAuthUrl)
     } catch (err) {
-      alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
+      try { popup?.close() } catch {}
+      oauthError = `Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      isLaunchingOAuth = false
     }
   }
 
@@ -2957,10 +3002,11 @@
           <button
             type="button"
             onclick={handleAddConnectionClick}
-            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px]"
+            disabled={isLaunchingOAuth}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px]"
           >
-            <span class="material-symbols-outlined text-[18px]">add</span>
-            Add Connection
+            <span class="material-symbols-outlined text-[18px]">{isLaunchingOAuth ? 'progress_activity' : 'add'}</span>
+            {isLaunchingOAuth ? 'Opening…' : 'Add Connection'}
           </button>
         {/if}
         </div>
@@ -3981,11 +4027,13 @@
       <div class="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50 mb-4">
         <span class="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
         <span class="text-sm">
-          {providerId === 'freebuff'
-            ? 'Waiting for Freebuff authorization… (auto-polling active)'
-            : deviceUserCode
-              ? `Waiting for device authorization… (auto-check every ${deviceInterval}s)`
-              : 'Waiting for popup authorization…'}
+          {isLaunchingOAuth
+            ? 'Preparing secure login…'
+            : providerId === 'freebuff'
+              ? 'Waiting for Freebuff authorization… (auto-polling active)'
+              : deviceUserCode
+                ? `Waiting for device authorization… (auto-check every ${deviceInterval}s)`
+                : 'Waiting for popup authorization…'}
         </span>
       </div>
 
