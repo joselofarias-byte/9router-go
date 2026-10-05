@@ -50,7 +50,7 @@ func TestHTTPTransportActivationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(response.Lease) != "{"version":1}" {
+	if string(response.Lease) != `{"version":1}` {
 		t.Fatalf("lease = %s", response.Lease)
 	}
 	if !response.ServerTime.Equal(serverTime) {
@@ -74,7 +74,7 @@ func TestHTTPTransportRenewalPath(t *testing.T) {
 			t.Fatalf("renew request = %+v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{"lease":{"version":1}}"))
+		_, _ = w.Write([]byte(`{"lease":{"version":1}}`))
 	}))
 	defer server.Close()
 
