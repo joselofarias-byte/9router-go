@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
@@ -126,6 +127,82 @@ func TestGetBestConnection_WithRoundRobinStrategy(t *testing.T) {
 	conn4, _, err := h.GetBestConnection("antigravity", "", nil, "")
 	if err != nil || conn4 == nil || conn4.ID != "conn-ag-1" {
 		t.Fatalf("step 4: expected conn-ag-1, got %v (err=%v)", conn4, err)
+	}
+}
+
+
+func TestGetBestConnection_AntigravityAutoRotatesWithoutConfiguration(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	seedConnDB(t, database, "antigravity", "conn-auto-1", "tok-1", "https://mock.example.com/1")
+	seedConnDB(t, database, "antigravity", "conn-auto-2", "tok-2", "https://mock.example.com/2")
+	seedConnDB(t, database, "antigravity", "conn-auto-3", "tok-3", "https://mock.example.com/3")
+
+	// No provider strategy and no global fallback strategy: Antigravity must
+	// still use every active account automatically.
+	want := []string{"conn-auto-1", "conn-auto-2", "conn-auto-3", "conn-auto-1"}
+	for step, wantID := range want {
+		conn, _, err := h.GetBestConnection("antigravity", "", nil, "")
+		if err != nil {
+			t.Fatalf("step %d: GetBestConnection: %v", step+1, err)
+		}
+		if conn == nil || conn.ID != wantID {
+			got := "<nil>"
+			if conn != nil {
+				got = conn.ID
+			}
+			t.Fatalf("step %d: expected %s, got %s", step+1, wantID, got)
+		}
+	}
+}
+
+func TestGetBestConnection_AntigravityAutoRotationSkipsQuotaBlockedAccount(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	seedConnDB(t, database, "antigravity", "conn-quota-1", "tok-1", "https://mock.example.com/1")
+	seedConnDB(t, database, "antigravity", "conn-quota-2", "tok-2", "https://mock.example.com/2")
+	seedConnDB(t, database, "antigravity", "conn-quota-3", "tok-3", "https://mock.example.com/3")
+
+	ClearAntigravityQuotaCache()
+	defer ClearAntigravityQuotaCache()
+
+	const model = "claude-sonnet-4-6"
+	BlockAntigravityModelUntil("conn-quota-2", model, time.Now().UTC().Add(time.Hour))
+
+	// The blocked account is removed before round-robin selection, so it does
+	// not consume a turn or receive a persistent last-used stamp.
+	want := []string{"conn-quota-1", "conn-quota-3", "conn-quota-1", "conn-quota-3"}
+	for step, wantID := range want {
+		conn, _, err := h.GetBestConnection("antigravity", "", nil, model)
+		if err != nil {
+			t.Fatalf("step %d: GetBestConnection: %v", step+1, err)
+		}
+		if conn == nil || conn.ID != wantID {
+			got := "<nil>"
+			if conn != nil {
+				got = conn.ID
+			}
+			t.Fatalf("step %d: expected %s, got %s", step+1, wantID, got)
+		}
+	}
+
+	blocked, err := repo.GetProviderConnectionByID("conn-quota-2")
+	if err != nil {
+		t.Fatalf("load blocked connection: %v", err)
+	}
+	if blocked == nil {
+		t.Fatal("blocked connection disappeared")
+	}
+	if blocked.LastUsedAt != nil {
+		t.Fatalf("quota-blocked account consumed a rotation turn: lastUsedAt=%s", *blocked.LastUsedAt)
 	}
 }
 
