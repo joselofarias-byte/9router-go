@@ -54,10 +54,10 @@ func (a *BuiltinFreeAdapter) Discover(ctx context.Context) ([]Candidate, error) 
 
 func (a *BuiltinFreeAdapter) ScopedProviderIDs() []string {
 	// Keep retired built-in sources in scope for one-way cleanup. Older
-	// snapshots may still contain mimo-free/mimo-auto owned by builtin-free;
+	// snapshots may still contain mimo-free and unauthenticated OpenCode models;
 	// with no current candidate, the orchestrator will deactivate it safely.
-	ids := []string{"mimo-free"}
-	seenIDs := map[string]bool{"mimo-free": true}
+	ids := []string{"mimo-free", "opencode"}
+	seenIDs := map[string]bool{"mimo-free": true, "opencode": true}
 	for providerID, cfg := range providers.KnownProviders {
 		if !cfg.NoAuth || !noAuthFreeProviderReady(providerID) {
 			continue
@@ -86,8 +86,9 @@ func noAuthFreeProviderReady(providerID string) bool {
 	// this branch until its multi-transport executor (/chat, /messages,
 	// /responses) is reconciled from upstream; otherwise Fabric advertises
 	// free models that the generic forwarder cannot fingerprint/route safely.
+	// OpenCode Zen also requires an account API key, so it is not a no-auth source.
 	switch providerID {
-	case "opencode", "llamacpp":
+	case "llamacpp":
 		return true
 	default:
 		return false
