@@ -86,7 +86,7 @@ func TestForwardOpencode(t *testing.T) {
 	req := &Request{
 		Client:        srv.Client(),
 		Config:        cfg,
-		APIKey:        "test-key"
+		APIKey:        "test-key",
 		Body:          []byte(`{"model":"deepseek-v4-flash-free","messages":[{"role":"assistant","content":"prev"}]}`),
 		IsStream:      false,
 		TranslateResp: false,
