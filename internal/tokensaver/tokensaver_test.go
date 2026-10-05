@@ -635,6 +635,12 @@ func TestIsGrepOutput_Match(t *testing.T) {
 	}
 }
 
+func TestIsGrepOutput_ColonLogsDoNotMatch(t *testing.T) {
+	if isGrepOutput("build step 0001: compiling\nbuild step 0002: linking\nbuild step 0003: done") {
+		t.Error("ordinary colon-delimited logs must not be classified as grep output")
+	}
+}
+
 // ============================================================
 // isTreeOutput
 // ============================================================
