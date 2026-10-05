@@ -147,3 +147,16 @@ func TestHTTPTransportBoundsResponseBody(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, ErrControlPlaneResponseTooLarge)
 	}
 }
+
+
+func TestHTTPTransportRejectsRemotePlainHTTP(t *testing.T) {
+	if _, err := NewHTTPTransport("http://example.com", nil); !errors.Is(err, ErrInsecureControlPlaneURL) {
+		t.Fatalf("error = %v, want %v", err, ErrInsecureControlPlaneURL)
+	}
+}
+
+func TestHTTPTransportRejectsCredentialsInBaseURL(t *testing.T) {
+	if _, err := NewHTTPTransport("https://user:pass@example.com", nil); err == nil {
+		t.Fatal("base URL credentials unexpectedly accepted")
+	}
+}
