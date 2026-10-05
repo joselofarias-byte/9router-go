@@ -10,6 +10,7 @@ import (
 
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/translator"
 )
 
 // AntigravitySelectionQuotaTTL is the maximum quota age accepted by the
@@ -43,7 +44,7 @@ func antigravityQuotaKeysForModel(model string) []string {
 	}
 
 	add(model)
-	if canonical, ok := translatorAntigravitySynonym(model); ok {
+	if canonical, ok := translator.AntigravityModelSynonyms[model]; ok {
 		add(canonical)
 	}
 
@@ -57,29 +58,6 @@ func antigravityQuotaKeysForModel(model string) []string {
 	}
 	return keys
 }
-
-// Small wrapper keeps this file isolated from translator implementation details.
-func translatorAntigravitySynonym(model string) (string, bool) {
-	canonical, ok := antigravityModelSynonym(model)
-	return canonical, ok
-}
-
-// antigravityModelSynonym is implemented below through the package-level
-// synonym map exposed by translator without exporting any new surface here.
-func antigravityModelSynonym(model string) (string, bool) {
-	canonical, ok := translatorAntigravityModelSynonyms()[model]
-	return canonical, ok
-}
-
-// Kept as a function so tests can exercise this file without copying the map.
-func translatorAntigravityModelSynonyms() map[string]string {
-	return antigravitySynonyms
-}
-
-// antigravitySynonyms is populated from the same canonicalization used by
-// connections.go. It intentionally includes only aliases relevant to expiry
-// scoring; unknown models simply use their raw ID plus family windows.
-var antigravitySynonyms = map[string]string{}
 
 func antigravityQuotaNeedsRefresh(connectionID, model string, now time.Time) bool {
 	if connectionID == "" || model == "" {
