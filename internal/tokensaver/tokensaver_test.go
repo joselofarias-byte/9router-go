@@ -205,11 +205,12 @@ func TestCompressMessages_ToolResultLong(t *testing.T) {
 	assertContains(t, val, "... (")
 }
 
-func TestCompressMessages_TextBlockLong(t *testing.T) {
+func TestCompressMessages_TextBlockLongIsPreserved(t *testing.T) {
 	diff := longGitDiff()
 	msg := map[string]any{
 		"messages": []any{
 			map[string]any{
+				"role": "user",
 				"content": []any{
 					map[string]any{"type": "text", "text": diff},
 				},
@@ -218,14 +219,12 @@ func TestCompressMessages_TextBlockLong(t *testing.T) {
 	}
 	in, _ := json.Marshal(msg)
 	out, ok := CompressMessages(in)
-	if !ok {
-		t.Fatal("expected true for long text block")
+	if ok {
+		t.Fatal("normal text blocks must not be compressed by RTK")
 	}
-	var res map[string]any
-	json.Unmarshal(out, &res)
-	arr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	val := arr[0].(map[string]any)["text"].(string)
-	assertContains(t, val, "... (")
+	if string(out) != string(in) {
+		t.Fatal("normal text block changed with RTK enabled")
+	}
 }
 
 func TestCompressMessages_InputKey(t *testing.T) {
