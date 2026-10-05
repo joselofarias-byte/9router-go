@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +22,7 @@ const (
 var (
 	ErrControlPlaneResponseTooLarge = errors.New("control plane response too large")
 	ErrControlPlaneInvalidResponse  = errors.New("invalid control plane response")
+	ErrInsecureControlPlaneURL      = errors.New("insecure control plane URL")
 )
 
 type HTTPTransport struct {
@@ -46,6 +48,12 @@ func NewHTTPTransport(baseURL string, client *http.Client) (*HTTPTransport, erro
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, errors.New("entitlements.NewHTTPTransport: unsupported URL scheme")
+	}
+	if parsed.User != nil {
+		return nil, errors.New("entitlements.NewHTTPTransport: credentials in base URL are not allowed")
+	}
+	if parsed.Scheme == "http" && !isLoopbackControlPlaneHost(parsed.Hostname()) {
+		return nil, ErrInsecureControlPlaneURL
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("entitlements.NewHTTPTransport: base URL must not include query or fragment")
@@ -119,4 +127,13 @@ func (t *HTTPTransport) post(ctx context.Context, path string, request any) (Lea
 		ServerTime:          wire.ServerTime.UTC(),
 		RenewalAfterSeconds: wire.RenewalAfterSeconds,
 	}, nil
+}
+
+func isLoopbackControlPlaneHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
