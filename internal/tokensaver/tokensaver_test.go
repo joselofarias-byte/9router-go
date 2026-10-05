@@ -641,6 +641,12 @@ func TestIsGrepOutput_ColonLogsDoNotMatch(t *testing.T) {
 	}
 }
 
+func TestIsGrepOutput_TimestampedLogsDoNotMatch(t *testing.T) {
+	if isGrepOutput("2026-10-05T14:36:01Z build start\n2026-10-05T14:36:02Z compiling\n2026-10-05T14:36:03Z done") {
+		t.Error("timestamped logs must not be classified as grep output")
+	}
+}
+
 // ============================================================
 // isTreeOutput
 // ============================================================
