@@ -3,6 +3,7 @@ package entitlements
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestRuntimeStoreBuildHardExpiryFallsBackToCommunity(t *testing.T) {
