@@ -59,6 +59,18 @@ func antigravityQuotaKeysForModel(model string) []string {
 	return keys
 }
 
+func antigravityQuotaSnapshot(connectionID string) (map[string]AntigravityModelQuota, time.Time) {
+	agQuotaMu.RLock()
+	defer agQuotaMu.RUnlock()
+
+	src := agQuotaCache[connectionID]
+	dst := make(map[string]AntigravityModelQuota, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst, agLastRefreshAt[connectionID]
+}
+
 func antigravityQuotaNeedsRefresh(connectionID, model string, now time.Time) bool {
 	if connectionID == "" || model == "" {
 		return false
@@ -67,10 +79,7 @@ func antigravityQuotaNeedsRefresh(connectionID, model string, now time.Time) boo
 		now = time.Now().UTC()
 	}
 
-	agQuotaMu.RLock()
-	lastRef := agLastRefreshAt[connectionID]
-	modelsMap := agQuotaCache[connectionID]
-	agQuotaMu.RUnlock()
+	modelsMap, lastRef := antigravityQuotaSnapshot(connectionID)
 
 	if lastRef.IsZero() || len(modelsMap) == 0 {
 		return true
@@ -101,9 +110,7 @@ func getAntigravityExpiryPressure(connectionID, model string, now time.Time) (An
 		return zero, false
 	}
 
-	agQuotaMu.RLock()
-	modelsMap := agQuotaCache[connectionID]
-	agQuotaMu.RUnlock()
+	modelsMap, _ := antigravityQuotaSnapshot(connectionID)
 
 	best := zero
 	found := false
