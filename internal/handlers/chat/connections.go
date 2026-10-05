@@ -141,63 +141,27 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			return nil, nil, fmt.Errorf("no connection assigned to model %s for provider %s under strict assignment", model, provider)
 		}
 
-		// Rotate only connections eligible for the requested model.
-		if len(connections) > 1 && settingsErr == nil && settings != nil {
-			strat := db.ProviderStrategy{}
-			hasStrat := false
-			if settings.ProviderStrategies != nil {
-				if s, ok := settings.ProviderStrategies[provider]; ok {
-					strat = s
-					hasStrat = true
-				}
-			}
-
-			// Antigravity is deliberately multi-account by default: a user can
-			// add every Google AI Pro account once and 9router-go will consume
-			// them as one rotating pool without requiring dashboard setup.
-			//
-			// An explicit provider strategy still wins, including "none". If no
-			// provider strategy exists, an explicit global fallback strategy is
-			// honored; otherwise Antigravity defaults to one-request round-robin.
-			if !hasStrat || strat.RotateStrategy == "" {
-				if settings.FallbackStrategy != "" && settings.FallbackStrategy != "fill-first" {
-					strat.RotateStrategy = settings.FallbackStrategy
-					strat.StickyLimit = settings.StickyRoundRobinLimit
-				} else if provider == "antigravity" && !hasStrat {
-					strat.RotateStrategy = "round-robin"
-					strat.StickyLimit = 1
-				}
-			}
-			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
-				connections = h.applyConnectionStrategy(connections, strat)
-			}
-		}
-
+		// Build the runtime-eligible pool before rotating. This matters most for
+		// Antigravity multi-account pools: an exhausted/cooling account must not
+		// consume a round-robin turn or update its persistent rotation stamp.
 		excludeSet := make(map[string]bool, len(excludeIDs))
 		for _, id := range excludeIDs {
 			excludeSet[id] = true
 		}
 
-		conn = nil
 		var cooldownUntil time.Time
 		now := time.Now()
+		eligibleConnections := make([]*models.ProviderConnection, 0, len(connections))
 		for _, c := range connections {
-			if excludeSet[c.ID] {
+			if c == nil || excludeSet[c.ID] {
 				continue
 			}
-			// Account-scoped cooldown. An account whose quota is spent, or
-			// whose OAuth grant the provider already rejected, is skipped
-			// before it is selected — round-robin otherwise kept handing out
-			// dead accounts until a live 429/401 locked them, and a rejected
-			// grant cost a token-endpoint call on every request until the IP
-			// was rate limited. Upstream parity: filterAvailableAccounts.
 			if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
 				if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
 					cooldownUntil = until
 				}
 				continue
 			}
-			// Skip connections that have an active per-connection model lock
 			if model != "" {
 				lockKey := canonicalLockModel(provider, model)
 				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, lockKey); locked {
@@ -212,12 +176,10 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 					continue
 				}
 			}
-			conn = c
-			break
+			eligibleConnections = append(eligibleConnections, c)
 		}
-		if conn == nil {
-			// Every candidate was in cooldown, so say when the first one comes
-			// back instead of a bare "all excluded" the caller cannot act on.
+
+		if len(eligibleConnections) == 0 {
 			if !cooldownUntil.IsZero() {
 				return nil, nil, fmt.Errorf(
 					"no available connections for provider: %s (all in cooldown, earliest reset %s)",
@@ -225,7 +187,40 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			}
 			return nil, nil, fmt.Errorf("no available connections for provider: %s (all excluded)", provider)
 		}
-	}
+
+		// Rotate only runtime-eligible accounts.
+		if len(eligibleConnections) > 1 && settingsErr == nil && settings != nil {
+			strat := db.ProviderStrategy{}
+			hasStrat := false
+			if settings.ProviderStrategies != nil {
+				if configured, ok := settings.ProviderStrategies[provider]; ok {
+					strat = configured
+					hasStrat = true
+				}
+			}
+
+			// Antigravity is deliberately multi-account by default: a user can
+			// add every Google AI Pro account once and 9router-go consumes them
+			// as one rotating pool without requiring dashboard setup.
+			//
+			// An explicit provider strategy still wins, including "none". If no
+			// provider strategy exists, an explicit global fallback strategy is
+			// honored; otherwise Antigravity defaults to one-request round-robin.
+			if !hasStrat || strat.RotateStrategy == "" {
+				if settings.FallbackStrategy != "" && settings.FallbackStrategy != "fill-first" {
+					strat.RotateStrategy = settings.FallbackStrategy
+					strat.StickyLimit = settings.StickyRoundRobinLimit
+				} else if provider == "antigravity" && !hasStrat {
+					strat.RotateStrategy = "round-robin"
+					strat.StickyLimit = 1
+				}
+			}
+			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
+				eligibleConnections = h.applyConnectionStrategy(eligibleConnections, strat)
+			}
+		}
+
+		conn = eligibleConnections[0]	}
 
 	var connData ConnectionData
 	if conn.Data != "" {
