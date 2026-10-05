@@ -324,6 +324,149 @@ func TestCompressMessages_InputOnlyMessagesFallback(t *testing.T) {
 	assertContains(t, val, "... (")
 }
 
+
+func TestCompressMessages_ClaudeCanonicalToolResultContent(t *testing.T) {
+	diff := longGitDiff()
+	msg := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "toolu_123",
+						"content":     diff,
+					},
+				},
+			},
+		},
+	}
+	in, _ := json.Marshal(msg)
+	out, ok := CompressMessages(in)
+	if !ok {
+		t.Fatal("expected canonical Claude tool_result.content to be compressed")
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatal(err)
+	}
+	block := res["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	got := block["content"].(string)
+	assertContains(t, got, "... (")
+	if len(got) >= len(diff) {
+		t.Fatalf("expected compressed Claude tool result, got %d bytes from %d", len(got), len(diff))
+	}
+}
+
+func TestCompressMessages_ClaudeLongUserTextIsNeverCompressed(t *testing.T) {
+	userText := longGenericText()
+	msg := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": userText},
+				},
+			},
+		},
+	}
+	in, _ := json.Marshal(msg)
+	out, ok := CompressMessages(in)
+	if ok {
+		t.Fatal("RTK must not rewrite normal Claude user text blocks")
+	}
+	if string(out) != string(in) {
+		t.Fatal("normal Claude user text changed with RTK enabled")
+	}
+}
+
+func TestRTKEnabledVsDisabledPayloadSize(t *testing.T) {
+	makeDiff := func(lines int) string {
+		var b strings.Builder
+		b.WriteString("diff --git a/large.go b/large.go\n")
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(&b, "@@ -%d +%d @@\n-old value %d with repeated context\n+new value %d with repeated context\n", i, i, i, i)
+		}
+		return b.String()
+	}
+	makeGrep := func(lines int) string {
+		var b strings.Builder
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(&b, "pkg/file%d.go:%d:match with useful surrounding content %d\n", i%8, i+1, i)
+		}
+		return b.String()
+	}
+	makeTree := func(lines int) string {
+		var b strings.Builder
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(&b, "├── src/package_%03d/file_%04d.go\n", i%40, i)
+		}
+		return b.String()
+	}
+	makeGeneric := func(lines int) string {
+		var b strings.Builder
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(&b, "build output line %04d: deterministic diagnostic payload for RTK A/B comparison\n", i)
+		}
+		return b.String()
+	}
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"git-diff", makeDiff(700)},
+		{"grep", makeGrep(900)},
+		{"tree", makeTree(900)},
+		{"generic-log", makeGeneric(900)},
+	}
+
+	var totalOff, totalOn int
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"model": "test-model",
+				"messages": []any{
+					map[string]any{"role": "user", "content": "analyze this tool output"},
+					map[string]any{"role": "tool", "content": tc.text},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// RTK disabled = body goes upstream unchanged.
+			offBytes := len(body)
+
+			// RTK enabled = current production compression path.
+			onBody, changed := CompressMessages(body)
+			if !changed {
+				t.Fatal("expected RTK to compress representative tool output")
+			}
+			onBytes := len(onBody)
+			if onBytes >= offBytes {
+				t.Fatalf("RTK did not reduce payload: off=%d on=%d", offBytes, onBytes)
+			}
+			reduction := 100 * float64(offBytes-onBytes) / float64(offBytes)
+			if reduction < 20 {
+				t.Fatalf("expected at least 20%% payload reduction, got %.1f%%", reduction)
+			}
+
+			t.Logf("RTK A/B %-11s disabled=%dB enabled=%dB reduction=%.1f%%", tc.name, offBytes, onBytes, reduction)
+			totalOff += offBytes
+			totalOn += onBytes
+		})
+	}
+
+	totalReduction := 100 * float64(totalOff-totalOn) / float64(totalOff)
+	t.Logf("RTK A/B TOTAL disabled=%dB enabled=%dB reduction=%.1f%%", totalOff, totalOn, totalReduction)
+	if totalReduction < 20 {
+		t.Fatalf("expected aggregate RTK reduction >=20%%, got %.1f%%", totalReduction)
+	}
+}
+
+
 // ============================================================
 // CompressText
 // ============================================================
