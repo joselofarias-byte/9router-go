@@ -1,0 +1,24 @@
+name: Temporary Antigravity expiry runtime tests
+
+on:
+  push:
+    branches:
+      - feat/expiry-pressure-20261005
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      - name: Vet chat package
+        run: go vet ./internal/handlers/chat
+      - name: Test Antigravity and connection selection
+        run: go test -count=1 -timeout 10m -run 'Test(Antigravity|GetBestConnection)' ./internal/handlers/chat -v
