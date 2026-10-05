@@ -1,0 +1,24 @@
+name: Temporary expiry-pressure selector tests
+
+on:
+  push:
+    branches:
+      - feat/expiry-pressure-strategy-20261005
+
+permissions:
+  contents: read
+
+jobs:
+  selector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      - name: Vet selector
+        run: go vet ./internal/controlplane/accountstrategy
+      - name: Test selector
+        run: go test -count=1 -v ./internal/controlplane/accountstrategy

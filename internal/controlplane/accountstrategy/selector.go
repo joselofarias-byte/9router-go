@@ -21,6 +21,7 @@ const (
 	StrategyRelativeAvailability Strategy = "relative_availability"
 	StrategySequentialDrain      Strategy = "sequential_drain"
 	StrategyResetDrain           Strategy = "reset_drain"
+	StrategyExpiryPressure       Strategy = "expiry_pressure"
 	StrategyFillFirst            Strategy = "fill_first"
 	StrategySingleAccount        Strategy = "single_account"
 )
@@ -170,6 +171,8 @@ func Select(candidates []Candidate, strategy Strategy, opts Options) (Decision, 
 		selected = selectSequentialDrain(eligible)
 	case StrategyResetDrain:
 		selected = selectResetDrain(eligible, opts.Now)
+	case StrategyExpiryPressure:
+		selected, weights = selectExpiryPressure(eligible, opts.Now)
 	case StrategyFillFirst:
 		selected = selectFillFirst(eligible)
 	default:
@@ -385,6 +388,51 @@ func resetRank(c Candidate, now time.Time) int {
 		return 2
 	}
 	return 0
+}
+
+func selectExpiryPressure(cs []Candidate, now time.Time) (string, map[string]float64) {
+	known := knownAvailable(cs)
+	if len(known) == 0 {
+		return stableFallback(cs), nil
+	}
+
+	urgent := make([]Candidate, 0, len(known))
+	weights := make(map[string]float64, len(known))
+	const minHours = 1.0 / 60.0
+
+	for _, c := range known {
+		if c.ResetAt.IsZero() || !c.ResetAt.After(now) {
+			continue
+		}
+		hours := c.ResetAt.Sub(now).Hours()
+		if hours < minHours {
+			hours = minHours
+		}
+		pressure := c.Remaining / hours
+		weights[c.ID] = pressure
+		urgent = append(urgent, c)
+	}
+	if len(urgent) == 0 {
+		return stableFallback(cs), nil
+	}
+
+	sort.SliceStable(urgent, func(i, j int) bool {
+		wi, wj := weights[urgent[i].ID], weights[urgent[j].ID]
+		if wi != wj {
+			return wi > wj
+		}
+		if !urgent[i].ResetAt.Equal(urgent[j].ResetAt) {
+			return urgent[i].ResetAt.Before(urgent[j].ResetAt)
+		}
+		if urgent[i].Remaining != urgent[j].Remaining {
+			return urgent[i].Remaining > urgent[j].Remaining
+		}
+		if urgent[i].Priority != urgent[j].Priority {
+			return urgent[i].Priority > urgent[j].Priority
+		}
+		return urgent[i].ID < urgent[j].ID
+	})
+	return urgent[0].ID, weights
 }
 
 func selectFillFirst(cs []Candidate) string {

@@ -309,3 +309,58 @@ func TestUnknownStrategyReturnsError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+
+func TestExpiryPressurePrefersLargestQuotaAtRiskOfExpiring(t *testing.T) {
+	now := time.Date(2026, 10, 5, 3, 43, 0, 0, time.UTC)
+	d, err := Select([]Candidate{
+		{ID: "colacola", Status: StatusAvailable, Remaining: 42.48672, HasRemaining: true, ResetAt: now.Add(4*time.Hour + 7*time.Minute)},
+		{ID: "jolufa", Status: StatusAvailable, Remaining: 96.53816, HasRemaining: true, ResetAt: now.Add(4*time.Hour + 12*time.Minute)},
+		{ID: "ci", Status: StatusAvailable, Remaining: 84.96752, HasRemaining: true, ResetAt: now.Add(5 * time.Hour)},
+		{ID: "joselo", Status: StatusAvailable, Remaining: 100, HasRemaining: true, ResetAt: now.Add(5*time.Hour + time.Minute)},
+	}, StrategyExpiryPressure, Options{Now: now, AutoSwitch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SelectedID != "jolufa" {
+		t.Fatalf("selected %q, want jolufa: %+v", d.SelectedID, d)
+	}
+
+	weights := map[string]float64{}
+	for _, c := range d.Candidates {
+		weights[c.ID] = c.Weight
+	}
+	if !(weights["jolufa"] > weights["joselo"] &&
+		weights["joselo"] > weights["ci"] &&
+		weights["ci"] > weights["colacola"]) {
+		t.Fatalf("unexpected pressure ordering: %+v", weights)
+	}
+}
+
+func TestExpiryPressureIgnoresElapsedResetEvidence(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	d, err := Select([]Candidate{
+		{ID: "elapsed", Status: StatusAvailable, Remaining: 100, HasRemaining: true, ResetAt: now.Add(-time.Minute)},
+		{ID: "future", Status: StatusAvailable, Remaining: 20, HasRemaining: true, ResetAt: now.Add(time.Hour)},
+	}, StrategyExpiryPressure, Options{Now: now, AutoSwitch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SelectedID != "future" {
+		t.Fatalf("selected %q, want future; elapsed reset must not imply fresh quota: %+v", d.SelectedID, d)
+	}
+}
+
+func TestExpiryPressureFallsBackWhenNoFutureResetKnown(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	d, err := Select([]Candidate{
+		{ID: "unknown-reset-b", Status: StatusAvailable, Remaining: 80, HasRemaining: true, Priority: 1},
+		{ID: "unknown-reset-a", Status: StatusAvailable, Remaining: 90, HasRemaining: true, Priority: 2},
+	}, StrategyExpiryPressure, Options{Now: now, AutoSwitch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SelectedID != "unknown-reset-a" {
+		t.Fatalf("selected %q, want stable priority fallback: %+v", d.SelectedID, d)
+	}
+}
