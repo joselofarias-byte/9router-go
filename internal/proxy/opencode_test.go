@@ -8,6 +8,9 @@ import (
 
 func TestBuildOpenCodeHeaders(t *testing.T) {
 	headers := proxy.BuildOpenCodeHeaders(nil, "my-session-123", true)
+	if headers["Authorization"] != "" || headers["x-api-key"] != "" {
+		t.Fatal("OpenCode fingerprint headers must not supply synthetic credentials")
+	}
 	if headers["User-Agent"] != proxy.DefaultOpenCodeUA {
 		t.Errorf("expected User-Agent %s, got %s", proxy.DefaultOpenCodeUA, headers["User-Agent"])
 	}
