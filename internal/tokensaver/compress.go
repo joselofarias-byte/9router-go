@@ -168,9 +168,10 @@ func isGrepOutput(s string) bool {
 	}
 	count := 0
 	for _, l := range lines[:3] {
-		// Be conservative: ordinary build/log lines often contain a colon.
-		// Treat output as grep only when it looks like path:line:content.
-		matched, _ := regexp.MatchString(`^.+:\\d+:`, l)
+		// Be conservative: ordinary build/log lines often contain colons and
+		// timestamps. Treat output as grep only when it looks like a path
+		// (slash, backslash or dot) followed by :line:content.
+		matched, _ := regexp.MatchString(`^[^:]*[./\\][^:]*:\d+:`, l)
 		if matched {
 			count++
 		}
