@@ -1311,60 +1311,39 @@
     openAntigravityOAuth()
   }
 
-  function openOAuthPlaceholder(): Window | null {
-    if (typeof window === 'undefined') return null
-    try {
-      const popup = window.open('', '_blank')
-      if (popup) {
-        try {
-          popup.document.title = '9router-go login'
-          popup.document.body.innerHTML =
-            '<div style="font-family:system-ui;padding:24px">Preparing secure login…</div>'
-        } catch {
-          // Cross-origin or browser restrictions: the handle is still useful.
-        }
-      }
-      return popup
-    } catch {
-      return null
-    }
-  }
-
-  function sendPopupTo(popup: Window | null, url: string): boolean {
-    if (!url) return false
-    try {
-      if (popup && !popup.closed) {
-        popup.location.href = url
-        return true
-      }
-    } catch {
-      // The dashboard modal still exposes an explicit Open button as fallback.
-    }
-    return false
-  }
-
   async function openAntigravityOAuth() {
     oauthError = null
     callbackInput = ''
     copiedAuthUrl = false
     showOAuthModal = true
     isLaunchingOAuth = true
-    // Open synchronously while the tap is still a trusted user gesture.
-    // Mobile Chrome blocks window.open() after an await/fetch.
-    const popup = openOAuthPlaceholder()
+
     try {
       const redirectUri = antigravityCallback()
-      const res = await api.getAntigravityAuthorizeUrl(redirectUri)
-      oauthAuthUrl = res.authUrl || res.url || res.redirectUrl
-      if (res.state) {
-        rememberPending({
-          state: res.state,
-          redirectUri: res.redirectUri || redirectUri,
-        })
+      const state =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID().replaceAll('-', '')
+          : Math.random().toString(36).slice(2) + Date.now().toString(36)
+
+      // This local endpoint responds with a server-side 302 to Google, so the
+      // browser navigation starts synchronously inside the original tap. No
+      // async fetch is needed before window.open(), which keeps Android Chrome
+      // from blocking or suspending the flow.
+      const q = new URLSearchParams({
+        redirect_uri: redirectUri,
+        state,
+        redirect: 'true',
+      })
+      oauthAuthUrl = `/api/oauth/antigravity/authorize?${q.toString()}`
+      pkceState = state
+      pkceRedirectUri = redirectUri
+      rememberPending({ state, redirectUri })
+
+      const popup = typeof window !== 'undefined' ? window.open(oauthAuthUrl, '_blank') : null
+      if (!popup) {
+        oauthError = 'The browser blocked the login tab. Tap Open below to continue.'
       }
-      sendPopupTo(popup, oauthAuthUrl)
     } catch (err) {
-      try { popup?.close() } catch {}
       oauthError = `Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`
     } finally {
       isLaunchingOAuth = false
@@ -1377,15 +1356,48 @@
     copiedAuthUrl = false
     showOAuthModal = true
     isLaunchingOAuth = true
-    // The popup must be created before the first await. On Android Chrome,
-    // opening it after fetch()/startCodexLoopback() loses the user gesture and
-    // the browser silently blocks the tab — exactly the "button does nothing"
-    // symptom seen on the HONOR 200.
-    const popup = openOAuthPlaceholder()
+
+    // Codex gets a server-side begin endpoint. The browser opens this local
+    // URL directly from the tap; the Go server creates PKCE, starts the fixed
+    // 1455 callback listener, registers the session and 302-redirects to
+    // OpenAI. This avoids the Android about:blank dead-end entirely.
+    if (providerId === 'codex') {
+      try {
+        const state =
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID().replaceAll('-', '')
+            : Math.random().toString(36).slice(2) + Date.now().toString(36)
+        const appPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+
+        pkceState = state
+        pkceRedirectUri = CODEX_REDIRECT_URI
+        pkceCodeVerifier = ''
+        rememberPending({ state, redirectUri: CODEX_REDIRECT_URI })
+
+        const q = new URLSearchParams({ app_port: appPort, state })
+        oauthAuthUrl = `/api/oauth/codex/begin?${q.toString()}`
+
+        stopCodexPoll()
+        codexPollTimer = setInterval(pollCodexStatus, 1500)
+
+        const popup = window.open(oauthAuthUrl, '_blank')
+        if (!popup) {
+          oauthError = 'The browser blocked the login tab. Tap Open below to continue.'
+        }
+      } catch (err) {
+        stopCodexPoll()
+        oauthError = `Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`
+      } finally {
+        isLaunchingOAuth = false
+      }
+      return
+    }
+
+    // Other PKCE providers keep the modal visible while the URL is prepared.
+    // If a late popup is blocked, the explicit Open button remains available
+    // instead of stranding the user on a blank tab.
     try {
-      // Codex cannot use the dashboard callback: OpenAI only accepts the
-      // redirect URI registered for the Codex CLI client.
-      const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
+      const cb = dashboardCallback()
       const res = await api.pkceAuthorize(
         providerId,
         providerId === 'gitlab'
@@ -1400,9 +1412,6 @@
       pkceCodeVerifier = res.codeVerifier || ''
       pkceState = res.state || ''
       pkceRedirectUri = res.redirectUri || cb
-      if (providerId === 'codex') {
-        await startCodexLoopback()
-      }
       rememberPending({
         state: pkceState,
         verifier: pkceCodeVerifier,
@@ -1414,18 +1423,19 @@
           clientSecret: gitlabClientSecret.trim(),
         },
       })
-      sendPopupTo(popup, oauthAuthUrl)
+      if (typeof window !== 'undefined' && oauthAuthUrl) {
+        const popup = window.open(oauthAuthUrl, '_blank')
+        if (!popup) {
+          oauthError = 'The browser blocked the login tab. Tap Open below to continue.'
+        }
+      }
     } catch (err) {
-      try { popup?.close() } catch {}
       oauthError = `Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`
     } finally {
       isLaunchingOAuth = false
     }
   }
 
-  // Codex redirects the browser to a fixed loopback port, so the server needs
-  // that listener running before the popup opens — otherwise the callback dies
-  // on a closed port and the login can never complete.
   async function startCodexLoopback() {
     stopCodexPoll()
     const proxy = await api.codexStartProxy({
