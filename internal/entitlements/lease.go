@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -152,9 +153,10 @@ type VerificationContext struct {
 }
 
 type LeaseEvaluation struct {
-	Lease            *Lease
-	State            LeaseState
-	ProCapableUntil  *time.Time
+	Lease           *Lease
+	State           LeaseState
+	ProCapableUntil *time.Time
+	VerifiedAt      time.Time
 }
 
 // VerifySignedLease validates signature, key rotation, installation binding,
@@ -235,6 +237,7 @@ func VerifySignedLease(raw []byte, keys KeyRing, ctx VerificationContext) (*Leas
 		Lease:           &lease,
 		State:           state,
 		ProCapableUntil: proCapableUntil,
+		VerifiedAt:      now,
 	}, nil
 }
 
@@ -267,6 +270,10 @@ type LeaseProvider struct {
 	enabled         map[Capability]struct{}
 	now             func() time.Time
 	proCapableUntil *time.Time
+
+	mu           sync.Mutex
+	lastObserved time.Time
+	terminal     bool
 }
 
 func NewLeaseProvider(evaluation *LeaseEvaluation) *LeaseProvider {
@@ -281,6 +288,10 @@ func NewLeaseProvider(evaluation *LeaseEvaluation) *LeaseProvider {
 	snapshot := *evaluation.Lease
 	snapshot.Entitlements = append([]Capability(nil), evaluation.Lease.Entitlements...)
 	p.lease = &snapshot
+	p.lastObserved = evaluation.VerifiedAt.UTC()
+	if p.lastObserved.IsZero() {
+		p.lastObserved = p.now().UTC()
+	}
 	for _, capability := range snapshot.Entitlements {
 		p.enabled[capability] = struct{}{}
 	}
@@ -324,11 +335,33 @@ func (p *LeaseProvider) currentState() (LeaseState, bool) {
 	if p == nil || p.lease == nil || p.now == nil {
 		return "", false
 	}
+
 	now := p.now().UTC()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.terminal {
+		return "", false
+	}
+
+	// A running provider must never move entitlement time backwards. Startup
+	// verification already compares the wall clock with persisted trusted time;
+	// this guard closes the in-process gap. Once rollback or a terminal boundary
+	// is observed, this provider instance stays Community-only.
+	if !p.lastObserved.IsZero() && now.Before(p.lastObserved) {
+		p.terminal = true
+		return "", false
+	}
+	if p.lastObserved.IsZero() || now.After(p.lastObserved) {
+		p.lastObserved = now
+	}
+
 	if p.proCapableUntil != nil && !now.Before(*p.proCapableUntil) {
+		p.terminal = true
 		return "", false
 	}
 	if !now.Before(p.lease.GraceUntil) {
+		p.terminal = true
 		return "", false
 	}
 	if now.Before(p.lease.ExpiresAt) {
