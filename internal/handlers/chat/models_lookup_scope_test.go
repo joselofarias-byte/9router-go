@@ -42,6 +42,10 @@ func TestModelLookup_AgreesWithConnectedListing(t *testing.T) {
 	defer cleanup()
 	resetModelScopeDB(t, database)
 	seedActiveKiro(t, database)
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-oc-lookup', 'opencode', 'api_key', 'Zen', 1, 1, '{"apiKey":"test-key"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed Zen connection: %v", err)
+	}
 
 	h := NewChatHandler(db.NewRepo(database))
 	// The model has to be advertised before the lookup can be said to agree
