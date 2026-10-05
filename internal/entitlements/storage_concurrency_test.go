@@ -1,6 +1,7 @@
 package entitlements
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -170,5 +171,25 @@ func TestRuntimeStoreRecoversAbandonedLock(t *testing.T) {
 	}
 	if id == "" {
 		t.Fatal("empty installation id after stale lock recovery")
+	}
+}
+
+
+func TestRuntimeStoreDoesNotAbandonLiveOwnerAfterClockJump(t *testing.T) {
+	store := NewRuntimeStore(t.TempDir())
+	path := store.installationIDPath()
+	if err := os.MkdirAll(store.Dir(), privateDirPerm); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), privateFilePerm); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-10 * runtimeLockStale)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if abandonedRuntimeLock(lockPath) {
+		t.Fatal("live lock owner was considered abandoned solely because of wall-clock age")
 	}
 }
