@@ -19,7 +19,12 @@ const (
 	lastTrustedTimeName  = "last-trusted-time"
 	privateDirPerm       = 0700
 	privateFilePerm      = 0600
+	runtimeLockRetry     = 10 * time.Millisecond
+	runtimeLockTimeout   = 5 * time.Second
+	runtimeLockStale     = 30 * time.Second
 )
+
+var ErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")
 
 // RuntimeStore keeps only public/signed entitlement runtime state below the
 // configured 9router DATA_DIR. It never stores provider credentials, payment
@@ -60,30 +65,39 @@ func (s *RuntimeStore) InstallationID() (string, error) {
 		return "", errors.New("entitlements.RuntimeStore: empty data directory")
 	}
 
-	raw, err := readRecoverable(s.installationIDPath())
-	if err == nil {
-		return parseInstallationID(raw)
-	}
-	if !errors.Is(err, os.ErrNotExist) {
+	path := s.installationIDPath()
+	var value string
+	err := withPathLock(path, func() error {
+		raw, err := readRecoverable(path)
+		if err == nil {
+			value, err = parseInstallationID(raw)
+			return err
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		id, err := uuid.NewRandom()
+		if err != nil {
+			return fmt.Errorf("generate uuid: %w", err)
+		}
+		if err := atomicWriteFile(path, []byte(id.String()+"\n")); err != nil {
+			return fmt.Errorf("persist uuid: %w", err)
+		}
+
+		// Read the canonical file while still holding the cross-process lock so
+		// every concurrent first-run caller returns the same published UUID.
+		raw, err = readRecoverable(path)
+		if err != nil {
+			return fmt.Errorf("reload uuid: %w", err)
+		}
+		value, err = parseInstallationID(raw)
+		return err
+	})
+	if err != nil {
 		return "", fmt.Errorf("entitlements.RuntimeStore.InstallationID: %w", err)
 	}
-
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return "", fmt.Errorf("entitlements.RuntimeStore.InstallationID: generate uuid: %w", err)
-	}
-	value := id.String()
-	if err := atomicWriteFile(s.installationIDPath(), []byte(value+"\n")); err != nil {
-		return "", fmt.Errorf("entitlements.RuntimeStore.InstallationID: persist uuid: %w", err)
-	}
-
-	// Re-read the canonical file so a concurrent first-run writer cannot leave
-	// this caller holding an identity different from the one persisted.
-	raw, err = readRecoverable(s.installationIDPath())
-	if err != nil {
-		return "", fmt.Errorf("entitlements.RuntimeStore.InstallationID: reload uuid: %w", err)
-	}
-	return parseInstallationID(raw)
+	return value, nil
 }
 
 func parseInstallationID(raw []byte) (string, error) {
@@ -105,7 +119,10 @@ func (s *RuntimeStore) SaveLease(raw []byte) error {
 	if len(raw) == 0 {
 		return errors.New("entitlements.RuntimeStore.SaveLease: empty lease")
 	}
-	if err := atomicWriteFile(s.leaseCachePath(), append(raw, '\n')); err != nil {
+	path := s.leaseCachePath()
+	if err := withPathLock(path, func() error {
+		return atomicWriteFile(path, append(raw, '\n'))
+	}); err != nil {
 		return fmt.Errorf("entitlements.RuntimeStore.SaveLease: %w", err)
 	}
 	return nil
@@ -117,15 +134,21 @@ func (s *RuntimeStore) LoadLease() ([]byte, error) {
 	if s == nil || strings.TrimSpace(s.dir) == "" {
 		return nil, errors.New("entitlements.RuntimeStore: empty data directory")
 	}
-	raw, err := readRecoverable(s.leaseCachePath())
-	if err != nil {
-		return nil, err
-	}
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 {
-		return nil, errors.New("entitlements.RuntimeStore.LoadLease: empty lease cache")
-	}
-	return append([]byte(nil), raw...), nil
+	path := s.leaseCachePath()
+	var out []byte
+	err := withPathLock(path, func() error {
+		raw, err := readRecoverable(path)
+		if err != nil {
+			return err
+		}
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 {
+			return errors.New("entitlements.RuntimeStore.LoadLease: empty lease cache")
+		}
+		out = append([]byte(nil), raw...)
+		return nil
+	})
+	return out, err
 }
 
 // LastTrustedTime returns zero time when no trusted clock has been persisted.
@@ -133,7 +156,18 @@ func (s *RuntimeStore) LastTrustedTime() (time.Time, error) {
 	if s == nil || strings.TrimSpace(s.dir) == "" {
 		return time.Time{}, errors.New("entitlements.RuntimeStore: empty data directory")
 	}
-	raw, err := readRecoverable(s.lastTrustedTimePath())
+	path := s.lastTrustedTimePath()
+	var out time.Time
+	err := withPathLock(path, func() error {
+		var err error
+		out, err = readTrustedTimeUnlocked(path)
+		return err
+	})
+	return out, err
+}
+
+func readTrustedTimeUnlocked(path string) (time.Time, error) {
+	raw, err := readRecoverable(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return time.Time{}, nil
 	}
@@ -148,24 +182,39 @@ func (s *RuntimeStore) LastTrustedTime() (time.Time, error) {
 	return t.UTC(), nil
 }
 
-// AdvanceTrustedTime only moves the persisted clock forward.
+// AdvanceTrustedTime serializes the read/check/write transaction across
+// goroutines and processes sharing the same DATA_DIR, so the persisted maximum
+// can never be overwritten by an older candidate.
 func (s *RuntimeStore) AdvanceTrustedTime(candidate time.Time) (time.Time, error) {
 	if candidate.IsZero() {
 		return s.LastTrustedTime()
 	}
+	if s == nil || strings.TrimSpace(s.dir) == "" {
+		return time.Time{}, errors.New("entitlements.RuntimeStore: empty data directory")
+	}
 	candidate = candidate.UTC()
+	path := s.lastTrustedTimePath()
 
-	current, err := s.LastTrustedTime()
+	var out time.Time
+	err := withPathLock(path, func() error {
+		current, err := readTrustedTimeUnlocked(path)
+		if err != nil {
+			return err
+		}
+		if !current.IsZero() && !candidate.After(current) {
+			out = current
+			return nil
+		}
+		if err := atomicWriteFile(path, []byte(candidate.Format(time.RFC3339Nano)+"\n")); err != nil {
+			return err
+		}
+		out = candidate
+		return nil
+	})
 	if err != nil {
-		return time.Time{}, err
-	}
-	if !current.IsZero() && !candidate.After(current) {
-		return current, nil
-	}
-	if err := atomicWriteFile(s.lastTrustedTimePath(), []byte(candidate.Format(time.RFC3339Nano)+"\n")); err != nil {
 		return time.Time{}, fmt.Errorf("entitlements.RuntimeStore.AdvanceTrustedTime: %w", err)
 	}
-	return candidate, nil
+	return out, nil
 }
 
 // RuntimeOptions supplies public verification state. Now is injectable only for
@@ -317,4 +366,42 @@ func readRecoverable(path string) ([]byte, error) {
 		return nil, renameErr
 	}
 	return os.ReadFile(path)
+}
+
+
+// withPathLock serializes one runtime-state file across goroutines and
+// processes using an atomic O_EXCL lock file. Operations are deliberately
+// short; an old lock is considered abandoned after runtimeLockStale so a
+// crashed process cannot permanently brick Community startup.
+func withPathLock(path string, fn func() error) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, privateDirPerm); err != nil {
+		return err
+	}
+
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(runtimeLockTimeout)
+
+	for {
+		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, privateFilePerm)
+		if err == nil {
+			_, _ = fmt.Fprintf(lock, "%d\n", os.Getpid())
+			_ = lock.Sync()
+			_ = lock.Close()
+			defer func() { _ = os.Remove(lockPath) }()
+			return fn()
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > runtimeLockStale {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return ErrRuntimeStoreLockTimeout
+		}
+		time.Sleep(runtimeLockRetry)
+	}
 }
