@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"9router/proxy/internal/proc"
 )
 
 const (
@@ -395,7 +398,7 @@ func withPathLock(path string, fn func() error) error {
 			return err
 		}
 
-		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > runtimeLockStale {
+		if abandonedRuntimeLock(lockPath) {
 			_ = os.Remove(lockPath)
 			continue
 		}
@@ -404,4 +407,22 @@ func withPathLock(path string, fn func() error) error {
 		}
 		time.Sleep(runtimeLockRetry)
 	}
+}
+
+
+func abandonedRuntimeLock(lockPath string) bool {
+	raw, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if parseErr == nil && pid > 0 {
+		// A live owner wins over wall-clock age. This avoids breaking mutual
+		// exclusion when the system clock jumps forward while a process holds
+		// a very short runtime-state lock.
+		return !proc.Alive(pid)
+	}
+
+	info, statErr := os.Stat(lockPath)
+	return statErr == nil && time.Since(info.ModTime()) > runtimeLockStale
 }
