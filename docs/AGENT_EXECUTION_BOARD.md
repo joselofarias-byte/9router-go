@@ -1,6 +1,6 @@
 # Agent Execution Board
 
-Updated: 2026-10-04
+Updated: 2026-10-05
 
 This file is the coordination source of truth for the active 9router-go fork work. Human intervention is reserved for physical device/credential tests or real blockers.
 
@@ -56,7 +56,7 @@ Exact-head gate before merge:
 **Reference PR:** #50 (draft/HOLD)  
 **Role:** Cursor capacity lane
 
-#50 is the validated reference implementation on its older base. Do not expand it and do not cherry-pick it wholesale into #54.
+#50 is the validated reference implementation on its older base. Do not expand it and do not cherry-pick it wholesale into #54. Its health-check path has one known reference defect: the probe can double-record outcomes through inner forwarding plus outer validation; when porting after #54, emit exactly one final observation and add healthy/invalid-200 regressions.
 
 After Lane A is green, port/reimplement its semantics onto the completed integration head.
 
@@ -139,9 +139,19 @@ Prompt rewriting is not core differentiation. Keep #51 draft/stacked until Lane 
 - #59 beta/product strategy documentation
 - #60 isolated entitlement/license foundation (no runtime wiring)
 - #61 entitlement expiry enforcement + immutable verified-license snapshot
+- #64 Claude/Antigravity deep audit workflow and expanded multi-model audit brief
 - Coordination cleanup (2026-10-04): superseded/reference-only PRs #12, #13, #14, #15, #16, #19, #21, #24, #28, #31, #32, #33 and #34 were closed; their branches/history remain available for selective reference.
 
-## Collision rule
+## Deferred / held side lanes
+
+These lanes may continue only as isolated design/test references. They must not become alternate integration paths before Lane A + Lane B complete.
+
+- **#57 / #62 / #68 — account strategies:** draft/HOLD. #62 fixes weighted hash mixing; #68 adds expiry-pressure strategy logic. No runtime wiring until #54 is complete and #50 semantics are ported/revalidated.
+- **#65 / #67 / #69 — Antigravity account behavior:** draft/HOLD behind #54 + #50. #65 currently mixes Antigravity auto-rotation with unrelated Gemini/tool-call-ID changes; split or independently justify that delta before future integration. #69 still needs direct deterministic tests for its new expiry-pressure helpers.
+- **#63 — OpenCode Zen auth hardening:** draft. Exact-head CI is green; merge remains gated on one authorized authenticated-provider end-to-end inference with sanitized evidence. A prior phone-side 502 is not a successful provider validation.
+- **#70 — entitlement lease v2:** draft/BLOCKED. CI is green, but LeaseProvider can reactivate after a clock rollback once a terminal grace/build boundary has been crossed. Require a same-provider rollback regression plus a monotonic/irreversible runtime policy before reconsideration.
+
+
 
 Before starting code, every agent must state:
 
