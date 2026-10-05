@@ -133,8 +133,6 @@ func BuildOpenCodeHeaders(rawHeaders map[string]string, sessionID string, isStre
 
 	res := map[string]string{
 		"Content-Type":       "application/json",
-		"Authorization":      "Bearer public",
-		"x-api-key":          "public",
 		"User-Agent":         DefaultOpenCodeUA,
 		"x-opencode-client":  "cli",
 		"x-opencode-session": session,
