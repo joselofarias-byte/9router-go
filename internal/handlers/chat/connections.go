@@ -1,11 +1,13 @@
 package chat
 
 import (
+	"9router/proxy/internal/controlplane/capacity"
 	json "encoding/json/v2"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +120,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		}
 		if len(connections) == 0 {
 			if cfg, ok := providers.KnownProviders[provider]; ok && cfg.NoAuth {
+				if model != "" && !accountCapacityAvailable(provider, model, capacityAccountID(provider, "noauth")) {
+					return nil, nil, fmt.Errorf("connection capacity unavailable")
+				}
 				// Inject virtual connection for no-auth provider with optional proxy pool strategy from settings
 				connData := &ConnectionData{
 					AccessToken: "public",
@@ -161,6 +166,7 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 				connections = h.applyConnectionStrategy(connections, strat)
 			}
 		}
+		sortConnectionsByCapacity(provider, model, connections)
 
 		excludeSet := make(map[string]bool, len(excludeIDs))
 		for _, id := range excludeIDs {
@@ -172,6 +178,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		now := time.Now()
 		for _, c := range connections {
 			if excludeSet[c.ID] {
+				continue
+			}
+			if model != "" && !accountCapacityAvailable(provider, model, capacityAccountID(provider, c.ID)) {
 				continue
 			}
 			// Account-scoped cooldown. An account whose quota is spent, or
@@ -268,6 +277,9 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 	if quotaCacheBlocked(conn.Provider, conn.ID, model) {
 		return true, "quota cache"
 	}
+	if !accountCapacityAvailable(conn.Provider, model, capacityAccountID(conn.Provider, conn.ID)) {
+		return true, "reported capacity"
+	}
 
 	settings, err := h.Repo.GetSettings()
 	if err != nil || settings == nil {
@@ -278,6 +290,25 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 		return true, "strict model assignment"
 	}
 	return false, ""
+}
+
+// sortConnectionsByCapacity prefers a fresh positive balance and leaves
+// exhausted or cooling accounts last. Unknown accounts keep their relative order.
+func sortConnectionsByCapacity(provider, model string, connections []*models.ProviderConnection) {
+	if model == "" || len(connections) < 2 {
+		return
+	}
+	ids := make([]string, len(connections))
+	for i, c := range connections {
+		ids[i] = c.ID
+	}
+	rank := make(map[string]int, len(ids))
+	for i, id := range capacity.OrderAccounts(provider, model, ids) {
+		rank[id] = i
+	}
+	sort.SliceStable(connections, func(i, j int) bool {
+		return rank[connections[i].ID] < rank[connections[j].ID]
+	})
 }
 
 // quotaCacheBlocked reports whether a provider's in-memory quota cache says

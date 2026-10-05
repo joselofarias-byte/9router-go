@@ -79,6 +79,7 @@ func ProvideServer(p ServerParams) *http.Server {
 
 			adapters := []discovery.Adapter{
 				discovery.NewModelsDevAdapter(nil),
+				discovery.NewOpenRouterAdapter(nil),
 				discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
 				discovery.NewClineFreeAdapter(nil),
 			}

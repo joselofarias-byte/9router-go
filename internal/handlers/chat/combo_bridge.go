@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"9router/proxy/internal/controlplane/availability"
 	"9router/proxy/internal/controlplane/routing"
 	cpsync "9router/proxy/internal/controlplane/sync"
 	"9router/proxy/internal/controlplane/trust"
@@ -13,7 +14,8 @@ import (
 // Legacy compatibility for Data Plane -> Control Plane transition
 // In production, TrustManager should be global and stateful.
 var globalTrustManager = trust.NewManager()
-var globalRoutingEngine = &routing.Engine{TrustManager: globalTrustManager}
+var globalAvailability = availability.NewStore()
+var globalRoutingEngine = &routing.Engine{TrustManager: globalTrustManager, Availability: globalAvailability}
 
 // getActiveCandidates resolves exact-model candidates using the default balanced policy.
 func getActiveCandidates(ctx context.Context, db *sql.DB, model string) []routing.RouteNode {
