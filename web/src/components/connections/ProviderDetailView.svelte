@@ -2967,10 +2967,11 @@
           <button
             type="button"
             onclick={handleAddConnectionClick}
-            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px]"
+            disabled={isLaunchingOAuth}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px]"
           >
-            <span class="material-symbols-outlined text-[18px]">login</span>
-            Connect Google Account
+            <span class="material-symbols-outlined text-[18px]">{isLaunchingOAuth ? 'progress_activity' : 'login'}</span>
+            {isLaunchingOAuth ? 'Opening…' : 'Connect Google Account'}
           </button>
         {:else if providerId === 'kiro'}
           <button
@@ -2985,10 +2986,11 @@
           <button
             type="button"
             onclick={handleAddConnectionClick}
-            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-8 px-4 text-xs rounded-[8px]"
+            disabled={isLaunchingOAuth}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-8 px-4 text-xs rounded-[8px]"
           >
-            <span class="material-symbols-outlined text-[18px]">lock</span>
-            {oauthButtonLabel}
+            <span class="material-symbols-outlined text-[18px]">{isLaunchingOAuth ? 'progress_activity' : 'lock'}</span>
+            {isLaunchingOAuth ? 'Opening…' : oauthButtonLabel}
           </button>
           <button
             type="button"
