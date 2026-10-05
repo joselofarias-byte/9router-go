@@ -151,10 +151,21 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 					hasStrat = true
 				}
 			}
+
+			// Antigravity is deliberately multi-account by default: a user can
+			// add every Google AI Pro account once and 9router-go will consume
+			// them as one rotating pool without requiring dashboard setup.
+			//
+			// An explicit provider strategy still wins, including "none". If no
+			// provider strategy exists, an explicit global fallback strategy is
+			// honored; otherwise Antigravity defaults to one-request round-robin.
 			if !hasStrat || strat.RotateStrategy == "" {
 				if settings.FallbackStrategy != "" && settings.FallbackStrategy != "fill-first" {
 					strat.RotateStrategy = settings.FallbackStrategy
 					strat.StickyLimit = settings.StickyRoundRobinLimit
+				} else if provider == "antigravity" && !hasStrat {
+					strat.RotateStrategy = "round-robin"
+					strat.StickyLimit = 1
 				}
 			}
 			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
