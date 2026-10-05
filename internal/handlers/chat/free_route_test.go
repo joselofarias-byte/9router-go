@@ -216,7 +216,7 @@ func TestResolveModel_CodingBestFreePrefersCodingModel(t *testing.T) {
 	}
 
 	h := NewChatHandler(db.NewRepo(database))
-	for _, name := range []string{"coding-best-free", "CODING-BEST-FREE"} {
+	for _, name := range []string{"coding-best-free", "CODING-BEST-FREE", "coding-auto", "CODING-AUTO"} {
 		info, err := h.resolveModel(name)
 		if err != nil {
 			t.Fatalf("resolve %s: %v", name, err)
@@ -352,7 +352,7 @@ func TestHandleModels_ListsVirtualFreeRoutes(t *testing.T) {
 	for _, m := range resp.Data {
 		found[m.ID] = m.OwnedBy
 	}
-	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free"} {
+	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "coding-auto", "long-context-free"} {
 		if found[id] != "fabric" {
 			t.Errorf("model %s owned_by=%q, want fabric", id, found[id])
 		}
@@ -378,7 +378,7 @@ func TestResolveModel_PaidAndUnclassifiedPoolFailsClosed(t *testing.T) {
 	}
 
 	h := NewChatHandler(db.NewRepo(database))
-	for _, name := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free", "FREE", " Free-Best ", " FAST-FREE ", "REASONING-FREE", " CODING-BEST-FREE ", "LONG-CONTEXT-FREE"} {
+	for _, name := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "coding-auto", "long-context-free", "FREE", " Free-Best ", " FAST-FREE ", "REASONING-FREE", " CODING-BEST-FREE ", " CODING-AUTO ", "LONG-CONTEXT-FREE"} {
 		info, err := h.resolveModel(name)
 		if !errors.Is(err, ErrFreeRouteUnavailable) || info != nil {
 			t.Fatalf("%s resolved to %+v err=%v, want free_route_unavailable", name, info, err)
