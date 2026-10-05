@@ -220,7 +220,8 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			}
 		}
 
-		conn = eligibleConnections[0]	}
+		conn = eligibleConnections[0]
+	}
 
 	var connData ConnectionData
 	if conn.Data != "" {
