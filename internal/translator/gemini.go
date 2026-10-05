@@ -257,7 +257,18 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 					ts = DefaultThinkingSignature
 				}
 				firstFunctionCallSeen = true
-				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args}, ThoughtSignature: ts}
+				cleanID := tc.ID
+				if sigPos := strings.LastIndex(cleanID, "__ts__"); sigPos != -1 {
+					cleanID = cleanID[:sigPos]
+				}
+				gp := GeminiPart{
+					FunctionCall: &GeminiFunctionCall{
+						Name: tc.Function.Name,
+						Args: args,
+						ID:   cleanID,
+					},
+					ThoughtSignature: ts,
+				}
 				parts = append(parts, gp)
 			}
 
@@ -298,6 +309,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			parts := []GeminiPart{{
 				FunctionResponse: &GeminiFunctionResp{
 					Name:     name,
+					ID:       cleanID,
 					Response: &GeminiFuncResp{Result: resultValue},
 				},
 			}}
