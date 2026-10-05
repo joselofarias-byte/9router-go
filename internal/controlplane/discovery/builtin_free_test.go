@@ -34,12 +34,8 @@ func TestBuiltinFreeAdapterIncludesZeroCredentialRoutes(t *testing.T) {
 		found[c.ProviderID+"/"+c.UpstreamModel] = true
 	}
 
-	for _, want := range []string{
-		"opencode/muse-spark-1.3-contributor-free",
-	} {
-		if !found[want] {
-			t.Errorf("missing built-in free route %s", want)
-		}
+	if found["opencode/muse-spark-1.3-contributor-free"] {
+		t.Error("OpenCode Zen must not enter the no-credential free pool")
 	}
 	if found["opencode/jev-1.13-free"] {
 		t.Error("systemone model jev-1.13-free leaked into the chat free pool")
@@ -60,8 +56,8 @@ func TestIsChatProviderModelRejectsSystemOne(t *testing.T) {
 
 
 func TestNoAuthFreeProviderReady(t *testing.T) {
-	if !noAuthFreeProviderReady("opencode") {
-		t.Fatal("known ready free chat provider was rejected")
+	if noAuthFreeProviderReady("opencode") {
+		t.Fatal("Zen requires an account API key")
 	}
 	if noAuthFreeProviderReady("mimo-free") {
 		t.Fatal("retired mimo-auto free lane must not be seeded")
@@ -73,14 +69,13 @@ func TestNoAuthFreeProviderReady(t *testing.T) {
 
 
 func TestBuiltinFreeAdapterScopesRetiredMimoForCleanup(t *testing.T) {
-	found := false
+	found := map[string]bool{}
 	for _, providerID := range NewBuiltinFreeAdapter().ScopedProviderIDs() {
-		if providerID == "mimo-free" {
-			found = true
-			break
-		}
+		found[providerID] = true
 	}
-	if !found {
-		t.Fatal("mimo-free must remain scoped so stale builtin-free snapshots are deactivated")
+	for _, providerID := range []string{"mimo-free", "opencode"} {
+		if !found[providerID] {
+			t.Errorf("%s must remain scoped so stale builtin-free snapshots are deactivated", providerID)
+		}
 	}
 }
