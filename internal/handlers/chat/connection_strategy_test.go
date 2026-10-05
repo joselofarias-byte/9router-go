@@ -160,6 +160,77 @@ func TestGetBestConnection_AntigravityAutoRotatesWithoutConfiguration(t *testing
 	}
 }
 
+func TestGetBestConnection_AntigravityAutoRotationWithGlobalFillFirst(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	seedConnDB(t, database, "antigravity", "conn-fill-1", "tok-1", "https://mock.example.com/1")
+	seedConnDB(t, database, "antigravity", "conn-fill-2", "tok-2", "https://mock.example.com/2")
+
+	// The dashboard/global baseline may be fill-first. Antigravity is the
+	// exception: without an explicit provider rotation override it must still
+	// behave as one automatic multi-account pool.
+	settingsJSON := `{
+		"fallbackStrategy": "fill-first"
+	}`
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("insert settings: %v", err)
+	}
+
+	want := []string{"conn-fill-1", "conn-fill-2", "conn-fill-1"}
+	for step, wantID := range want {
+		conn, _, err := h.GetBestConnection("antigravity", "", nil, "")
+		if err != nil {
+			t.Fatalf("step %d: GetBestConnection: %v", step+1, err)
+		}
+		if conn == nil || conn.ID != wantID {
+			got := "<nil>"
+			if conn != nil {
+				got = conn.ID
+			}
+			t.Fatalf("step %d: expected %s, got %s", step+1, wantID, got)
+		}
+	}
+}
+
+func TestGetBestConnection_AntigravityProxyOnlyStrategyDoesNotDisableAutoRotation(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	seedConnDB(t, database, "antigravity", "conn-proxy-1", "tok-1", "https://mock.example.com/1")
+	seedConnDB(t, database, "antigravity", "conn-proxy-2", "tok-2", "https://mock.example.com/2")
+
+	// A providerStrategies entry can exist only to carry proxy-pool or strict
+	// assignment settings. Its mere presence is not an explicit request to
+	// disable account rotation.
+	if err := repo.SetProviderStrategy("antigravity", db.ProviderStrategy{
+		ProxyPoolID: "pool-only",
+	}); err != nil {
+		t.Fatalf("SetProviderStrategy: %v", err)
+	}
+
+	want := []string{"conn-proxy-1", "conn-proxy-2", "conn-proxy-1"}
+	for step, wantID := range want {
+		conn, _, err := h.GetBestConnection("antigravity", "", nil, "")
+		if err != nil {
+			t.Fatalf("step %d: GetBestConnection: %v", step+1, err)
+		}
+		if conn == nil || conn.ID != wantID {
+			got := "<nil>"
+			if conn != nil {
+				got = conn.ID
+			}
+			t.Fatalf("step %d: expected %s, got %s", step+1, wantID, got)
+		}
+	}
+}
+
 func TestGetBestConnection_AntigravityAutoRotationSkipsQuotaBlockedAccount(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
