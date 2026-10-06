@@ -303,16 +303,15 @@ func currentLicenseBuildIdentity() (entitlements.BuildIdentity, error) {
 		Channel: strings.TrimSpace(licenseBuildChannel),
 		ID:      strings.TrimSpace(licenseBuildID),
 	}
-	if build.Channel == "" {
-		return entitlements.BuildIdentity{}, fmt.Errorf("license build channel is empty")
-	}
-
 	if raw := strings.TrimSpace(licenseProCapableUntil); raw != "" {
 		deadline, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
 			return entitlements.BuildIdentity{}, fmt.Errorf("invalid Pro-capable build deadline: %w", err)
 		}
 		build.ProCapableUntil = deadline.UTC()
+	}
+	if err := entitlements.ValidateLicensedBuildIdentity(build); err != nil {
+		return entitlements.BuildIdentity{}, fmt.Errorf("invalid license build identity: %w", err)
 	}
 	return build, nil
 }
