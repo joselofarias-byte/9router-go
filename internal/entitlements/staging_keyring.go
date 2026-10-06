@@ -5,7 +5,7 @@ package entitlements
 // to this staging keyring; it is not enabled by default.
 const StagingSigningKeyID = "beta-test-20261006-a"
 
-const stagingSigningPublicKeyBase64 = "W5JHpK6aCv1b99eTiAIGaFKa/f99TkL4D30BV9oHjFY="
+const stagingSigningPublicKeyBase64 = "9i9Elbp+Q/FJ48h50fGryuEDsgqhUAqLFoDuhgt59QE="
 
 // StagingKeyRing returns the public keyring used by the current Beta Pro
 // Cloudflare staging control plane.
