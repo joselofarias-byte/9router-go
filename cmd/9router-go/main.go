@@ -149,6 +149,7 @@ func main() {
 				},
 				Action: logsDetached,
 			},
+			licenseCommand(),
 		},
 		Action: foregroundOrBackground,
 	}
