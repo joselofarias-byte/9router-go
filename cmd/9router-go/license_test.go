@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"9router/proxy/internal/updater"
 )
 
 func TestLicenseCommandShape(t *testing.T) {
@@ -53,8 +52,8 @@ func TestCurrentLicenseBuildIdentityUsesStableDefaults(t *testing.T) {
 	if build.Channel != "beta" {
 		t.Fatalf("channel = %q", build.Channel)
 	}
-	if build.ID != updater.CurrentVersion {
-		t.Fatalf("build id = %q, want current version %q", build.ID, updater.CurrentVersion)
+	if build.ID != "" {
+		t.Fatalf("build id = %q, want empty by default", build.ID)
 	}
 	if !build.ProCapableUntil.IsZero() {
 		t.Fatalf("unexpected hard expiry %s", build.ProCapableUntil)
