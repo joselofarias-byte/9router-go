@@ -14,6 +14,7 @@ import (
 
 // AppModule combines all core modules into a complete application option.
 var AppModule = fx.Options(
+	EditionModule,
 	ConfigModule,
 	DatabaseModule,
 	HandlersModule,
