@@ -1,51 +1,28 @@
 package entitlements
 
-import "time"
+import (
+	"time"
 
-// Capability is a stable feature gate name. The routing layer should depend on
-// capabilities, not on a payment processor or a subscription SKU.
-type Capability string
-
-const (
-	CapabilityAdvancedRouting    Capability = "fabric.advanced_routing"
-	CapabilityMultiAccountPolicy Capability = "fabric.multi_account_policy"
-	CapabilityIntentProfiles     Capability = "fabric.intent_profiles"
-	CapabilityAdvancedTelemetry  Capability = "telemetry.advanced"
-	CapabilityBudgetPolicy       Capability = "policy.budget"
-	CapabilityQuotaExpiry        Capability = "policy.quota_expiry_preference"
+	"9router/proxy/pkg/edition"
 )
 
-// Status is safe to expose to the UI. It contains no private signing material
-// and no provider credentials.
-type Status struct {
-	Mode               string       `json:"mode"`
-	State              string       `json:"state,omitempty"`
-	Channel            string       `json:"channel,omitempty"`
-	Plan               Plan         `json:"plan,omitempty"`
-	LicenseID          string       `json:"licenseId,omitempty"`
-	InstallationID     string       `json:"installationId,omitempty"`
-	EntitlementVersion int          `json:"entitlementVersion,omitempty"`
-	Subject            string       `json:"subject,omitempty"`
-	ExpiresAt          *time.Time   `json:"expiresAt,omitempty"`
-	GraceUntil         *time.Time   `json:"graceUntil,omitempty"`
-	Features           []Capability `json:"features,omitempty"`
-}
+// Public product-edition contracts live in pkg/edition so a separate
+// commercial repository can implement them without importing internal
+// packages. These aliases preserve the existing internal API.
+type Capability = edition.Capability
 
-// Provider answers feature-capability questions. Community remains the
-// fail-safe default when no paid/beta entitlement provider is installed.
-type Provider interface {
-	Enabled(Capability) bool
-	Status() Status
-}
+const (
+	CapabilityAdvancedRouting    = edition.CapabilityAdvancedRouting
+	CapabilityMultiAccountPolicy = edition.CapabilityMultiAccountPolicy
+	CapabilityIntentProfiles     = edition.CapabilityIntentProfiles
+	CapabilityAdvancedTelemetry  = edition.CapabilityAdvancedTelemetry
+	CapabilityBudgetPolicy       = edition.CapabilityBudgetPolicy
+	CapabilityQuotaExpiry        = edition.CapabilityQuotaExpiry
+)
 
-// CommunityProvider never enables Pro capabilities.
-type CommunityProvider struct{}
-
-func (CommunityProvider) Enabled(Capability) bool { return false }
-
-func (CommunityProvider) Status() Status {
-	return Status{Mode: "community"}
-}
+type Status = edition.Status
+type Provider = edition.Provider
+type CommunityProvider = edition.CommunityProvider
 
 // LicenseProvider exposes a verified license as capabilities.
 type LicenseProvider struct {
