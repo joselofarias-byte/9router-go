@@ -14,19 +14,22 @@ var (
 	ErrControlPlaneTransport  = errors.New("control plane transport is required")
 	ErrRenewalLicenseChanged  = errors.New("renewal returned a different license id")
 	ErrRenewalNonceMissing    = errors.New("cached lease nonce is missing")
+	ErrBuildChannelRequired   = errors.New("license build channel is required")
+	ErrBuildIDRequired        = errors.New("license build id is required for this channel")
 )
 
 // ActivationRequest is safe to send to the licensing control plane. The
 // activation code is transient request material and must never be persisted by
 // RuntimeStore or emitted to logs.
 type ActivationRequest struct {
-	ActivationCode string `json:"activation_code"`
-	InstallationID string `json:"installation_id"`
-	Platform       string `json:"platform"`
-	Arch           string `json:"arch"`
-	AppVersion     string `json:"app_version,omitempty"`
-	BuildChannel   string `json:"build_channel"`
-	BuildID        string `json:"build_id,omitempty"`
+	ActivationCode        string `json:"activation_code"`
+	InstallationID        string `json:"installation_id"`
+	InstallationPublicKey string `json:"installation_public_key"`
+	Platform              string `json:"platform"`
+	Arch                  string `json:"arch"`
+	AppVersion            string `json:"app_version,omitempty"`
+	BuildChannel          string `json:"build_channel"`
+	BuildID               string `json:"build_id,omitempty"`
 }
 
 // RenewalRequest identifies the already-verified license/installation without
@@ -40,6 +43,8 @@ type RenewalRequest struct {
 	AppVersion     string `json:"app_version,omitempty"`
 	BuildChannel   string `json:"build_channel"`
 	BuildID        string `json:"build_id,omitempty"`
+	ProofVersion   int    `json:"proof_version"`
+	ProofSignature string `json:"proof_signature"`
 }
 
 // LeaseResponse is returned by activate/renew. Lease must contain the raw
@@ -85,7 +90,25 @@ type ClientResult struct {
 	ServerTime   time.Time
 }
 
+
+func ValidateLicensedBuildIdentity(build BuildIdentity) error {
+	channel := strings.ToLower(strings.TrimSpace(build.Channel))
+	if channel == "" {
+		return ErrBuildChannelRequired
+	}
+	switch channel {
+	case "beta", "stable", "release", "production", "prod":
+		if strings.TrimSpace(build.ID) == "" {
+			return ErrBuildIDRequired
+		}
+	}
+	return nil
+}
+
 func NewClient(options ClientOptions) (*Client, error) {
+	if err := ValidateLicensedBuildIdentity(options.Build); err != nil {
+		return nil, err
+	}
 	if options.Store == nil {
 		return nil, errors.New("entitlements.NewClient: store is required")
 	}
@@ -122,37 +145,49 @@ func (c *Client) Activate(ctx context.Context, activationCode string) (*ClientRe
 		return nil, ErrActivationCodeRequired
 	}
 
-	installationID, err := c.store.InstallationID()
+	identity, err := c.store.InstallationIdentity()
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := encodeInstallationPublicKey(identity.PublicKey)
 	if err != nil {
 		return nil, err
 	}
 
 	response, err := c.transport.Activate(ctx, ActivationRequest{
-		ActivationCode: code,
-		InstallationID: installationID,
-		Platform:       c.platform,
-		Arch:           c.arch,
-		AppVersion:     c.appVersion,
-		BuildChannel:   c.build.Channel,
-		BuildID:        c.build.ID,
+		ActivationCode:        code,
+		InstallationID:        identity.ID,
+		InstallationPublicKey: publicKey,
+		Platform:              c.platform,
+		Arch:                  c.arch,
+		AppVersion:            c.appVersion,
+		BuildChannel:          c.build.Channel,
+		BuildID:               c.build.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("entitlements.Client.Activate: %w", err)
 	}
 
-	return c.acceptLease(response, installationID, "")
+	return c.acceptLease(response, identity.ID, "")
 }
 
 func (c *Client) Renew(ctx context.Context) (*ClientResult, error) {
+	identity, err := c.store.InstallationIdentity()
+	if err != nil {
+		return nil, err
+	}
 	current, err := c.verifyCachedLease()
 	if err != nil {
 		return nil, err
+	}
+	if current.Lease.InstallationID != identity.ID {
+		return nil, ErrWrongInstallation
 	}
 	if strings.TrimSpace(current.Lease.Nonce) == "" {
 		return nil, ErrRenewalNonceMissing
 	}
 
-	response, err := c.transport.Renew(ctx, RenewalRequest{
+	request := RenewalRequest{
 		LicenseID:      current.Lease.LicenseID,
 		InstallationID: current.Lease.InstallationID,
 		CurrentNonce:   current.Lease.Nonce,
@@ -161,7 +196,14 @@ func (c *Client) Renew(ctx context.Context) (*ClientResult, error) {
 		AppVersion:     c.appVersion,
 		BuildChannel:   c.build.Channel,
 		BuildID:        c.build.ID,
-	})
+		ProofVersion:   RenewalProofVersion,
+	}
+	request.ProofSignature, err = signRenewalProof(identity.PrivateKey, request)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := c.transport.Renew(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("entitlements.Client.Renew: %w", err)
 	}
