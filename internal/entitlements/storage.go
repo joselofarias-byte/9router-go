@@ -2,6 +2,7 @@ package entitlements
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"os"
@@ -29,9 +30,10 @@ const (
 
 var ErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")
 
-// RuntimeStore keeps only public/signed entitlement runtime state below the
-// configured 9router DATA_DIR. It never stores provider credentials, payment
-// credentials, activation codes or private signing keys.
+// RuntimeStore keeps signed entitlement runtime state below the configured
+// 9router DATA_DIR. It never stores provider credentials, payment credentials,
+// activation codes or control-plane signing keys. It may store a local
+// installation proof seed used only for proof-of-possession.
 type RuntimeStore struct {
 	dir string
 }
@@ -80,12 +82,14 @@ func (s *RuntimeStore) InstallationID() (string, error) {
 			return err
 		}
 
-		id, err := uuid.NewRandom()
+		privateKey, err := s.loadOrCreateInstallationPrivateKey()
 		if err != nil {
-			return fmt.Errorf("generate uuid: %w", err)
+			return err
 		}
-		if err := atomicWriteFile(path, []byte(id.String()+"\n")); err != nil {
-			return fmt.Errorf("persist uuid: %w", err)
+		publicKey := privateKey.Public().(ed25519.PublicKey)
+		id := installationIDFromPublicKey(publicKey)
+		if err := atomicWriteFile(path, []byte(id+"\n")); err != nil {
+			return fmt.Errorf("persist installation id: %w", err)
 		}
 
 		// Read the canonical file while still holding the cross-process lock so
@@ -105,9 +109,12 @@ func (s *RuntimeStore) InstallationID() (string, error) {
 
 func parseInstallationID(raw []byte) (string, error) {
 	value := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(value, installationIDPrefix) {
+		return parseKeyInstallationID(value)
+	}
 	id, err := uuid.Parse(value)
 	if err != nil || id == uuid.Nil {
-		return "", fmt.Errorf("invalid installation UUID")
+		return "", fmt.Errorf("invalid installation id")
 	}
 	return id.String(), nil
 }
