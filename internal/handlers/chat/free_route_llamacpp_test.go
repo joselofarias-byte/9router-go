@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -97,18 +98,20 @@ func TestHandleChatCompletions_FreeBestRoutesToLlamaCppWithoutCredentialRow(t *t
 	}
 
 	h := NewChatHandler(db.NewRepo(database))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
-		`{"model":"free-best","messages":[{"role":"user","content":"hola"}]}`))
-	h.HandleChatCompletions(rec, req)
+	for i, model := range []string{"free-best", "coding-auto"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+			fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hola"}]}`, model)))
+		h.HandleChatCompletions(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	if hits.Load() != 1 {
-		t.Fatalf("llama.cpp hits = %d, want 1", hits.Load())
-	}
-	if !strings.Contains(rec.Body.String(), `"local"`) {
-		t.Fatalf("unexpected local response: %s", rec.Body.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status %d: %s", model, rec.Code, rec.Body.String())
+		}
+		if hits.Load() != int32(i+1) {
+			t.Fatalf("%s llama.cpp hits = %d, want %d", model, hits.Load(), i+1)
+		}
+		if !strings.Contains(rec.Body.String(), `"local"`) {
+			t.Fatalf("%s unexpected local response: %s", model, rec.Body.String())
+		}
 	}
 }

@@ -225,11 +225,14 @@ const (
 	virtualFreeProfileLongContext virtualFreeProfile = "long-context"
 )
 
-// isVirtualFreeRoute reports the built-in free-only virtual names.
-// Matching trims space and ignores case.
+// isVirtualFreeRoute reports the built-in zero-marginal virtual names.
+// Matching trims space and ignores case. "coding-auto" is the product
+// continuity route: today it is guaranteed to contain the same fail-closed
+// free/no-auth coding pool as coding-best-free; quota-backed premium candidates
+// can be layered ahead of it without ever removing this floor.
 func isVirtualFreeRoute(modelStr string) bool {
 	switch canonicalVirtualName(modelStr) {
-	case "free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "long-context-free":
+	case "free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "coding-auto", "long-context-free":
 		return true
 	default:
 		return false
@@ -246,7 +249,7 @@ func virtualFreeProfileFromName(modelStr string) virtualFreeProfile {
 		return virtualFreeProfileFast
 	case "reasoning-free":
 		return virtualFreeProfileReasoning
-	case "coding-best-free":
+	case "coding-best-free", "coding-auto":
 		return virtualFreeProfileCoding
 	case "long-context-free":
 		return virtualFreeProfileLongContext
