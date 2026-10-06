@@ -2,10 +2,9 @@ package entitlements
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 func TestRuntimeStoreInstallationIDStableAndDistinct(t *testing.T) {
@@ -21,8 +20,11 @@ func TestRuntimeStoreInstallationIDStableAndDistinct(t *testing.T) {
 	if first != second {
 		t.Fatalf("installation id changed: %q != %q", first, second)
 	}
-	if _, err := uuid.Parse(first); err != nil {
-		t.Fatalf("installation id is not UUID: %v", err)
+	if !strings.HasPrefix(first, installationIDPrefix) {
+		t.Fatalf("installation id %q is not key-backed", first)
+	}
+	if _, err := parseKeyInstallationID(first); err != nil {
+		t.Fatalf("invalid key-backed installation id: %v", err)
 	}
 
 	storeB := NewRuntimeStore(t.TempDir())
@@ -40,7 +42,7 @@ func TestRuntimeStoreCorruptInstallationIDFailsClosed(t *testing.T) {
 	if err := os.MkdirAll(store.Dir(), privateDirPerm); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(store.installationIDPath(), []byte("not-a-uuid\n"), privateFilePerm); err != nil {
+	if err := os.WriteFile(store.installationIDPath(), []byte("not-an-installation-id\n"), privateFilePerm); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.InstallationID(); err == nil {

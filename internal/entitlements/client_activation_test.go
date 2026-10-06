@@ -2,6 +2,8 @@ package entitlements
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -23,6 +25,16 @@ func TestClientActivationPersistsOnlyVerifiedLease(t *testing.T) {
 			}
 			if request.InstallationID == "" {
 				t.Fatal("missing installation id")
+			}
+			if !strings.HasPrefix(request.InstallationID, installationIDPrefix) {
+				t.Fatalf("installation id %q is not key-backed", request.InstallationID)
+			}
+			publicKey, err := base64.StdEncoding.DecodeString(request.InstallationPublicKey)
+			if err != nil || len(publicKey) != ed25519.PublicKeySize {
+				t.Fatalf("invalid installation public key: %q", request.InstallationPublicKey)
+			}
+			if request.InstallationID != installationIDFromPublicKey(ed25519.PublicKey(publicKey)) {
+				t.Fatal("installation id does not match activation public key")
 			}
 			returnedLease = signer.signLease(t, request.InstallationID, "lic-activation-1", "nonce-a1", nil)
 			return LeaseResponse{

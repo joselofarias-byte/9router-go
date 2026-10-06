@@ -31,7 +31,7 @@ func TestLicenseCommandShape(t *testing.T) {
 	}
 }
 
-func TestCurrentLicenseBuildIdentityUsesStableDefaults(t *testing.T) {
+func TestCurrentLicenseBuildIdentityRejectsBetaWithoutBuildID(t *testing.T) {
 	oldChannel := licenseBuildChannel
 	oldID := licenseBuildID
 	oldDeadline := licenseProCapableUntil
@@ -45,18 +45,31 @@ func TestCurrentLicenseBuildIdentityUsesStableDefaults(t *testing.T) {
 	licenseBuildID = ""
 	licenseProCapableUntil = ""
 
+	if _, err := currentLicenseBuildIdentity(); err == nil {
+		t.Fatal("beta build without build id unexpectedly accepted")
+	}
+}
+
+func TestCurrentLicenseBuildIdentityAllowsDevWithoutBuildID(t *testing.T) {
+	oldChannel := licenseBuildChannel
+	oldID := licenseBuildID
+	oldDeadline := licenseProCapableUntil
+	t.Cleanup(func() {
+		licenseBuildChannel = oldChannel
+		licenseBuildID = oldID
+		licenseProCapableUntil = oldDeadline
+	})
+
+	licenseBuildChannel = "dev"
+	licenseBuildID = ""
+	licenseProCapableUntil = ""
+
 	build, err := currentLicenseBuildIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build.Channel != "beta" {
-		t.Fatalf("channel = %q", build.Channel)
-	}
-	if build.ID != "" {
-		t.Fatalf("build id = %q, want empty by default", build.ID)
-	}
-	if !build.ProCapableUntil.IsZero() {
-		t.Fatalf("unexpected hard expiry %s", build.ProCapableUntil)
+	if build.Channel != "dev" || build.ID != "" {
+		t.Fatalf("unexpected dev build identity: %+v", build)
 	}
 }
 
