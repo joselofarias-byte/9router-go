@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"9router/proxy/pkg/edition"
 )
 
 const (
@@ -29,16 +31,16 @@ var (
 	ErrInvalidVerificationContext = errors.New("invalid entitlement verification context")
 )
 
-// Plan is intentionally open-ended: the verifier treats a plan as signed
-// metadata and gates behavior by capabilities, not by hard-coded SKU names.
-type Plan string
+// Plan remains source-compatible inside entitlements while its stable public
+// contract lives in pkg/edition for external commercial modules.
+type Plan = edition.Plan
 
 const (
-	PlanFree      Plan = "free"
-	PlanBetaPro   Plan = "beta_pro"
-	PlanSupporter Plan = "supporter"
-	PlanPro       Plan = "pro"
-	PlanBusiness  Plan = "business"
+	PlanFree      = edition.PlanFree
+	PlanBetaPro   = edition.PlanBetaPro
+	PlanSupporter = edition.PlanSupporter
+	PlanPro       = edition.PlanPro
+	PlanBusiness  = edition.PlanBusiness
 )
 
 type LeaseState string
