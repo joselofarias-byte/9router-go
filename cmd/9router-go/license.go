@@ -299,14 +299,9 @@ func currentLicenseControlPlaneURL() string {
 }
 
 func currentLicenseBuildIdentity() (entitlements.BuildIdentity, error) {
-	id := strings.TrimSpace(licenseBuildID)
-	if id == "" {
-		id = updater.CurrentVersion
-	}
-
 	build := entitlements.BuildIdentity{
 		Channel: strings.TrimSpace(licenseBuildChannel),
-		ID:      id,
+		ID:      strings.TrimSpace(licenseBuildID),
 	}
 	if build.Channel == "" {
 		return entitlements.BuildIdentity{}, fmt.Errorf("license build channel is empty")
