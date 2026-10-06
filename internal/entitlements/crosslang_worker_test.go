@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// This fixture is intentionally public: it contains only a test public key and signature.
 func TestPrivateWorkerCrossLanguageLeaseVector(t *testing.T) {
 	publicRaw, err := base64.StdEncoding.DecodeString("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=")
 	if err != nil {
