@@ -10,10 +10,11 @@ import (
 func TestClientRenewUsesVerifiedCachedIdentityAndPersistsRenewal(t *testing.T) {
 	signer := newClientTestSigner(t)
 	store := NewRuntimeStore(t.TempDir())
-	installationID, err := store.InstallationID()
+	identity, err := store.InstallationIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}
+	installationID := identity.ID
 	initial := signer.signLease(t, installationID, "lic-renew-1", "nonce-old", nil)
 	if err := store.SaveLease(initial); err != nil {
 		t.Fatal(err)
@@ -33,6 +34,17 @@ func TestClientRenewUsesVerifiedCachedIdentityAndPersistsRenewal(t *testing.T) {
 			}
 			if request.InstallationID != installationID {
 				t.Fatalf("renew installation = %q", request.InstallationID)
+			}
+			if request.ProofVersion != RenewalProofVersion {
+				t.Fatalf("proof version = %d", request.ProofVersion)
+			}
+			if err := VerifyRenewalProof(request, identity.PublicKey); err != nil {
+				t.Fatalf("renewal proof rejected: %v", err)
+			}
+			tampered := request
+			tampered.CurrentNonce = "nonce-attacker"
+			if err := VerifyRenewalProof(tampered, identity.PublicKey); err == nil {
+				t.Fatal("tampered renewal proof unexpectedly verified")
 			}
 			renewed = signer.signLease(t, installationID, "lic-renew-1", "nonce-new", func(lease *Lease) {
 				lease.ExpiresAt = signer.now.Add(14 * 24 * time.Hour)
