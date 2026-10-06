@@ -7,6 +7,18 @@ import "time"
 // payment processors, product keys, plan names or private implementations.
 type Capability string
 
+// Plan is signed/public SKU metadata. Runtime decisions should still gate on
+// capabilities rather than hard-coded plan names.
+type Plan string
+
+const (
+	PlanFree      Plan = "free"
+	PlanBetaPro   Plan = "beta_pro"
+	PlanSupporter Plan = "supporter"
+	PlanPro       Plan = "pro"
+	PlanBusiness  Plan = "business"
+)
+
 const (
 	CapabilityAdvancedRouting    Capability = "fabric.advanced_routing"
 	CapabilityMultiAccountPolicy Capability = "fabric.multi_account_policy"
@@ -23,7 +35,7 @@ type Status struct {
 	Mode               string       `json:"mode"`
 	State              string       `json:"state,omitempty"`
 	Channel            string       `json:"channel,omitempty"`
-	Plan               string       `json:"plan,omitempty"`
+	Plan               Plan         `json:"plan,omitempty"`
 	LicenseID          string       `json:"licenseId,omitempty"`
 	InstallationID     string       `json:"installationId,omitempty"`
 	EntitlementVersion int          `json:"entitlementVersion,omitempty"`
