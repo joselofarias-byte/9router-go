@@ -146,3 +146,111 @@ func TestGetClientForConnection_StrictUnknownProxyTypeFailsClosed(t *testing.T) 
 		t.Fatalf("strict unknown proxy type leaked %d direct request(s)", got)
 	}
 }
+
+
+func TestGetClientForConnection_StrictMissingPoolFailsClosed(t *testing.T) {
+	var directHits atomic.Int32
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer direct.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := &ChatHandler{Client: &http.Client{}, Repo: db.NewRepo(database)}
+
+	client := h.GetClientForConnection(&ConnectionData{
+		ProxyPoolID: "missing-pool",
+		StrictProxy: true,
+	})
+	_, err := client.Get(direct.URL)
+	if err == nil {
+		t.Fatal("expected missing strict proxy pool to fail closed")
+	}
+	if got := directHits.Load(); got != 0 {
+		t.Fatalf("missing strict proxy pool leaked %d direct request(s)", got)
+	}
+}
+
+func TestGetClientForConnection_StrictPoolWithoutURLFailsClosed(t *testing.T) {
+	var directHits atomic.Int32
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer direct.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("create proxyPools: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name:        "empty-strict",
+		Type:        "http",
+		StrictProxy: true,
+	})
+	if err != nil {
+		t.Fatalf("insert empty strict pool: %v", err)
+	}
+
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	client := h.GetClientForConnection(&ConnectionData{ProxyPoolID: pool["id"].(string)})
+	_, err = client.Get(direct.URL)
+	if err == nil {
+		t.Fatal("expected strict pool without URL to fail closed")
+	}
+	if got := directHits.Load(); got != 0 {
+		t.Fatalf("strict pool without URL leaked %d direct request(s)", got)
+	}
+}
+
+func TestGetClientForConnection_StrictInactivePoolFailsClosed(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("create proxyPools: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name:        "inactive-strict",
+		ProxyURL:    "http://proxy.example.invalid:8080",
+		Type:        "http",
+		StrictProxy: true,
+	})
+	if err != nil {
+		t.Fatalf("insert strict pool: %v", err)
+	}
+	poolID := pool["id"].(string)
+	if _, err := database.Exec(`UPDATE proxyPools SET isActive = 0 WHERE id = ?`, poolID); err != nil {
+		t.Fatalf("deactivate pool: %v", err)
+	}
+
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	client := h.GetClientForConnection(&ConnectionData{ProxyPoolID: poolID})
+	if client == h.Client {
+		t.Fatal("inactive strict pool must not return direct client")
+	}
+	_, err = client.Get("http://127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected inactive strict pool to fail closed")
+	}
+}
