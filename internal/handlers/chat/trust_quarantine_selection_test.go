@@ -74,3 +74,27 @@ func TestGetBestConnection_PinnedIDDoesNotBypassTrustQuarantine(t *testing.T) {
 		t.Fatal("expected pinned connection to respect trust quarantine")
 	}
 }
+
+
+func TestAccountTrustSelectable_AllowsDegradedState(t *testing.T) {
+	oldTM := globalTrustManager
+	tm := trust.NewManager()
+	globalTrustManager = tm
+	defer func() { globalTrustManager = oldTM }()
+
+	const provider = "deepseek"
+	const model = "audit-degraded-model"
+	const account = "degraded-account"
+
+	// One success establishes a verified record; a transient failure degrades it
+	// without quarantining it.
+	tm.RecordObservation(provider, model, account, true, "")
+	tm.RecordObservation(provider, model, account, false, providers.ErrTransient)
+
+	if level := tm.GetTrustLevel(provider, model, account); level != trust.TrustDegraded {
+		t.Fatalf("expected degraded trust, got %s", level)
+	}
+	if !isAccountTrustSelectable(provider, model, account) {
+		t.Fatal("degraded account should remain selectable")
+	}
+}
