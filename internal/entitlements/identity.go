@@ -19,7 +19,7 @@ const (
 )
 
 var (
-	ErrInvalidInstallationKey = errors.New("invalid installation proof key")
+	ErrInvalidInstallationKey  = errors.New("invalid installation proof key")
 	ErrInstallationKeyMismatch = errors.New("installation id does not match installation proof key")
 )
 
@@ -55,20 +55,62 @@ func (s *RuntimeStore) InstallationIdentity() (*InstallationIdentity, error) {
 	if err != nil {
 		return nil, err
 	}
-	publicKey := append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
+	return bindInstallationIdentity(id, privateKey)
+}
 
-	if strings.HasPrefix(id, installationIDPrefix) {
-		expected := installationIDFromPublicKey(publicKey)
-		if id != expected {
-			return nil, ErrInstallationKeyMismatch
-		}
+// persistedInstallationIdentity loads the installation proof key only when it
+// is already stored. Renew and release use this so a copied installation id
+// and cached lease cannot mint a replacement signer.
+func (s *RuntimeStore) persistedInstallationIdentity() (*InstallationIdentity, error) {
+	if s == nil || strings.TrimSpace(s.dir) == "" {
+		return nil, errors.New("entitlements.RuntimeStore: empty data directory")
 	}
 
+	id, err := s.InstallationID()
+	if err != nil {
+		return nil, err
+	}
+	privateKey, err := s.loadInstallationPrivateKey()
+	if err != nil {
+		return nil, err
+	}
+	return bindInstallationIdentity(id, privateKey)
+}
+
+func bindInstallationIdentity(id string, privateKey ed25519.PrivateKey) (*InstallationIdentity, error) {
+	publicKey := append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
+	if strings.HasPrefix(id, installationIDPrefix) && id != installationIDFromPublicKey(publicKey) {
+		return nil, ErrInstallationKeyMismatch
+	}
 	return &InstallationIdentity{
 		ID:         id,
 		PublicKey:  publicKey,
 		PrivateKey: append(ed25519.PrivateKey(nil), privateKey...),
 	}, nil
+}
+
+func (s *RuntimeStore) loadInstallationPrivateKey() (ed25519.PrivateKey, error) {
+	if s == nil || strings.TrimSpace(s.dir) == "" {
+		return nil, errors.New("entitlements.RuntimeStore: empty data directory")
+	}
+
+	path := s.installationKeyPath()
+	var privateKey ed25519.PrivateKey
+	err := withPathLock(path, func() error {
+		raw, err := readRecoverable(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrInvalidInstallationKey
+		}
+		if err != nil {
+			return err
+		}
+		privateKey, err = parseInstallationPrivateKey(raw)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("entitlements.RuntimeStore.loadInstallationPrivateKey: %w", err)
+	}
+	return privateKey, nil
 }
 
 func (s *RuntimeStore) loadOrCreateInstallationPrivateKey() (ed25519.PrivateKey, error) {

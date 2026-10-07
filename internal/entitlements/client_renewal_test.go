@@ -16,6 +16,9 @@ func TestClientRenewUsesVerifiedCachedIdentityAndPersistsRenewal(t *testing.T) {
 	}
 	installationID := identity.ID
 	initial := signer.signLease(t, installationID, "lic-renew-1", "nonce-old", nil)
+	if _, err := store.AdvanceTrustedTime(signer.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveLease(initial); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +40,12 @@ func TestClientRenewUsesVerifiedCachedIdentityAndPersistsRenewal(t *testing.T) {
 			}
 			if request.ProofVersion != RenewalProofVersion {
 				t.Fatalf("proof version = %d", request.ProofVersion)
+			}
+			if request.Platform != "linux" || request.Arch != "amd64" || request.AppVersion != "test" {
+				t.Fatalf("renewal runtime = %s/%s/%s", request.Platform, request.Arch, request.AppVersion)
+			}
+			if request.BuildChannel != signer.build.Channel || request.BuildID != signer.build.ID {
+				t.Fatalf("renewal build = %s/%s", request.BuildChannel, request.BuildID)
 			}
 			if err := VerifyRenewalProof(request, identity.PublicKey); err != nil {
 				t.Fatalf("renewal proof rejected: %v", err)
@@ -100,6 +109,9 @@ func TestClientRenewRejectsDifferentLicenseAndKeepsPreviousCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	initial := signer.signLease(t, installationID, "lic-renew-2", "nonce-old", nil)
+	if _, err := store.AdvanceTrustedTime(signer.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveLease(initial); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +158,9 @@ func TestClientRenewTransportFailureKeepsPreviousCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	initial := signer.signLease(t, installationID, "lic-renew-3", "nonce-old", nil)
+	if _, err := store.AdvanceTrustedTime(signer.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveLease(initial); err != nil {
 		t.Fatal(err)
 	}

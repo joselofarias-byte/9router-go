@@ -39,6 +39,12 @@ func TestClientActivationPersistsOnlyVerifiedLease(t *testing.T) {
 			if request.ProofVersion != ActivationProofVersion {
 				t.Fatalf("proof version = %d", request.ProofVersion)
 			}
+			if request.Platform != "android" || request.Arch != "arm64" || request.AppVersion != "test" {
+				t.Fatalf("activation runtime = %s/%s/%s", request.Platform, request.Arch, request.AppVersion)
+			}
+			if request.BuildChannel != signer.build.Channel || request.BuildID != signer.build.ID {
+				t.Fatalf("activation build = %s/%s", request.BuildChannel, request.BuildID)
+			}
 			if err := VerifyActivationProof(request, ed25519.PublicKey(publicKey)); err != nil {
 				t.Fatalf("activation proof invalid: %v", err)
 			}

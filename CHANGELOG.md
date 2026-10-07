@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- License proof-of-possession fail-closed: activation verification requires the presented public key and, for `ik1_` ids, the installation fingerprint; renewal and release verification reject a key-backed installation id signed by any other key. Renew and release no longer mint a missing proof key, and they reject a cached lease when trusted time is missing or corrupt.
 - Fork order 008 / upstream integration #30: reconcile virtual free routing, NoAuth llama.cpp/local dial guards, media auth and resolution errors with upstream capacity adapters, retry bookkeeping and provider isolation. Keep live provider tests opt-in and ElevenLabs voices tests on a local fixture.
 
 ## [v1.9.6] - 2026-10-01

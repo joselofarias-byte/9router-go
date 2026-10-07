@@ -103,7 +103,6 @@ type ClientResult struct {
 	ServerTime   time.Time
 }
 
-
 func ValidateLicensedBuildIdentity(build BuildIdentity) error {
 	channel := strings.ToLower(strings.TrimSpace(build.Channel))
 	if channel == "" {
@@ -192,7 +191,7 @@ func (c *Client) Activate(ctx context.Context, activationCode string) (*ClientRe
 }
 
 func (c *Client) Renew(ctx context.Context) (*ClientResult, error) {
-	identity, err := c.store.InstallationIdentity()
+	identity, err := c.store.persistedInstallationIdentity()
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +231,7 @@ func (c *Client) Renew(ctx context.Context) (*ClientResult, error) {
 }
 
 func (c *Client) Release(ctx context.Context) error {
-	identity, err := c.store.InstallationIdentity()
+	identity, err := c.store.persistedInstallationIdentity()
 	if err != nil {
 		return err
 	}
@@ -271,6 +270,9 @@ func (c *Client) verifyCachedLease() (*LeaseEvaluation, error) {
 	lastTrusted, err := c.store.LastTrustedTime()
 	if err != nil {
 		return nil, err
+	}
+	if lastTrusted.IsZero() {
+		return nil, ErrTrustedTimeRequired
 	}
 	raw, err := c.store.LoadLease()
 	if err != nil {
