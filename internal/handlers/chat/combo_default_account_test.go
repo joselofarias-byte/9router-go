@@ -75,4 +75,11 @@ func TestHandleComboFallback_DefaultKeyProviderUsesConfiguredAccountFeedback(t *
 	if !locked {
 		t.Fatal("expected configured account/model to be locked after retryable 403")
 	}
+
+	// Once the configured account is locked, the provider's built-in default
+	// credential must not bypass that account policy.
+	modelInfo := &ModelInfo{Provider: "opencode", Model: model}
+	if _, _, _, err := h.comboConnection(modelInfo, nil); err == nil {
+		t.Fatal("expected locked configured account to block synthetic default-key fallback")
+	}
 }
