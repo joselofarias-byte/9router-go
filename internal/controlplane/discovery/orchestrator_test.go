@@ -6,8 +6,10 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/controlplane/registry"
+	cpsync "9router/proxy/internal/controlplane/sync"
 	_ "modernc.org/sqlite"
 )
 
@@ -50,6 +52,11 @@ func setupOrchestratorDB(t *testing.T) *sql.DB {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);
+		CREATE TABLE controlplane_meta (
+			key TEXT PRIMARY KEY,
+			val INTEGER NOT NULL
+		);
+		INSERT INTO controlplane_meta (key, val) VALUES ('accounts_generation', 900000);
 	`); err != nil {
 		t.Fatalf("create orchestrator tables: %v", err)
 	}
@@ -144,5 +151,92 @@ func TestOrchestratorPreservesUnseenOffersWhenAdapterFails(t *testing.T) {
 	}
 	if pm.PricingMode != "free_tier" {
 		t.Fatalf("failed adapter unexpectedly changed pricing: %q", pm.PricingMode)
+	}
+}
+
+
+type blockingDiscoveryAdapter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *blockingDiscoveryAdapter) SourceID() string { return "blocking-source" }
+
+func (a *blockingDiscoveryAdapter) Discover(ctx context.Context) ([]Candidate, error) {
+	close(a.started)
+	select {
+	case <-a.release:
+		return []Candidate{{
+			ProviderID:    "orcarouter",
+			ModelID:       "model-race",
+			UpstreamModel: "model-race",
+			PricingMode:   "free_tier",
+			Capabilities:  "{}",
+		}}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestOrchestratorActivationPreservesAccountsSyncedDuringDiscovery(t *testing.T) {
+	database := setupOrchestratorDB(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := database.Exec(`
+		INSERT INTO providerConnections (id, provider, isActive, createdAt, updatedAt)
+		VALUES ('account-a', 'orcarouter', 1, ?, ?)
+	`, now, now); err != nil {
+		t.Fatalf("insert initial account: %v", err)
+	}
+
+	adapter := &blockingDiscoveryAdapter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	orchestrator := NewOrchestrator(database, []Adapter{adapter})
+	done := make(chan struct{})
+	go func() {
+		orchestrator.RunSync(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discovery did not reach blocking adapter")
+	}
+
+	// Discovery already copied account-a. Add account-b and synchronize it into
+	// the live registry before discovery publishes its older snapshot.
+	if _, err := database.Exec(`
+		INSERT INTO providerConnections (id, provider, isActive, createdAt, updatedAt)
+		VALUES ('account-b', 'orcarouter', 1, ?, ?)
+	`, now, now); err != nil {
+		t.Fatalf("insert concurrent account: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE controlplane_meta SET val = 900001 WHERE key = 'accounts_generation'`); err != nil {
+		t.Fatalf("advance account generation: %v", err)
+	}
+	if err := cpsync.SyncAccountsFromDB(database); err != nil {
+		t.Fatalf("sync concurrent account: %v", err)
+	}
+	if registry.GetActiveState().Accounts["account-b"] == nil {
+		t.Fatal("precondition failed: account-b was not synchronized before discovery resumed")
+	}
+
+	close(adapter.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discovery did not finish after release")
+	}
+
+	// Same DB generation must now hit the sync fast path. If snapshot activation
+	// had overwritten account-b, this call would not repair it.
+	if err := cpsync.SyncAccountsFromDB(database); err != nil {
+		t.Fatalf("post-discovery fast sync: %v", err)
+	}
+	state := registry.GetActiveState()
+	if state.Accounts["account-a"] == nil || state.Accounts["account-b"] == nil {
+		t.Fatalf("discovery activation lost synchronized accounts: %#v", state.Accounts)
 	}
 }
