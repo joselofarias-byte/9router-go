@@ -85,6 +85,7 @@
   let driveBackupStatusLoaded = $state(false)
   let fileInput: HTMLInputElement | null = $state(null)
   let dbPassword = $state('')
+  let backupPassphrase = $state('')
   let dbAuthOpen = $state(false)
   let pendingImportFile: File | null = $state(null)
   let backupAction = $state<'download' | 'share' | 'drive' | 'import' | null>(null)
@@ -235,6 +236,7 @@
     if (backupBusy()) return
     dbAuthOpen = false
     dbPassword = ''
+    backupPassphrase = ''
     pendingImportFile = null
     backupAction = null
   }
@@ -242,6 +244,7 @@
   function openBackupAuth(action: 'download' | 'share' | 'drive') {
     if (backupBusy()) return
     dbPassword = ''
+    backupPassphrase = ''
     pendingImportFile = null
     backupAction = action
     dbAuthOpen = true
@@ -265,11 +268,12 @@
     return `9router-backup-${stamp}.9rbak`
   }
 
-  async function fetchEncryptedBackup(password: string): Promise<{ blob: Blob; name: string }> {
+  async function fetchEncryptedBackup(password: string, passphrase: string): Promise<{ blob: Blob; name: string }> {
     const res = await fetch('/api/settings/database', {
       headers: {
         ...getAuthHeaders(),
         'x-9r-password': password,
+        'x-9r-backup-passphrase': passphrase,
         'Accept': 'application/vnd.9router.backup',
       },
     })
@@ -295,8 +299,14 @@
   async function runDownloadBackup() {
     isDownloadingBackup = true
     const password = dbPassword
+    const passphrase = backupPassphrase
+    if (passphrase.length < 12) {
+      alert('Backup recovery passphrase must be at least 12 characters.')
+      isDownloadingBackup = false
+      return
+    }
     try {
-      const { blob, name } = await fetchEncryptedBackup(password)
+      const { blob, name } = await fetchEncryptedBackup(password, passphrase)
       downloadBackupBlob(blob, name)
     } catch (err) {
       alert(`Failed to download backup: ${err instanceof Error ? err.message : String(err)}`)
@@ -304,6 +314,7 @@
       isDownloadingBackup = false
       dbAuthOpen = false
       dbPassword = ''
+      backupPassphrase = ''
       backupAction = null
     }
   }
@@ -311,8 +322,14 @@
   async function runShareBackup() {
     isSharingBackup = true
     const password = dbPassword
+    const passphrase = backupPassphrase
+    if (passphrase.length < 12) {
+      alert('Backup recovery passphrase must be at least 12 characters.')
+      isSharingBackup = false
+      return
+    }
     try {
-      const { blob, name } = await fetchEncryptedBackup(password)
+      const { blob, name } = await fetchEncryptedBackup(password, passphrase)
       const file = new File([blob], name, { type: 'application/vnd.9router.backup' })
       const nav = navigator as Navigator & {
         canShare?: (data: ShareData) => boolean
@@ -336,6 +353,7 @@
       isSharingBackup = false
       dbAuthOpen = false
       dbPassword = ''
+      backupPassphrase = ''
       backupAction = null
     }
   }
@@ -358,6 +376,11 @@
 
   async function runDriveBackup() {
     const password = dbPassword
+    const passphrase = backupPassphrase
+    if (passphrase.length < 12) {
+      alert('Backup recovery passphrase must be at least 12 characters.')
+      return
+    }
     const popup = window.open('about:blank', '_blank', 'width=600,height=700')
     isUploadingDriveBackup = true
     try {
@@ -382,6 +405,7 @@
         headers: {
           ...getAuthHeaders(),
           'x-9r-password': password,
+          'x-9r-backup-passphrase': passphrase,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -402,6 +426,7 @@
       isUploadingDriveBackup = false
       dbAuthOpen = false
       dbPassword = ''
+      backupPassphrase = ''
       backupAction = null
     }
   }
@@ -438,6 +463,12 @@
     // JSON.parse() can both yield, and reading live state afterwards would let a
     // concurrent dismissal blank the credential the request is authorized with.
     const password = dbPassword
+    const passphrase = backupPassphrase
+    const lowerNameForPassphrase = file.name.toLowerCase()
+    if (lowerNameForPassphrase.endsWith('.9rbak') && passphrase.length < 12) {
+      alert('Enter the recovery passphrase used to create this encrypted backup.')
+      return
+    }
     isImportingBackup = true
     try {
       let res: Response
@@ -451,6 +482,7 @@
           headers: {
             ...getAuthHeaders(),
             'x-9r-password': password,
+            'x-9r-backup-passphrase': passphrase,
             'Content-Type': isEncrypted ? 'application/vnd.9router.backup' : 'application/zip',
           },
           body: buffer,
@@ -460,7 +492,7 @@
         const payload = JSON.parse(raw)
         res = await fetch('/api/settings/database', {
           method: 'POST',
-          headers: { ...getAuthHeaders(), 'x-9r-password': password, 'Content-Type': 'application/json' },
+          headers: { ...getAuthHeaders(), 'x-9r-password': password, 'x-9r-backup-passphrase': passphrase, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
       }
@@ -476,6 +508,7 @@
       pendingImportFile = null
       dbAuthOpen = false
       dbPassword = ''
+      backupPassphrase = ''
       backupAction = null
     }
   }
@@ -948,9 +981,20 @@
         <Input
           type="password"
           label="Dashboard password"
-          placeholder="Enter password to authorize"
+          placeholder="Authorize this backup operation"
           bind:value={dbPassword}
         />
+        <Input
+          type="password"
+          label="Backup recovery passphrase"
+          placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
+          bind:value={backupPassphrase}
+        />
+        <p class="text-[10px] text-text-subtle leading-relaxed">
+          {backupAction === 'import'
+            ? 'Required for encrypted .9rbak files. Legacy JSON/ZIP imports ignore it.'
+            : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
+        </p>
       </div>
       {#snippet footer()}
         <Button variant="ghost" onclick={closeDbAuth} disabled={isImportingBackup || isDownloadingBackup}>
