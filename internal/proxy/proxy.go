@@ -13,8 +13,11 @@ import (
 
 // UpstreamError captures a non-200 upstream response.
 type UpstreamError struct {
-	StatusCode int
-	Body       []byte
+	// EmptyCompletion distinguishes a model's unusable answer from an
+	// account-wide outage without parsing human-readable error messages.
+	EmptyCompletion bool
+	StatusCode      int
+	Body            []byte
 	// Header is the upstream response's headers. Rate-limit carriers such as
 	// Retry-After live only here — a Gemini/Antigravity 429 body repeats the
 	// wait in a google.rpc.RetryInfo payload at best — and the error is built
