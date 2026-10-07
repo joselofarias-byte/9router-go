@@ -7,7 +7,7 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
-ROOT="${1:-$PWD}"
+ROOT="${1:-$HOME/9router-license-test}"
 ROOT="$(cd "$ROOT" && pwd)"
 
 if [ ! -d "$ROOT/.git" ]; then
