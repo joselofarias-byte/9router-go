@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { assessBackupPassphrase, BACKUP_PASSPHRASE_MIN_LENGTH } from './backup-passphrase'
+import { assessBackupPassphrase, backupPassphrasesMatch, BACKUP_PASSPHRASE_MIN_LENGTH } from './backup-passphrase'
 
 describe('backup passphrase guidance', () => {
   it('requires at least 12 characters', () => {
@@ -25,5 +25,12 @@ describe('backup passphrase guidance', () => {
     expect(assessment.hasNumber).toBe(true)
     expect(assessment.hasSymbol).toBe(true)
     expect(assessment.isLong).toBe(false)
+  })
+
+  it('requires the confirmation to exactly match a valid passphrase', () => {
+    expect(backupPassphrasesMatch('MiRespaldo2026!', 'MiRespaldo2026!')).toBe(true)
+    expect(backupPassphrasesMatch('MiRespaldo2026!', 'MiRespaldo2026?')).toBe(false)
+    expect(backupPassphrasesMatch('12345678901', '12345678901')).toBe(false)
+    expect(backupPassphrasesMatch('MiRespaldo2026!', '')).toBe(false)
   })
 })
