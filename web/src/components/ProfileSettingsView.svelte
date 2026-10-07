@@ -3,6 +3,7 @@
   import {
     AlertCircle,
     Check,
+    Cloud,
     Database,
     Download,
     Eye,
@@ -14,6 +15,7 @@
     Lock,
     RefreshCw,
     Save,
+    Share2,
     Shield,
     Sliders,
     Upload,
@@ -26,6 +28,7 @@
   import Button from '../lib/ui/Button.svelte'
   import Input from '../lib/ui/Input.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type Settings } from '../api/client'
+  import { clearCallback, dashboardCallbackURL, readCallback } from '../lib/oauth-handoff'
 
   interface Props {
     settings?: Settings
@@ -76,10 +79,15 @@
   // Database Backup / Import
   let isDownloadingBackup = $state(false)
   let isImportingBackup = $state(false)
+  let isSharingBackup = $state(false)
+  let isUploadingDriveBackup = $state(false)
+  let driveBackupConfigured = $state(false)
+  let driveBackupStatusLoaded = $state(false)
   let fileInput: HTMLInputElement | null = $state(null)
   let dbPassword = $state('')
   let dbAuthOpen = $state(false)
   let pendingImportFile: File | null = $state(null)
+  let backupAction = $state<'download' | 'share' | 'drive' | 'import' | null>(null)
 
   $effect(() => {
     if (settings) {
@@ -133,8 +141,23 @@
     }
   }
 
+  async function loadDriveBackupStatus() {
+    try {
+      const res = await fetch('/api/settings/backup/google/status', { headers: getAuthHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        driveBackupConfigured = data?.configured === true
+      }
+    } catch {
+      driveBackupConfigured = false
+    } finally {
+      driveBackupStatusLoaded = true
+    }
+  }
+
   onMount(() => {
     loadSettings()
+    loadDriveBackupStatus()
   })
 
   async function handleSaveAll() {
@@ -203,56 +226,195 @@
   }
 
   // closeDbAuth is the single dismissal path for the password modal. Modal
-  // wires Escape, the overlay and both ✕ buttons to onClose, and an import
-  // already in flight is a destructive operation the user must not be able to
-  // abandon by pressing a key — dismissing the dialog would leave the POST
-  // running and then wipe the database on completion.
+  // wires Escape, the overlay and both close buttons to onClose.
+  function backupBusy() {
+    return isImportingBackup || isDownloadingBackup || isSharingBackup || isUploadingDriveBackup
+  }
+
   function closeDbAuth() {
-    if (isImportingBackup || isDownloadingBackup) return
+    if (backupBusy()) return
     dbAuthOpen = false
     dbPassword = ''
     pendingImportFile = null
+    backupAction = null
+  }
+
+  function openBackupAuth(action: 'download' | 'share' | 'drive') {
+    if (backupBusy()) return
+    dbPassword = ''
+    pendingImportFile = null
+    backupAction = action
+    dbAuthOpen = true
   }
 
   function handleDownloadBackup() {
-    if (isImportingBackup || isDownloadingBackup) return
-    dbPassword = ''
-    pendingImportFile = null
-    dbAuthOpen = true
+    openBackupAuth('download')
+  }
+
+  function handleShareBackup() {
+    openBackupAuth('share')
+  }
+
+  function handleDriveBackup() {
+    if (!driveBackupConfigured) return
+    openBackupAuth('drive')
+  }
+
+  function backupFileName() {
+    const stamp = new Date().toISOString().replace(/[.:]/g, '-')
+    return `9router-backup-${stamp}.9rbak`
+  }
+
+  async function fetchEncryptedBackup(password: string): Promise<{ blob: Blob; name: string }> {
+    const res = await fetch('/api/settings/database', {
+      headers: {
+        ...getAuthHeaders(),
+        'x-9r-password': password,
+        'Accept': 'application/vnd.9router.backup',
+      },
+    })
+    if (!res.ok) {
+      throw new Error(await responseErrorMessage(res, 'Failed to export database'))
+    }
+    return { blob: await res.blob(), name: backupFileName() }
+  }
+
+  function downloadBackupBlob(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => {
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    }, 1000)
   }
 
   async function runDownloadBackup() {
     isDownloadingBackup = true
     const password = dbPassword
     try {
-      const res = await fetch('/api/settings/database', {
-        headers: {
-          ...getAuthHeaders(),
-          'x-9r-password': password,
-          'Accept': 'application/vnd.9router.backup',
-        },
-      })
-      if (!res.ok) {
-        throw new Error(await responseErrorMessage(res, 'Failed to export database'))
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      const stamp = new Date().toISOString().replace(/[.:]/g, '-')
-      a.href = url
-      a.download = `9router-backup-${stamp}.9rbak`
-      document.body.appendChild(a)
-      a.click()
-      setTimeout(() => {
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-      }, 1000)
+      const { blob, name } = await fetchEncryptedBackup(password)
+      downloadBackupBlob(blob, name)
     } catch (err) {
       alert(`Failed to download backup: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       isDownloadingBackup = false
       dbAuthOpen = false
       dbPassword = ''
+      backupAction = null
+    }
+  }
+
+  async function runShareBackup() {
+    isSharingBackup = true
+    const password = dbPassword
+    try {
+      const { blob, name } = await fetchEncryptedBackup(password)
+      const file = new File([blob], name, { type: 'application/vnd.9router.backup' })
+      const nav = navigator as Navigator & {
+        canShare?: (data: ShareData) => boolean
+        share?: (data: ShareData) => Promise<void>
+      }
+      if (nav.share && (!nav.canShare || nav.canShare({ files: [file] }))) {
+        await nav.share({
+          files: [file],
+          title: '9Router encrypted backup',
+          text: 'Encrypted 9Router backup. Save it to Google Drive, Files, or another secure location.',
+        })
+      } else {
+        downloadBackupBlob(blob, name)
+        alert('File sharing is not available in this browser, so the encrypted backup was downloaded instead.')
+      }
+    } catch (err) {
+      if ((err as DOMException)?.name !== 'AbortError') {
+        alert(`Failed to share backup: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    } finally {
+      isSharingBackup = false
+      dbAuthOpen = false
+      dbPassword = ''
+      backupAction = null
+    }
+  }
+
+  async function waitForDriveCallback(state: string): Promise<string> {
+    const deadline = Date.now() + 10 * 60 * 1000
+    while (Date.now() < deadline) {
+      const cb = readCallback(window.localStorage)
+      if (cb && cb.state === state) {
+        clearCallback(window.localStorage)
+        if (cb.error) {
+          throw new Error(cb.errorDesc ? `${cb.error}: ${cb.errorDesc}` : cb.error)
+        }
+        if (cb.raw) return cb.raw
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    throw new Error('Google Drive authorization timed out')
+  }
+
+  async function runDriveBackup() {
+    const password = dbPassword
+    const popup = window.open('about:blank', '_blank', 'width=600,height=700')
+    isUploadingDriveBackup = true
+    try {
+      clearCallback(window.localStorage)
+      const redirectUri = dashboardCallbackURL(window.location.origin)
+      const authRes = await fetch(
+        `/api/settings/backup/google/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
+        { headers: { ...getAuthHeaders(), 'x-9r-password': password } },
+      )
+      if (!authRes.ok) {
+        throw new Error(await responseErrorMessage(authRes, 'Google Drive backup is not configured'))
+      }
+      const auth = await authRes.json()
+      if (!auth?.authUrl || !auth?.state) throw new Error('Google Drive authorization response was incomplete')
+
+      if (popup && !popup.closed) popup.location.replace(auth.authUrl)
+      const code = await waitForDriveCallback(auth.state)
+      try { popup?.close() } catch {}
+
+      const uploadRes = await fetch('/api/settings/backup/google/upload', {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'x-9r-password': password,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          code,
+          redirectUri: auth.redirectUri || redirectUri,
+          state: auth.state,
+        }),
+      })
+      if (!uploadRes.ok) {
+        throw new Error(await responseErrorMessage(uploadRes, 'Failed to upload encrypted backup to Google Drive'))
+      }
+      const uploaded = await uploadRes.json()
+      alert(`Encrypted backup saved to Google Drive: ${uploaded?.folder || '9router Backups'} / ${uploaded?.name || 'backup'}`)
+    } catch (err) {
+      try { popup?.close() } catch {}
+      alert(`Google Drive backup failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isUploadingDriveBackup = false
+      dbAuthOpen = false
+      dbPassword = ''
+      backupAction = null
+    }
+  }
+
+  function runPendingBackupAction() {
+    if (backupAction === 'share') {
+      void runShareBackup()
+    } else if (backupAction === 'drive') {
+      void runDriveBackup()
+    } else if (backupAction === 'import') {
+      void runImportBackup()
+    } else {
+      void runDownloadBackup()
     }
   }
 
@@ -264,6 +426,7 @@
 
     target.value = ''
     pendingImportFile = file
+    backupAction = 'import'
     dbPassword = ''
     dbAuthOpen = true
   }
@@ -313,6 +476,7 @@
       pendingImportFile = null
       dbAuthOpen = false
       dbPassword = ''
+      backupAction = null
     }
   }
 </script>
@@ -383,19 +547,39 @@
             The native server does not run upstream's versioned schema migration. A new empty database must be initialized with a compatible upstream schema before use.
           </div>
           <div class="text-[11px] text-text-subtle pt-1">
-            Backups are encrypted .9rbak dashboard-data payloads, not a byte-for-byte copy of the live SQLite file.
+            Backups are encrypted .9rbak recovery files. They include provider accounts/connections, routing configuration, API keys, combos, aliases and custom models; the dashboard master password itself is not exported.
           </div>
         </div>
 
-        <div class="flex items-center gap-2 pt-1">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
           <button
             type="button"
             onclick={handleDownloadBackup}
-            disabled={isDownloadingBackup || isImportingBackup}
-            class="flex-1 py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5"
+            disabled={backupBusy()}
+            class="py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             <Download class="w-3.5 h-3.5 text-brand-500" />
-            <span>Download Backup</span>
+            <span>Download encrypted backup</span>
+          </button>
+
+          <button
+            type="button"
+            onclick={handleShareBackup}
+            disabled={backupBusy()}
+            class="py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+          >
+            <Share2 class="w-3.5 h-3.5 text-success" />
+            <span>Share / Save to Drive</span>
+          </button>
+
+          <button
+            type="button"
+            onclick={handleDriveBackup}
+            disabled={backupBusy() || !driveBackupConfigured}
+            class="py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Cloud class="w-3.5 h-3.5 text-info" />
+            <span>Google Drive direct</span>
           </button>
 
           <input
@@ -409,13 +593,22 @@
           <button
             type="button"
             onclick={() => fileInput?.click()}
-            disabled={isImportingBackup || isDownloadingBackup}
-            class="flex-1 py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5"
+            disabled={backupBusy()}
+            class="py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             <Upload class="w-3.5 h-3.5 text-text-muted" />
-            <span>Import Backup</span>
+            <span>Restore backup</span>
           </button>
         </div>
+        <p class="text-[10px] text-text-subtle leading-relaxed">
+          {#if !driveBackupStatusLoaded}
+            Checking direct Google Drive backup…
+          {:else if driveBackupConfigured}
+            Direct Drive is configured. Uploads are encrypted first and only the newest 5 app-created backups are retained.
+          {:else}
+            Direct Drive OAuth is not configured on this runtime. On Android, “Share / Save to Drive” works without extra server configuration.
+          {/if}
+        </p>
       </div>
     </Card>
 
@@ -733,14 +926,24 @@
     <Modal
       isOpen={dbAuthOpen}
       onClose={closeDbAuth}
-      title={pendingImportFile ? 'Confirm Import' : 'Confirm Download'}
+      title={backupAction === 'import'
+        ? 'Confirm Restore'
+        : backupAction === 'drive'
+          ? 'Back up to Google Drive'
+          : backupAction === 'share'
+            ? 'Share Encrypted Backup'
+            : 'Confirm Download'}
       size="sm"
     >
       <div class="space-y-3">
         <p class="text-text-muted">
-          {pendingImportFile
-            ? `Import "${pendingImportFile.name}"? This will overwrite existing server data.`
-            : 'Download an encrypted dashboard backup (.9rbak)?'}
+          {backupAction === 'import'
+            ? `Restore "${pendingImportFile?.name || 'backup'}"? This will overwrite existing server data.`
+            : backupAction === 'drive'
+              ? 'Create an encrypted recovery backup and upload it to your 9router Backups folder in Google Drive?'
+              : backupAction === 'share'
+                ? 'Create an encrypted recovery backup and open Android sharing so you can save it to Drive or Files?'
+                : 'Download an encrypted recovery backup (.9rbak)?'}
         </p>
         <Input
           type="password"
@@ -755,10 +958,16 @@
         </Button>
         <Button
           variant="primary"
-          onclick={() => (pendingImportFile ? runImportBackup() : runDownloadBackup())}
-          loading={isImportingBackup || isDownloadingBackup}
+          onclick={runPendingBackupAction}
+          loading={backupBusy()}
         >
-          {pendingImportFile ? 'Import' : 'Download'}
+          {backupAction === 'import'
+            ? 'Restore'
+            : backupAction === 'drive'
+              ? 'Authorize & Upload'
+              : backupAction === 'share'
+                ? 'Create & Share'
+                : 'Download'}
         </Button>
       {/snippet}
     </Modal>
