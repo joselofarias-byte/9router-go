@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,7 +51,8 @@ func TestJWTExpiresInRejectsExpiredAndMalformed(t *testing.T) {
 			t.Errorf("jwtExpiresIn(%q) = %d, want 0", token, got)
 		}
 	}
-}\n
+}
+
 func TestCodexLoginEnvIsolatesCredentialSources(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/old")
 	t.Setenv("OPENAI_API_KEY", "secret-openai")
