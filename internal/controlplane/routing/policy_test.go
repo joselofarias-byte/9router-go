@@ -95,6 +95,9 @@ func TestEngine_SelectCandidates_UsesObservedPerformance(t *testing.T) {
 	if got[0].ProviderID != "fast" {
 		t.Fatalf("expected lower observed TTFT to rank first, got %#v", got)
 	}
+	if got[0].Score.Dimensions["success_rate"] != got[1].Score.Dimensions["success_rate"] {
+		t.Fatalf("precondition failed: success-rate scores differ, got %#v", got)
+	}
 	if got[0].Score.Dimensions["performance"] <= got[1].Score.Dimensions["performance"] {
 		t.Fatalf("observed TTFT did not affect performance score: %#v", got)
 	}
