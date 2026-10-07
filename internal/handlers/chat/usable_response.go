@@ -129,12 +129,15 @@ func (w *usableResponseWriter) Flush() {
 }
 
 func emptyCompletionError() error {
-	return &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(`{"error":{"message":"upstream returned no text or tool calls","type":"empty_completion","code":502}}`)}
+	return &upstreamError{EmptyCompletion: true, StatusCode: http.StatusBadGateway, Body: []byte(`{"error":{"message":"upstream returned no text or tool calls","type":"empty_completion","code":502}}`)}
 }
 
 func isEmptyCompletionError(ue *upstreamError) bool {
 	if ue.StatusCode != http.StatusBadGateway {
 		return false
+	}
+	if ue.EmptyCompletion {
+		return true
 	}
 	var body struct {
 		Error struct {
