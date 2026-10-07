@@ -256,6 +256,14 @@ func extractAPIKey(connData *ConnectionData) string {
 	return connData.AccessToken
 }
 
+type failingRoundTripper struct {
+	err error
+}
+
+func (t failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, t.err
+}
+
 // GetClientForConnection returns an http.Client configured with ProxyPool transport if set.
 func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) *http.Client {
 	return h.getClientForConnection(connData)
@@ -309,7 +317,12 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	if err != nil {
 		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
 		if strictProxy {
-			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
+			proxyErr := fmt.Errorf("strict proxy configuration invalid for %q: %w", proxyURLStr, err)
+			log.Error("proxy", "strict proxy enabled but proxy url invalid; failing closed", "url", proxyURLStr, "error", proxyErr)
+			return &http.Client{
+				Transport: failingRoundTripper{err: proxyErr},
+				Timeout:   h.Client.Timeout,
+			}
 		}
 		return h.Client
 	}
