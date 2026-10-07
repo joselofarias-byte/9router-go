@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	"context"
+	"errors"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -142,19 +143,9 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionRes
 			return &fusionResult{model: entry, err: fmt.Errorf("unresolved model: %s", entry)}
 		}
 
-		var connID string
-		var connData *ConnectionData
-		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			connData = &ConnectionData{
-				APIKey: cfg.DefaultAPIKey,
-			}
-		} else {
-			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-			if err != nil {
-				return &fusionResult{model: entry, err: err}
-			}
-			connID = conn.ID
-			connData = cData
+		connID, connData, _, err := h.comboConnection(modelInfo, nil)
+		if err != nil {
+			return &fusionResult{model: entry, err: err}
 		}
 
 		var upstreamBody map[string]any
@@ -170,6 +161,12 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionRes
 		rec := &responseBuffer{header: http.Header{}}
 		fwdErr := h.tryForwardWithConnection(context.Background(), rec, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, false, false, "/v1/chat/completions")
 		if fwdErr != nil {
+			var ue *upstreamError
+			if connID != "" && connID != "default" && connID != "noauth" &&
+				errors.As(fwdErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
+				excluded := []string{}
+				h.comboLockRetryable(&excluded, connID, modelInfo.Provider, modelInfo.Model, ue)
+			}
 			return &fusionResult{model: entry, err: fwdErr}
 		}
 
