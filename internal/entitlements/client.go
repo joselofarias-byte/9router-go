@@ -30,6 +30,8 @@ type ActivationRequest struct {
 	AppVersion            string `json:"app_version,omitempty"`
 	BuildChannel          string `json:"build_channel"`
 	BuildID               string `json:"build_id,omitempty"`
+	ProofVersion          int    `json:"proof_version"`
+	ProofSignature        string `json:"proof_signature"`
 }
 
 // RenewalRequest identifies the already-verified license/installation without
@@ -154,7 +156,7 @@ func (c *Client) Activate(ctx context.Context, activationCode string) (*ClientRe
 		return nil, err
 	}
 
-	response, err := c.transport.Activate(ctx, ActivationRequest{
+	request := ActivationRequest{
 		ActivationCode:        code,
 		InstallationID:        identity.ID,
 		InstallationPublicKey: publicKey,
@@ -163,7 +165,14 @@ func (c *Client) Activate(ctx context.Context, activationCode string) (*ClientRe
 		AppVersion:            c.appVersion,
 		BuildChannel:          c.build.Channel,
 		BuildID:               c.build.ID,
-	})
+		ProofVersion:          ActivationProofVersion,
+	}
+	request.ProofSignature, err = signActivationProof(identity.PrivateKey, request)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := c.transport.Activate(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("entitlements.Client.Activate: %w", err)
 	}
