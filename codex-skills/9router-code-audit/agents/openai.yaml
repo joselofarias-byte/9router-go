@@ -1,0 +1,6 @@
+interface:
+  display_name: "9Router Code Audit"
+  short_description: "Read-only evidence-first audit for 9router repositories"
+  default_prompt: "Use $9router-code-audit to audit this repository read-only and return prioritized evidence-backed findings."
+policy:
+  allow_implicit_invocation: true
