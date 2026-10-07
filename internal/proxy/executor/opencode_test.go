@@ -2,6 +2,7 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 func TestInjectReasoningContent(t *testing.T) {
@@ -84,6 +86,45 @@ func TestForwardOpencode(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestForwardOpencode_PropagatesUpstream503(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "json", true: "stream"}[stream], func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(`{"error":{"message":"Endpoint is unavailable"}}`))
+			}))
+			defer srv.Close()
+
+			rec := httptest.NewRecorder()
+			err := ForwardOpencode(rec, &Request{
+				Client:        srv.Client(),
+				Config:        &providers.ProviderConfig{BaseURL: srv.URL},
+				Body:          []byte(`{"model":"exo-free","messages":[{"role":"user","content":"hi"}]}`),
+				IsStream:      stream,
+				TranslateResp: false,
+			})
+			if err == nil {
+				t.Fatal("expected upstream 503 error")
+			}
+
+			var ue *proxy.UpstreamError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected *proxy.UpstreamError, got %T: %v", err, err)
+			}
+			if ue.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("expected status 503, got %d", ue.StatusCode)
+			}
+			if !strings.Contains(string(ue.Body), "Endpoint is unavailable") {
+				t.Fatalf("expected upstream error body to be preserved, got %s", string(ue.Body))
+			}
+			if rec.Body.Len() != 0 {
+				t.Fatalf("expected no client response before fallback, got %s", rec.Body.String())
+			}
+		})
 	}
 }
 

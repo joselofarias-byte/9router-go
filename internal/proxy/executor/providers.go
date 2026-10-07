@@ -368,6 +368,18 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	}
 	defer resp.Body.Close()
 
+	// Preserve upstream failures so combo/account fallback can classify the
+	// status, lock the failing route, and continue to the next candidate.
+	// Without this check, jsonResponse/execSSEStream treated e.g. a 503 from
+	// OpenCode Zen as a successful response and the caller never failed over.
+	if resp.StatusCode != http.StatusOK {
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+		if readErr != nil {
+			errBody = []byte("failed to read error body")
+		}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+	}
+
 	if req.IsStream {
 		return execSSEStream(w, resp.Body, req)
 	}
