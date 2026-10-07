@@ -226,5 +226,17 @@
   "Strong": "Stark",
   "minimum": "Minimum",
   "Show password": "Passwort anzeigen",
-  "Hide password": "Passwort ausblenden"
+  "Hide password": "Passwort ausblenden",
+  "1. Dashboard authorization": "1. Dashboard-Autorisierung",
+  "This is your current dashboard password. It only authorizes the backup operation.": "Dies ist dein aktuelles Dashboard-Passwort. Es autorisiert nur den Sicherungsvorgang.",
+  "Current dashboard password": "Aktuelles Dashboard-Passwort",
+  "2. Backup encryption": "2. Sicherungsverschlüsselung",
+  "2. Backup decryption": "2. Sicherungsentschlüsselung",
+  "Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.": "Erstelle eine separate Wiederherstellungs-Passphrase für diese .9rbak-Datei. Du benötigst sie später zur Wiederherstellung.",
+  "Enter the recovery passphrase that was used when this encrypted backup was created.": "Gib die Wiederherstellungs-Passphrase ein, die beim Erstellen dieser verschlüsselten Sicherung verwendet wurde.",
+  "Recovery passphrase": "Wiederherstellungs-Passphrase",
+  "Confirm recovery passphrase": "Wiederherstellungs-Passphrase bestätigen",
+  "Type the same recovery passphrase again": "Gib dieselbe Wiederherstellungs-Passphrase erneut ein",
+  "Passphrases match ✓": "Passphrasen stimmen überein ✓",
+  "Passphrases do not match": "Passphrasen stimmen nicht überein"
 }
