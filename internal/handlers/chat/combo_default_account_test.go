@@ -83,3 +83,30 @@ func TestHandleComboFallback_DefaultKeyProviderUsesConfiguredAccountFeedback(t *
 		t.Fatal("expected locked configured account to block synthetic default-key fallback")
 	}
 }
+
+
+func TestComboConnection_DefaultKeyUsedOnlyWhenNoConfiguredAccountsExist(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'opencode'`); err != nil {
+		t.Fatalf("clear opencode connections: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+	modelInfo := &ModelInfo{Provider: "opencode", Model: "audit-public-model"}
+
+	connID, connData, oneShot, err := h.comboConnection(modelInfo, nil)
+	if err != nil {
+		t.Fatalf("expected built-in default route with no configured accounts: %v", err)
+	}
+	if connID != "default" {
+		t.Fatalf("expected synthetic default connection, got %q", connID)
+	}
+	if connData == nil || connData.APIKey != providers.KnownProviders["opencode"].DefaultAPIKey {
+		t.Fatalf("expected provider default API key, got %#v", connData)
+	}
+	if !oneShot {
+		t.Fatal("expected synthetic default route to be one-shot")
+	}
+}
