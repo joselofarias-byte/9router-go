@@ -111,6 +111,11 @@ func SetupRoutes(r interface {
 	r.Get("/usage/stats", HandleUsageStats(repo))
 	r.Get("/api/usage/stats", HandleUsageStats(repo))
 
+	// Fabric / Control Plane administrative introspection.
+	// SetupRoutes is mounted inside the API-key protected group in SetupServerRouter.
+	r.Get("/api/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/api/admin/explain-route", chatH.HandleAdminExplainRoute)
+
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
 }
