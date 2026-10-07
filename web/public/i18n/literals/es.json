@@ -249,5 +249,17 @@
   "minimum": "mínimo",
   "Use a mix of upper/lowercase, numbers, and symbols.": "Usá una combinación de mayúsculas, minúsculas, números y símbolos.",
   "Show password": "Mostrar contraseña",
-  "Hide password": "Ocultar contraseña"
+  "Hide password": "Ocultar contraseña",
+  "1. Dashboard authorization": "1. Autorización del panel",
+  "This is your current dashboard password. It only authorizes the backup operation.": "Esta es tu contraseña actual del panel. Solo autoriza la operación de respaldo.",
+  "Current dashboard password": "Contraseña actual del panel",
+  "2. Backup encryption": "2. Cifrado del respaldo",
+  "2. Backup decryption": "2. Descifrado del respaldo",
+  "Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.": "Creá una frase de recuperación distinta para este archivo .9rbak. La vas a necesitar para restaurar el respaldo más adelante.",
+  "Enter the recovery passphrase that was used when this encrypted backup was created.": "Ingresá la frase de recuperación usada cuando se creó este respaldo cifrado.",
+  "Recovery passphrase": "Frase de recuperación",
+  "Confirm recovery passphrase": "Confirmar frase de recuperación",
+  "Type the same recovery passphrase again": "Escribí nuevamente la misma frase de recuperación",
+  "Passphrases match ✓": "Las frases coinciden ✓",
+  "Passphrases do not match": "Las frases no coinciden"
 }
