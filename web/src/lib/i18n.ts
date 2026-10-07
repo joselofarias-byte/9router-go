@@ -144,9 +144,8 @@ async function loadTranslations(locale: SupportedLocale): Promise<TranslationMap
 
 function applyDocumentLocale(locale: SupportedLocale) {
   document.documentElement.lang = locale
-  document.documentElement.dir = locale === 'ar' || locale === 'he' || locale === 'fa' || locale === 'ur'
-    ? 'rtl'
-    : 'ltr'
+  // Every locale currently exposed by the Go dashboard is left-to-right.
+  document.documentElement.dir = 'ltr'
 }
 
 export async function setRuntimeLocale(
