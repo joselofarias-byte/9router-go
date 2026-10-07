@@ -291,5 +291,14 @@
   "Restore selected backup": "Restaurar respaldo seleccionado",
   "Export file": "Exportar archivo",
   "Create an encrypted recovery backup in your Google Drive?": "¿Crear un respaldo de recuperación cifrado en tu Google Drive?",
-  "Export an encrypted recovery backup (.9rbak) to this device?": "¿Exportar un respaldo de recuperación cifrado (.9rbak) a este dispositivo?"
+  "Export an encrypted recovery backup (.9rbak) to this device?": "¿Exportar un respaldo de recuperación cifrado (.9rbak) a este dispositivo?",
+  "Backups are encrypted before leaving 9router-go. No Google OAuth setup is required for manual Drive backups on Android.": "Los respaldos se cifran antes de salir de 9router-go. En Android no hace falta configurar OAuth de Google para guardarlos manualmente en Drive.",
+  "Save to Google Drive": "Guardar en Google Drive",
+  "Android opens its system chooser. Pick Google Drive to save, or choose a .9rbak file from Drive to restore.": "Android abre el selector del sistema. Elegí Google Drive para guardar o seleccioná un archivo .9rbak desde Drive para restaurar.",
+  "Save encrypted backup": "Guardar respaldo cifrado",
+  "Create an encrypted backup and open Android sharing. Choose Google Drive in the system sheet.": "Creá un respaldo cifrado y abrí el menú Compartir de Android. Elegí Google Drive en el selector del sistema.",
+  "Open Android sharing": "Abrir Compartir de Android",
+  "This browser cannot open the Android share sheet, so the encrypted backup was downloaded instead.": "Este navegador no puede abrir el menú Compartir de Android, así que el respaldo cifrado se descargó en su lugar.",
+  "Failed to share backup:": "No se pudo compartir el respaldo:",
+  "Failed to export backup:": "No se pudo exportar el respaldo:"
 }
