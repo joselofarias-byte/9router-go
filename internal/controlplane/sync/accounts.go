@@ -3,13 +3,12 @@ package sync
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/log"
 )
-
-import "sync"
 
 var (
 	genMu         sync.RWMutex
@@ -23,6 +22,27 @@ var queryFullAccounts = "SELECT id, provider, isActive, createdAt, updatedAt FRO
 // SyncAccountsFromDB reads providerConnections and safely syncs metadata into the RegistryState
 // using a fast-path generation check to avoid expensive querying when no mutations occurred.
 func SyncAccountsFromDB(db *sql.DB) error {
+	return syncAccountsFromDB(db, false)
+}
+
+// ForceSyncAccountsFromDB bypasses the generation fast path. Snapshot activation
+// uses this after replacing the whole RegistryState, because the DB generation may
+// already equal lastSyncGen while the newly-activated snapshot contains an older
+// Accounts map. Clearing hasSyncedOnce first also guarantees a later request retries
+// if the forced scan itself fails.
+func ForceSyncAccountsFromDB(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+
+	genMu.Lock()
+	hasSyncedOnce = false
+	genMu.Unlock()
+
+	return syncAccountsFromDB(db, true)
+}
+
+func syncAccountsFromDB(db *sql.DB, force bool) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -43,8 +63,8 @@ func SyncAccountsFromDB(db *sql.DB) error {
 		syncedOnce := hasSyncedOnce
 		genMu.RUnlock()
 
-		if isEqual && syncedOnce {
-			// No changes detected in the DB, safe to abort full sync
+		if !force && isEqual && syncedOnce {
+			// No changes detected in the DB, safe to abort full sync.
 			return nil
 		}
 	} else if err != sql.ErrNoRows {
