@@ -61,6 +61,25 @@ func canonicalActivationProofPayload(request ActivationRequest) ([]byte, error) 
 	return raw, nil
 }
 
+func activationProofKeyBound(request ActivationRequest, publicKey ed25519.PublicKey) bool {
+	encoded, err := encodeInstallationPublicKey(publicKey)
+	if err != nil || encoded != strings.TrimSpace(request.InstallationPublicKey) {
+		return false
+	}
+	return keyBackedInstallationMatches(request.InstallationID, publicKey)
+}
+
+// keyBackedInstallationMatches enforces the ik1_ installation id as a
+// commitment to the verification key. Legacy UUID ids are not self-describing
+// and stay bound to the key the caller looked up.
+func keyBackedInstallationMatches(installationID string, publicKey ed25519.PublicKey) bool {
+	installationID = strings.TrimSpace(installationID)
+	if !strings.HasPrefix(installationID, installationIDPrefix) {
+		return true
+	}
+	return len(publicKey) == ed25519.PublicKeySize && installationID == installationIDFromPublicKey(publicKey)
+}
+
 func signActivationProof(privateKey ed25519.PrivateKey, request ActivationRequest) (string, error) {
 	if len(privateKey) != ed25519.PrivateKeySize || request.ProofVersion != ActivationProofVersion {
 		return "", ErrInvalidActivationProof
@@ -79,7 +98,8 @@ func signActivationProof(privateKey ed25519.PrivateKey, request ActivationReques
 func VerifyActivationProof(request ActivationRequest, publicKey ed25519.PublicKey) error {
 	if len(publicKey) != ed25519.PublicKeySize ||
 		request.ProofVersion != ActivationProofVersion ||
-		strings.TrimSpace(request.ProofSignature) == "" {
+		strings.TrimSpace(request.ProofSignature) == "" ||
+		!activationProofKeyBound(request, publicKey) {
 		return ErrInvalidActivationProof
 	}
 	signature, err := base64.StdEncoding.DecodeString(request.ProofSignature)
@@ -133,7 +153,8 @@ func signReleaseProof(privateKey ed25519.PrivateKey, request ReleaseRequest) (st
 func VerifyReleaseProof(request ReleaseRequest, publicKey ed25519.PublicKey) error {
 	if len(publicKey) != ed25519.PublicKeySize ||
 		request.ProofVersion != ReleaseProofVersion ||
-		strings.TrimSpace(request.ProofSignature) == "" {
+		strings.TrimSpace(request.ProofSignature) == "" ||
+		!keyBackedInstallationMatches(request.InstallationID, publicKey) {
 		return ErrInvalidReleaseProof
 	}
 	signature, err := base64.StdEncoding.DecodeString(request.ProofSignature)
@@ -198,7 +219,8 @@ func signRenewalProof(privateKey ed25519.PrivateKey, request RenewalRequest) (st
 func VerifyRenewalProof(request RenewalRequest, publicKey ed25519.PublicKey) error {
 	if len(publicKey) != ed25519.PublicKeySize ||
 		request.ProofVersion != RenewalProofVersion ||
-		strings.TrimSpace(request.ProofSignature) == "" {
+		strings.TrimSpace(request.ProofSignature) == "" ||
+		!keyBackedInstallationMatches(request.InstallationID, publicKey) {
 		return ErrInvalidRenewalProof
 	}
 	signature, err := base64.StdEncoding.DecodeString(request.ProofSignature)
