@@ -164,6 +164,26 @@ func (s *RuntimeStore) LoadLease() ([]byte, error) {
 	return out, err
 }
 
+// ClearLease removes only the cached signed lease after the control plane has
+// confirmed self-service release. Installation identity and trusted time remain
+// intact so a failed/offline release can never silently free or reset state.
+func (s *RuntimeStore) ClearLease() error {
+	if s == nil || strings.TrimSpace(s.dir) == "" {
+		return errors.New("entitlements.RuntimeStore: empty data directory")
+	}
+	path := s.leaseCachePath()
+	if err := withPathLock(path, func() error {
+		err := os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}); err != nil {
+		return fmt.Errorf("entitlements.RuntimeStore.ClearLease: %w", err)
+	}
+	return nil
+}
+
 // LastTrustedTime returns zero time when no trusted clock has been persisted.
 func (s *RuntimeStore) LastTrustedTime() (time.Time, error) {
 	if s == nil || strings.TrimSpace(s.dir) == "" {
