@@ -4148,7 +4148,7 @@
             <p class="text-2xl font-mono font-bold tracking-[0.3em] text-text-main select-all">{deviceUserCode}</p>
           </div>
         {/if}
-        {#if oauthAuthUrl}
+        {#if oauthAuthUrl && !(providerId === 'codex' && codexCliMode)}
           <div>
             <p class="text-sm font-medium mb-1">Step 1: Open this URL in your browser</p>
           <div class="flex gap-2">
@@ -4201,10 +4201,11 @@
           </div>
         {/if}
         {#if providerId === 'codex' && codexCliMode}
-          <div class="p-3 border border-border rounded-md bg-sidebar/50">
-            <p class="text-sm font-medium text-text-main">Finish the login in the browser</p>
+          <div class="p-4 border border-border rounded-md bg-sidebar/50 text-center">
+            <span class="material-symbols-outlined text-xl animate-spin text-primary">progress_activity</span>
+            <p class="text-sm font-medium text-text-main mt-2">Waiting for browser authorization…</p>
             <p class="text-[11px] text-text-muted mt-1">
-              Codex CLI owns this callback. Keep this dialog open; 9router will import the account automatically. Do not start another login while this one is in progress.
+              Nothing to paste or submit here. Finish signing in in the browser and this dialog will close automatically.
             </p>
           </div>
         {:else}
@@ -4244,7 +4245,19 @@
         {/if}
 
         <div class="flex gap-2 pt-2">
-          {#if !(providerId === 'codex' && codexCliMode)}
+          {#if providerId === 'codex' && codexCliMode}
+          <button
+            type="button"
+            onclick={() => {
+              if (oauthAuthUrl && typeof window !== 'undefined') {
+                window.open(oauthAuthUrl, '_blank', 'width=600,height=700')
+              }
+            }}
+            class="flex-1 py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-main border border-border cursor-pointer"
+          >
+            Reopen login
+          </button>
+          {:else}
           <button
             type="button"
             onclick={() => {
