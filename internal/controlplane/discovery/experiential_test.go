@@ -48,13 +48,12 @@ func TestExperientialFreeAdapterDiscoversOnlyStrictFreeAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover returned error: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 strict-free candidates, got %d: %+v", len(got), got)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 chat-compatible strict-free candidate, got %d: %+v", len(got), got)
 	}
 
 	want := map[string]bool{
 		"anthropic/claude-haiku-5.5:free": true,
-		"openai/gpt-6-luna-decisions:free": true,
 	}
 	for _, candidate := range got {
 		if candidate.ProviderID != "experiential" {
@@ -123,7 +122,7 @@ func TestExperientialFreeChatCompatibleRejectsJev(t *testing.T) {
 		t.Fatal("Jev is native /v1/systemone only and must stay out of free-best")
 	}
 	if !experientialFreeChatCompatible(experientialCatalogModel{
-		ID: "openai/gpt-6-luna-decisions:free", CanonicalSlug: "gpt-6-luna-decisions",
+		ID: "anthropic/claude-haiku-5.5:free", CanonicalSlug: "claude-haiku-5.5",
 	}) {
 		t.Fatal("chat-capable Experiential free model was rejected")
 	}
