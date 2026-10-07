@@ -27,6 +27,20 @@ type Record struct {
 	ConsecutiveSuccess  int
 	LastQuarantineAt    time.Time
 	QuarantineUntil     time.Time
+
+	RequestCount       uint64
+	RequestSuccesses   uint64
+	LatencyTotalMs     int64
+	TTFTTotalMs        int64
+	TTFTSamples        uint64
+}
+
+// RequestStats is the runtime feedback used by routing/scoring.
+type RequestStats struct {
+	Samples      uint64
+	SuccessRate  float64
+	AvgLatencyMs int64
+	AvgTTFTMs    int64
 }
 
 type Manager struct {
@@ -45,19 +59,74 @@ func (m *Manager) key(provider, model, account string) string {
 	return provider + "|" + model + "|" + account
 }
 
-// RecordObservation updates trust state based on a request outcome or probe
+// RecordObservation updates trust state based on a request outcome or probe.
 func (m *Manager) RecordObservation(provider, model, account string, success bool, errCat providers.ErrorCategory) {
 	k := m.key(provider, model, account)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	r := m.ensureRecordLocked(k)
+	m.recordObservationLocked(k, r, success, errCat)
+}
+
+// RecordRequestOutcome updates trust and the runtime statistics consumed by routing.
+// TTFT <= 0 is treated as unavailable, while latency is recorded for every request.
+func (m *Manager) RecordRequestOutcome(provider, model, account string, success bool, errCat providers.ErrorCategory, latencyMs, ttftMs int64) {
+	k := m.key(provider, model, account)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	r := m.ensureRecordLocked(k)
+	m.recordObservationLocked(k, r, success, errCat)
+
+	r.RequestCount++
+	if success {
+		r.RequestSuccesses++
+	}
+	if latencyMs > 0 {
+		r.LatencyTotalMs += latencyMs
+	}
+	if ttftMs > 0 {
+		r.TTFTTotalMs += ttftMs
+		r.TTFTSamples++
+	}
+}
+
+// GetRequestStats returns a point-in-time copy of observed runtime performance.
+func (m *Manager) GetRequestStats(provider, model, account string) RequestStats {
+	k := m.key(provider, model, account)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	r, exists := m.records[k]
-	if !exists {
-		r = &Record{Level: TrustUnknown}
-		m.records[k] = r
+	if !exists || r.RequestCount == 0 {
+		return RequestStats{}
 	}
 
+	stats := RequestStats{
+		Samples:      r.RequestCount,
+		SuccessRate:  float64(r.RequestSuccesses) / float64(r.RequestCount),
+		AvgLatencyMs: r.LatencyTotalMs / int64(r.RequestCount),
+	}
+	if r.TTFTSamples > 0 {
+		stats.AvgTTFTMs = r.TTFTTotalMs / int64(r.TTFTSamples)
+	}
+	return stats
+}
+
+func (m *Manager) ensureRecordLocked(k string) *Record {
+	if r, exists := m.records[k]; exists {
+		return r
+	}
+	r := &Record{Level: TrustUnknown}
+	m.records[k] = r
+	return r
+}
+
+func (m *Manager) recordObservationLocked(k string, r *Record, success bool, errCat providers.ErrorCategory) {
 	if success {
 		r.ConsecutiveFailures = 0
 		r.ConsecutiveSuccess++
@@ -71,20 +140,21 @@ func (m *Manager) RecordObservation(provider, model, account string, success boo
 		} else if r.Level == TrustQuarantined && time.Now().After(r.QuarantineUntil) {
 			r.Level = TrustDegraded
 		}
-	} else {
-		r.ConsecutiveSuccess = 0
-		r.ConsecutiveFailures++
+		return
+	}
 
-		// Immediately quarantine on authentication or permanent failures
-		if errCat == providers.ErrAuth || errCat == providers.ErrPermanent {
-			m.quarantine(r, 60*time.Minute)
-			log.Warn("trust", "immediate quarantine", "node", k, "reason", string(errCat))
-		} else if r.ConsecutiveFailures > 5 {
-			m.quarantine(r, 5*time.Minute)
-			log.Warn("trust", "repeated failures quarantine", "node", k, "failures", r.ConsecutiveFailures)
-		} else if r.Level == TrustTrusted || r.Level == TrustVerified {
-			r.Level = TrustDegraded
-		}
+	r.ConsecutiveSuccess = 0
+	r.ConsecutiveFailures++
+
+	// Immediately quarantine on authentication or permanent failures.
+	if errCat == providers.ErrAuth || errCat == providers.ErrPermanent {
+		m.quarantine(r, 60*time.Minute)
+		log.Warn("trust", "immediate quarantine", "node", k, "reason", string(errCat))
+	} else if r.ConsecutiveFailures > 5 {
+		m.quarantine(r, 5*time.Minute)
+		log.Warn("trust", "repeated failures quarantine", "node", k, "failures", r.ConsecutiveFailures)
+	} else if r.Level == TrustTrusted || r.Level == TrustVerified {
+		r.Level = TrustDegraded
 	}
 }
 

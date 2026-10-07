@@ -230,6 +230,18 @@ func (h *ChatHandler) tryForwardWithConnection(
 
 	latencyMs := time.Since(start).Milliseconds()
 
+	// Feed the final request outcome back into the same trust manager used by
+	// Control Plane routing. A reactive OAuth refresh that succeeds records a
+	// success; only the final failure is classified.
+	errCategory := providers.ErrTransient
+	if fwdErr != nil {
+		var finalUpstreamErr *upstreamError
+		if errors.As(fwdErr, &finalUpstreamErr) {
+			errCategory = providers.ClassifyError(finalUpstreamErr.StatusCode, extractErrorText(finalUpstreamErr.Body), 0).Category
+		}
+	}
+	globalTrustManager.RecordRequestOutcome(provider, model, connectionID, fwdErr == nil, errCategory, latencyMs, metrics.TTFT)
+
 	// Lightweight request trace for /debug/traces (provider/model latency).
 	status := "error"
 	if fwdErr == nil {
