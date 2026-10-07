@@ -119,15 +119,24 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 	}
 
 	totalDiscovered := 0
+	allAdaptersSucceeded := len(o.adapters) > 0
+	discoveredByProvider := make(map[string]map[string]struct{})
+
 	for _, adapter := range o.adapters {
 		candidates, err := adapter.Discover(ctx)
 		if err != nil {
+			allAdaptersSucceeded = false
 			log.Warn("orchestrator", "adapter sync failed", "adapter", adapter.SourceID(), "err", err)
 			continue
 		}
 
 		totalDiscovered += len(candidates)
 		for _, c := range candidates {
+			if _, ok := discoveredByProvider[c.ProviderID]; !ok {
+				discoveredByProvider[c.ProviderID] = make(map[string]struct{})
+			}
+			discoveredByProvider[c.ProviderID][c.ModelID] = struct{}{}
+
 			// Upsert Provider
 			if _, exists := newState.Providers[c.ProviderID]; !exists {
 				newState.Providers[c.ProviderID] = &registry.Provider{
@@ -157,17 +166,36 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 			pm, exists := newState.ProviderModels[c.ProviderID][c.ModelID]
 			if !exists {
 				pm = &registry.ProviderModel{
-					ProviderID:    c.ProviderID,
-					ModelID:       c.ModelID,
-					UpstreamModel: c.UpstreamModel,
-					PricingMode:   c.PricingMode,
-					Capabilities:  c.Capabilities,
-					IsActive:      true,
-					CreatedAt:     time.Now().UTC(),
+					ProviderID: c.ProviderID,
+					ModelID:    c.ModelID,
+					CreatedAt:  time.Now().UTC(),
 				}
 				newState.ProviderModels[c.ProviderID][c.ModelID] = pm
 			}
+
+			// Discovery is authoritative for mutable offer metadata on a successful pass.
+			pm.UpstreamModel = c.UpstreamModel
+			pm.PricingMode = c.PricingMode
+			pm.CostMetadata = c.CostMetadata
+			pm.Capabilities = c.Capabilities
+			pm.IsActive = true
 			pm.UpdatedAt = time.Now().UTC()
+		}
+	}
+
+	// Retire offers omitted from a provider's current catalog only when every
+	// configured adapter succeeded. If any source failed, preserve previous
+	// liveness to avoid turning a transient discovery outage into mass removal.
+	if allAdaptersSucceeded {
+		now := time.Now().UTC()
+		for providerID, discoveredModels := range discoveredByProvider {
+			for modelID, pm := range newState.ProviderModels[providerID] {
+				if _, seen := discoveredModels[modelID]; seen {
+					continue
+				}
+				pm.IsActive = false
+				pm.UpdatedAt = now
+			}
 		}
 	}
 
