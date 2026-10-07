@@ -601,24 +601,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			var entrySuccess bool
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
-				var connID string
-				var connData *ConnectionData
-				isKnownNoAuth := false
-				isNoAuthProvider := false
-				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-					isKnownNoAuth = true
-					isNoAuthProvider = cfg.NoAuth
-					connData = &ConnectionData{
-						APIKey:      cfg.DefaultAPIKey,
-						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
-					}
-				} else {
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
-					if err != nil {
-						break
-					}
-					connID = conn.ID
-					connData = cData
+				cfg, known := providers.KnownProviders[modelInfo.Provider]
+				isNoAuthProvider := known && cfg.NoAuth
+				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
+				if connErr != nil {
+					break
 				}
 				// Skip a connection that is already locked for this model
 				if connID != "" {
@@ -816,24 +803,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			var entrySuccess bool
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
-				var connID string
-				var connData *ConnectionData
-				isKnownNoAuth := false
-				isNoAuthProvider := false
-				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-					isKnownNoAuth = true
-					isNoAuthProvider = cfg.NoAuth
-					connData = &ConnectionData{
-						APIKey:      cfg.DefaultAPIKey,
-						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
-					}
-				} else {
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
-					if err != nil {
-						break
-					}
-					connID = conn.ID
-					connData = cData
+				cfg, known := providers.KnownProviders[modelInfo.Provider]
+				isNoAuthProvider := known && cfg.NoAuth
+				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
+				if connErr != nil {
+					break
 				}
 				if connID != "" {
 					lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
