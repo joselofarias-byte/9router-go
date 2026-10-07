@@ -89,3 +89,29 @@ func TestInitializeControlPlaneForServingRefreshesSnapshotAccounts(t *testing.T)
 		t.Fatalf("stale snapshot account survived startup sync: %#v", state.Accounts)
 	}
 }
+
+
+func TestInitializeControlPlaneForServingFailsWithoutAuthoritativeAccounts(t *testing.T) {
+	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "startup-missing-accounts.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer database.Close()
+
+	if _, err := database.Exec(`
+		CREATE TABLE registry_snapshots (
+			version TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			checksum TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL
+		);
+	`); err != nil {
+		t.Fatalf("create registry table: %v", err)
+	}
+
+	if err := initializeControlPlaneForServing(database); err == nil {
+		t.Fatal("expected startup to fail when providerConnections is unavailable")
+	}
+}
