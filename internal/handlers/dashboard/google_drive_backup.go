@@ -218,31 +218,57 @@ func (h *DashboardHandler) HandleGoogleBackupUpload(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// New clients use the persisted refresh token and send an empty body.
+	// The authorization-code path remains accepted for compatibility with
+	// older dashboard builds and also upgrades them to a persistent connection.
 	var body struct {
 		Code        string `json:"code"`
 		RedirectURI string `json:"redirectUri"`
 		State       string `json:"state"`
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil || json.Unmarshal(raw, &body) != nil {
+	if err != nil {
 		writePlainError(w, http.StatusBadRequest, "Invalid Google Drive backup request")
 		return
 	}
-	body.Code = cleanGoogleBackupAuthCode(body.Code)
-	body.RedirectURI = strings.TrimSpace(body.RedirectURI)
-	if body.Code == "" || validateGoogleBackupRedirectURI(body.RedirectURI) != nil {
-		writePlainError(w, http.StatusBadRequest, "Missing authorization code or invalid redirectUri")
-		return
-	}
-	if !consumeGoogleBackupState(body.State, body.RedirectURI) {
-		writePlainError(w, http.StatusBadRequest, "Invalid or expired OAuth state")
-		return
-	}
 
-	accessToken, err := exchangeGoogleBackupCode(r.Context(), body.Code, body.RedirectURI)
-	if err != nil {
-		writePlainError(w, http.StatusBadGateway, err.Error())
-		return
+	accessToken := ""
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writePlainError(w, http.StatusBadRequest, "Invalid Google Drive backup request")
+			return
+		}
+		body.Code = cleanGoogleBackupAuthCode(body.Code)
+		body.RedirectURI = strings.TrimSpace(body.RedirectURI)
+		if body.Code != "" {
+			if validateGoogleBackupRedirectURI(body.RedirectURI) != nil {
+				writePlainError(w, http.StatusBadRequest, "Invalid redirectUri")
+				return
+			}
+			if !consumeGoogleBackupState(body.State, body.RedirectURI) {
+				writePlainError(w, http.StatusBadRequest, "Invalid or expired OAuth state")
+				return
+			}
+			token, exchangeErr := exchangeGoogleBackupCodeTokens(r.Context(), body.Code, body.RedirectURI)
+			if exchangeErr != nil {
+				writePlainError(w, http.StatusBadGateway, exchangeErr.Error())
+				return
+			}
+			accessToken = token.AccessToken
+			if token.RefreshToken != "" {
+				if err := h.setGoogleDriveBackupRefreshToken(token.RefreshToken); err != nil {
+					writePlainError(w, http.StatusInternalServerError, "Failed to save Google Drive connection")
+					return
+				}
+			}
+		}
+	}
+	if accessToken == "" {
+		accessToken, err = h.googleDriveBackupAccessToken(r.Context())
+		if err != nil {
+			writePlainError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
 	}
 
 	payload, err := h.exportDatabase()
@@ -283,7 +309,7 @@ func (h *DashboardHandler) HandleGoogleBackupUpload(w http.ResponseWriter, r *ht
 		"encrypted":      true,
 		"retention":      googleDriveBackupKeep,
 		"rotatedDeleted": deleted,
-		"oauthPersisted": false,
+		"oauthPersisted": true,
 	}
 	if rotateErr != nil {
 		response["rotationWarning"] = "Backup uploaded, but old-backup rotation was incomplete"
