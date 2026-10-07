@@ -17,6 +17,7 @@ func TestLicenseCommandShape(t *testing.T) {
 		"activate": false,
 		"status":   false,
 		"renew":    false,
+		"release":  false,
 		"menu":     false,
 	}
 	for _, sub := range cmd.Subcommands {
