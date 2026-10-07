@@ -81,6 +81,7 @@ func ProvideServer(p ServerParams) *http.Server {
 				discovery.NewModelsDevAdapter(nil),
 				discovery.NewLlamaCppAdapter(nil, os.Getenv("LLAMACPP_BASE_URL")),
 				discovery.NewClineFreeAdapter(nil),
+				discovery.NewExperientialFreeAdapter(p.DB, nil),
 			}
 			if unoAPIKey := os.Getenv("UNOROUTER_API_KEY"); unoAPIKey != "" {
 				adapters = append(adapters, discovery.NewUnoRouterAdapter(nil, unoAPIKey))
