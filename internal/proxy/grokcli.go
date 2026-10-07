@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -36,15 +34,6 @@ func streamHeaders(headers map[string]string, isStream bool) {
 	}
 }
 
-const grokCLIDefaultClientVersion = "1.0.45"
-
-func grokCLIClientVersion() string {
-	if v := strings.TrimSpace(os.Getenv("GROK_CLI_CLIENT_VERSION")); v != "" {
-		return v
-	}
-	return grokCLIDefaultClientVersion
-}
-
 func grokCLIModelOverride(body []byte) string {
 	var payload struct {
 		Model string `json:"model"`
@@ -57,10 +46,6 @@ func grokCLIModelOverride(body []byte) string {
 	return "grok-build"
 }
 
-func grokCLIUserAgent(version string) string {
-	return fmt.Sprintf("grok-shell/%s (%s; %s)", version, runtime.GOOS, runtime.GOARCH)
-}
-
 // ForwardGrokCLI forwards to the official Grok CLI chat proxy using the
 // Responses API shape produced by the caller. xAI version-gates this surface,
 // so keep the compatibility version current and allow an emergency environment
@@ -69,13 +54,9 @@ func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.Pro
 	headers := map[string]string{}
 	setAuth(headers, cfg, apiKey)
 
-	version := grokCLIClientVersion()
-	headers["User-Agent"] = grokCLIUserAgent(version)
-	headers["x-grok-client-identifier"] = "grok-shell"
-	headers["x-grok-client-version"] = version
-	headers["X-XAI-Token-Auth"] = "xai-grok-cli"
-	headers["x-authenticateresponse"] = "authenticate-response"
-	headers["x-grok-client-mode"] = "headless"
+	for k, v := range providers.GrokCLIProxyHeaders("") {
+		headers[k] = v
+	}
 	headers["x-grok-model-override"] = grokCLIModelOverride(body)
 	streamHeaders(headers, isStream)
 
