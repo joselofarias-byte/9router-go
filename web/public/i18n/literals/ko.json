@@ -226,5 +226,17 @@
   "Strong": "강함",
   "minimum": "최소",
   "Show password": "비밀번호 표시",
-  "Hide password": "비밀번호 숨기기"
+  "Hide password": "비밀번호 숨기기",
+  "1. Dashboard authorization": "1. 대시보드 인증",
+  "This is your current dashboard password. It only authorizes the backup operation.": "현재 대시보드 비밀번호입니다. 백업 작업 승인에만 사용됩니다.",
+  "Current dashboard password": "현재 대시보드 비밀번호",
+  "2. Backup encryption": "2. 백업 암호화",
+  "2. Backup decryption": "2. 백업 복호화",
+  "Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.": "이 .9rbak 파일용 별도의 복구 암호문을 만드세요. 나중에 복원할 때 필요합니다.",
+  "Enter the recovery passphrase that was used when this encrypted backup was created.": "이 암호화 백업을 만들 때 사용한 복구 암호문을 입력하세요.",
+  "Recovery passphrase": "복구 암호문",
+  "Confirm recovery passphrase": "복구 암호문 확인",
+  "Type the same recovery passphrase again": "같은 복구 암호문을 다시 입력하세요",
+  "Passphrases match ✓": "암호문이 일치합니다 ✓",
+  "Passphrases do not match": "암호문이 일치하지 않습니다"
 }
