@@ -33,6 +33,13 @@ func (h *ChatHandler) HandleAdminExplainRoute(w http.ResponseWriter, r *http.Req
 	policy := routing.PolicyBalanced
 	if policyParam != "" {
 		policy = routing.Policy(policyParam)
+		switch policy {
+		case routing.PolicyBalanced, routing.PolicyFreeOnly, routing.PolicyFreeFirst, routing.PolicyTrusted:
+			// valid
+		default:
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unsupported 'policy' parameter")
+			return
+		}
 	}
 
 	// Explain using the same stateful engine that serves production routing so

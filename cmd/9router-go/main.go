@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/controlplane/discovery"
 	"9router/proxy/internal/controlplane/registry"
+	cpsync "9router/proxy/internal/controlplane/sync"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
@@ -129,6 +131,16 @@ func main() {
 	}
 }
 
+func initializeControlPlaneForServing(conn *sql.DB) error {
+	if err := registry.InitRegistry(conn); err != nil {
+		return fmt.Errorf("registry init: %w", err)
+	}
+	if err := cpsync.SyncAccountsFromDB(conn); err != nil {
+		return fmt.Errorf("account sync: %w", err)
+	}
+	return nil
+}
+
 func runServer(cCtx *cli.Context) error {
 	if logPath := os.Getenv("LOG_FILE"); logPath != "" {
 		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -152,10 +164,12 @@ func runServer(cCtx *cli.Context) error {
 	}
 	defer conn.Close()
 
-	// Initialize Control Plane Registry from DB Snapshot
-	registryErr := registry.InitRegistry(conn)
-	if registryErr != nil {
-		log.Printf("[config] registry init warning: %v", registryErr)
+	// Initialize the Control Plane before any HTTP route is exposed. Accounts
+	// are DB-authoritative and must be refreshed immediately after loading a
+	// snapshot so admin/explain endpoints cannot observe stale snapshot accounts
+	// during the startup window.
+	if err := initializeControlPlaneForServing(conn); err != nil {
+		return fmt.Errorf("control plane init: %w", err)
 	}
 
 	// Start Control Plane Orchestrator (background discovery)

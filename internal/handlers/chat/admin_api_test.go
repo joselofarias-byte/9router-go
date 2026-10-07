@@ -63,3 +63,17 @@ func TestHandleAdminExplainRoute(t *testing.T) {
 		t.Errorf("Expected policy 'free-first', got %v", res["policy"])
 	}
 }
+
+
+func TestHandleAdminExplainRoute_RejectsUnknownPolicy(t *testing.T) {
+	registry.InitRegistry(nil)
+	h := &ChatHandler{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/explain-route?model=gpt-4&policy=made-up", nil)
+	rec := httptest.NewRecorder()
+	h.HandleAdminExplainRoute(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown policy, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
