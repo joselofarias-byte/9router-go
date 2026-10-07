@@ -99,3 +99,50 @@ func TestGetClientForConnection_StrictInvalidProxyFailsClosed(t *testing.T) {
 		t.Fatalf("strict proxy failure leaked %d direct request(s)", got)
 	}
 }
+
+
+func TestGetClientForConnection_StrictUnknownProxyTypeFailsClosed(t *testing.T) {
+	var directHits atomic.Int32
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer direct.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name:        "bad-type",
+		ProxyURL:    "https://proxy.example.invalid",
+		Type:        "mystery-proxy",
+		StrictProxy: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to insert proxy pool: %v", err)
+	}
+
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	client := h.GetClientForConnection(&ConnectionData{ProxyPoolID: pool["id"].(string)})
+	if client == h.Client {
+		t.Fatal("strict unknown proxy type must not fall back to the direct client")
+	}
+	_, err = client.Get(direct.URL)
+	if err == nil {
+		t.Fatal("expected strict unknown proxy type to fail closed")
+	}
+	if got := directHits.Load(); got != 0 {
+		t.Fatalf("strict unknown proxy type leaked %d direct request(s)", got)
+	}
+}
