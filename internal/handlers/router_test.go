@@ -55,6 +55,19 @@ func TestSetupServerRouter_MountsAuthenticatedFabricAdminRoutes(t *testing.T) {
 	defer cleanup()
 
 	if _, err := database.Exec(`
+		CREATE TABLE IF NOT EXISTS apiKeys (
+			id TEXT PRIMARY KEY,
+			key TEXT UNIQUE NOT NULL,
+			name TEXT,
+			machineId TEXT,
+			isActive INTEGER DEFAULT 1,
+			createdAt TEXT NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create apiKeys table: %v", err)
+	}
+
+	if _, err := database.Exec(`
 		INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt)
 		VALUES ('fabric-admin-test', 'fabric-admin-token', 'Fabric admin test', 'ci', 1, datetime('now'))
 	`); err != nil {
