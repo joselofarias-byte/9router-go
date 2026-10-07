@@ -921,6 +921,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"experiential": {
+		BaseURL:    "https://api.experientiallabs.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"tokenharbor": {
 		BaseURL:    "https://tokenharbor.ai/v1/chat/completions",
 		AuthHeader: "Authorization",

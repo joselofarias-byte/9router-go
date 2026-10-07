@@ -12,6 +12,8 @@ var ProviderAliasMap = map[string]string{
 	"llama.cpp":    "llamacpp",
 
 	"b-ai":           "bai",
+	"explabs":        "experiential",
+	"experiential-labs": "experiential",
 	"agnes-ai":       "agnes",
 	"atria-asi":      "atria",
 	"dahl-inference": "dahl",

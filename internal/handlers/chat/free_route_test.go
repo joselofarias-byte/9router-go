@@ -1150,3 +1150,52 @@ func TestResolveModel_FreeBestBuiltinPoolExcludesRetiredMimoFree(t *testing.T) {
 		t.Fatalf("free-best builtin pool = %#v, want exactly 2 entries", info.ComboModels)
 	}
 }
+
+
+func TestResolveModelEntry_ExperientialPreservesVendorPath(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	h := NewChatHandler(db.NewRepo(database))
+	info := h.resolveModelEntry("experiential/anthropic/claude-haiku-5.5:free")
+	if info == nil {
+		t.Fatal("Experiential entry did not resolve")
+	}
+	if info.Provider != "experiential" {
+		t.Fatalf("provider = %q, want experiential", info.Provider)
+	}
+	if info.Model != "anthropic/claude-haiku-5.5:free" {
+		t.Fatalf("model = %q, strict-free vendor path was not preserved", info.Model)
+	}
+}
+
+func TestFreeRouteEntries_ExperientialPreservesStrictFreeUpstream(t *testing.T) {
+	state := &registry.RegistryState{
+		Providers: map[string]*registry.Provider{
+			"experiential": {ID: "experiential", IsActive: true},
+		},
+		ProviderModels: map[string]map[string]*registry.ProviderModel{
+			"experiential": {
+				"anthropic/claude-haiku-5.5:free": {
+					ProviderID:    "experiential",
+					ModelID:       "anthropic/claude-haiku-5.5:free",
+					UpstreamModel: "anthropic/claude-haiku-5.5:free",
+					PricingMode:   "free",
+					IsActive:      true,
+				},
+			},
+		},
+		Accounts: map[string]*registry.Account{
+			"exp-on": {ID: "exp-on", ProviderID: "experiential", IsActive: true},
+		},
+	}
+	got := freeRouteEntries(state, []routing.RouteNode{{
+		ProviderID: "experiential",
+		ModelID:    "anthropic/claude-haiku-5.5:free",
+		AccountID:  "exp-on",
+	}})
+	want := "experiential/anthropic/claude-haiku-5.5:free"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("entries = %#v, want %q", got, want)
+	}
+}
