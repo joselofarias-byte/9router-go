@@ -26,20 +26,12 @@
   import Modal from '../lib/ui/Modal.svelte'
   import Button from '../lib/ui/Button.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type Settings } from '../api/client'
-  import { clearCallback, dashboardCallbackURL, readCallback } from '../lib/oauth-handoff'
   import { assessBackupPassphrase, backupPassphrasesMatch, BACKUP_PASSPHRASE_MIN_LENGTH } from '../lib/backup-passphrase'
   import { setRuntimeLocale } from '../lib/i18n'
 
   interface Props {
     settings?: Settings
     onRefresh?: () => void
-  }
-
-  interface DriveBackupFile {
-    id: string
-    name: string
-    createdTime: string
-    size: string
   }
 
   let {
@@ -87,15 +79,7 @@
   // Database Backup / Import
   let isDownloadingBackup = $state(false)
   let isImportingBackup = $state(false)
-  let isUploadingDriveBackup = $state(false)
-  let isConnectingDrive = $state(false)
-  let isLoadingDriveBackups = $state(false)
-  let isRestoringDriveBackup = $state(false)
-  let driveBackupConfigured = $state(false)
-  let driveBackupConnected = $state(false)
-  let driveBackupStatusLoaded = $state(false)
-  let driveBackupFiles = $state<DriveBackupFile[]>([])
-  let selectedDriveBackup = $state<DriveBackupFile | null>(null)
+  let isSharingBackup = $state(false)
   let fileInput: HTMLInputElement | null = $state(null)
   let dbPassword = $state('')
   let backupPassphrase = $state('')
@@ -107,7 +91,7 @@
   let backupPassphrasesMatchState = $derived(backupPassphrasesMatch(backupPassphrase, backupPassphraseConfirmation))
   let dbAuthOpen = $state(false)
   let pendingImportFile: File | null = $state(null)
-  let backupAction = $state<'download' | 'drive' | 'drive-restore' | 'connect' | 'import' | null>(null)
+  let backupAction = $state<'download' | 'drive-share' | 'import' | null>(null)
 
   $effect(() => {
     if (settings) {
@@ -161,25 +145,8 @@
     }
   }
 
-  async function loadDriveBackupStatus() {
-    try {
-      const res = await fetch('/api/settings/backup/google/status', { headers: getAuthHeaders() })
-      if (res.ok) {
-        const data = await res.json()
-        driveBackupConfigured = data?.configured === true
-        driveBackupConnected = data?.connected === true
-      }
-    } catch {
-      driveBackupConfigured = false
-      driveBackupConnected = false
-    } finally {
-      driveBackupStatusLoaded = true
-    }
-  }
-
   onMount(() => {
     loadSettings()
-    loadDriveBackupStatus()
   })
 
   async function handleLanguageSelection(event: Event) {
@@ -268,11 +235,9 @@
     }
   }
 
-  // closeDbAuth is the single dismissal path for the password modal. Modal
-  // wires Escape, the overlay and both close buttons to onClose.
+  // closeDbAuth is the single dismissal path for the backup modal.
   function backupBusy() {
-    return isImportingBackup || isDownloadingBackup || isUploadingDriveBackup ||
-      isConnectingDrive || isLoadingDriveBackups || isRestoringDriveBackup
+    return isImportingBackup || isDownloadingBackup || isSharingBackup
   }
 
   function resetBackupAuthState() {
@@ -283,8 +248,6 @@
     showBackupPassphrase = false
     showBackupPassphraseConfirmation = false
     pendingImportFile = null
-    driveBackupFiles = []
-    selectedDriveBackup = null
     backupAction = null
   }
 
@@ -294,7 +257,7 @@
     resetBackupAuthState()
   }
 
-  function openBackupAuth(action: 'download' | 'drive' | 'drive-restore' | 'connect') {
+  function openBackupAuth(action: 'download' | 'drive-share') {
     if (backupBusy()) return
     resetBackupAuthState()
     backupAction = action
@@ -305,19 +268,13 @@
     openBackupAuth('download')
   }
 
-  function handleConnectDrive() {
-    if (!driveBackupConfigured) return
-    openBackupAuth('connect')
-  }
-
   function handleDriveBackup() {
-    if (!driveBackupConnected) return
-    openBackupAuth('drive')
+    openBackupAuth('drive-share')
   }
 
   function handleDriveRestore() {
-    if (!driveBackupConnected) return
-    openBackupAuth('drive-restore')
+    if (backupBusy()) return
+    fileInput?.click()
   }
 
   function encryptedRestoreSelected() {
@@ -328,26 +285,22 @@
   }
 
   function backupPassphraseRequired() {
-    if (backupAction === 'connect') return false
-    if (backupAction === 'drive-restore') return selectedDriveBackup !== null
     return backupAction !== 'import' || encryptedRestoreSelected()
   }
 
   function creatingEncryptedBackup() {
-    return backupAction === 'download' || backupAction === 'drive'
+    return backupAction === 'download' || backupAction === 'drive-share'
   }
 
   function backupPassphraseValid() {
     if (!backupPassphraseRequired()) return true
     if (!backupPassphraseInfo.valid) return false
-    if (backupAction === 'import' || backupAction === 'drive-restore') return true
+    if (backupAction === 'import') return true
     return backupPassphrasesMatchState
   }
 
   function pendingBackupActionValid() {
-    if (!dbPassword.trim()) return false
-    if (backupAction === 'drive-restore' && selectedDriveBackup === null) return true
-    return backupPassphraseValid()
+    return dbPassword.trim() !== '' && backupPassphraseValid()
   }
 
   function backupFileName() {
@@ -395,7 +348,7 @@
       const { blob, name } = await fetchEncryptedBackup(password, passphrase)
       downloadBackupBlob(blob, name)
     } catch (err) {
-      alert(`Failed to download backup: ${err instanceof Error ? err.message : String(err)}`)
+      alert(`Failed to export backup: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       isDownloadingBackup = false
       dbAuthOpen = false
@@ -403,154 +356,44 @@
     }
   }
 
-  async function waitForDriveCallback(state: string): Promise<string> {
-    const deadline = Date.now() + 10 * 60 * 1000
-    while (Date.now() < deadline) {
-      const cb = readCallback(window.localStorage)
-      if (cb && cb.state === state) {
-        clearCallback(window.localStorage)
-        if (cb.error) {
-          throw new Error(cb.errorDesc ? `${cb.error}: ${cb.errorDesc}` : cb.error)
-        }
-        if (cb.raw) return cb.raw
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-    throw new Error('Google Drive authorization timed out')
-  }
-
-  async function runConnectDrive() {
-    const password = dbPassword
-    const popup = window.open('about:blank', '_blank', 'width=600,height=700')
-    isConnectingDrive = true
-    try {
-      clearCallback(window.localStorage)
-      const redirectUri = dashboardCallbackURL(window.location.origin)
-      const authRes = await fetch(
-        `/api/settings/backup/google/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
-        { headers: { ...getAuthHeaders(), 'x-9r-password': password } },
-      )
-      if (!authRes.ok) {
-        throw new Error(await responseErrorMessage(authRes, 'Google Drive is not configured'))
-      }
-      const auth = await authRes.json()
-      if (!auth?.authUrl || !auth?.state) throw new Error('Google Drive authorization response was incomplete')
-
-      if (popup && !popup.closed) popup.location.replace(auth.authUrl)
-      const code = await waitForDriveCallback(auth.state)
-      try { popup?.close() } catch {}
-
-      const connectRes = await fetch('/api/settings/backup/google/connect', {
-        method: 'POST',
-        headers: {
-          ...getAuthHeaders(),
-          'x-9r-password': password,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          code,
-          redirectUri: auth.redirectUri || redirectUri,
-          state: auth.state,
-        }),
-      })
-      if (!connectRes.ok) {
-        throw new Error(await responseErrorMessage(connectRes, 'Failed to connect Google Drive'))
-      }
-      driveBackupConnected = true
-      await loadDriveBackupStatus()
-    } catch (err) {
-      try { popup?.close() } catch {}
-      alert(`Google Drive connection failed: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      isConnectingDrive = false
-      dbAuthOpen = false
-      resetBackupAuthState()
-    }
-  }
-
-  async function runDriveBackup() {
+  async function runShareBackup() {
+    isSharingBackup = true
     const password = dbPassword
     const passphrase = backupPassphrase
-    if (!backupPassphraseValid()) return
-    isUploadingDriveBackup = true
+    if (!backupPassphraseValid()) {
+      isSharingBackup = false
+      return
+    }
+
     try {
-      const uploadRes = await fetch('/api/settings/backup/google/upload', {
-        method: 'POST',
-        headers: {
-          ...getAuthHeaders(),
-          'x-9r-password': password,
-          'x-9r-backup-passphrase': passphrase,
-          'Content-Type': 'application/json',
-        },
-        body: '{}',
-      })
-      if (!uploadRes.ok) {
-        throw new Error(await responseErrorMessage(uploadRes, 'Failed to upload encrypted backup to Google Drive'))
+      const { blob, name } = await fetchEncryptedBackup(password, passphrase)
+      const file = new File([blob], name, { type: 'application/vnd.9router.backup' })
+      const shareData: ShareData = {
+        files: [file],
+        title: '9router backup',
+        text: 'Encrypted 9router backup',
       }
-      const uploaded = await uploadRes.json()
-      alert(`Backup saved to Google Drive: ${uploaded?.name || 'backup'}`)
+
+      if (typeof navigator.share === 'function' &&
+          (typeof navigator.canShare !== 'function' || navigator.canShare(shareData))) {
+        await navigator.share(shareData)
+      } else {
+        downloadBackupBlob(blob, name)
+        alert('This browser cannot open the Android share sheet, so the encrypted backup was downloaded instead.')
+      }
     } catch (err) {
-      alert(`Google Drive backup failed: ${err instanceof Error ? err.message : String(err)}`)
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      alert(`Failed to share backup: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      isUploadingDriveBackup = false
+      isSharingBackup = false
       dbAuthOpen = false
       resetBackupAuthState()
-    }
-  }
-
-  async function loadDriveBackupsForRestore() {
-    if (!dbPassword.trim()) return
-    isLoadingDriveBackups = true
-    try {
-      const res = await fetch('/api/settings/backup/google/files', {
-        headers: { ...getAuthHeaders(), 'x-9r-password': dbPassword },
-      })
-      if (!res.ok) throw new Error(await responseErrorMessage(res, 'Failed to load Google Drive backups'))
-      const data = await res.json()
-      driveBackupFiles = Array.isArray(data?.files) ? data.files : []
-      selectedDriveBackup = driveBackupFiles[0] || null
-    } catch (err) {
-      alert(`Failed to load Google Drive backups: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      isLoadingDriveBackups = false
-    }
-  }
-
-  async function runDriveRestore() {
-    if (!selectedDriveBackup || !backupPassphraseInfo.valid) return
-    isRestoringDriveBackup = true
-    try {
-      const res = await fetch('/api/settings/backup/google/restore', {
-        method: 'POST',
-        headers: {
-          ...getAuthHeaders(),
-          'x-9r-password': dbPassword,
-          'x-9r-backup-passphrase': backupPassphrase,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ fileId: selectedDriveBackup.id }),
-      })
-      if (!res.ok) throw new Error(await responseErrorMessage(res, 'Failed to restore Google Drive backup'))
-      alert(`Backup restored from Google Drive: ${selectedDriveBackup.name}. Reloading page...`)
-      window.location.reload()
-    } catch (err) {
-      alert(`Google Drive restore failed: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      isRestoringDriveBackup = false
     }
   }
 
   function runPendingBackupAction() {
-    if (backupAction === 'connect') {
-      void runConnectDrive()
-    } else if (backupAction === 'drive') {
-      void runDriveBackup()
-    } else if (backupAction === 'drive-restore') {
-      if (selectedDriveBackup) {
-        void runDriveRestore()
-      } else {
-        void loadDriveBackupsForRestore()
-      }
+    if (backupAction === 'drive-share') {
+      void runShareBackup()
     } else if (backupAction === 'import') {
       void runImportBackup()
     } else {
@@ -673,69 +516,49 @@
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     <!-- SECTION 1: Backup & Recovery -->
     <Card padding="md" class="space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <div class="flex items-center gap-2">
-          <Cloud class="w-4 h-4 text-brand-500" />
-          <h2 class="text-sm font-bold text-text-main">Google Drive Backup</h2>
-        </div>
-        {#if !driveBackupStatusLoaded}
-          <span class="text-[10px] font-semibold text-text-muted">Checking…</span>
-        {:else if driveBackupConnected}
-          <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-success/10 text-success border border-success/20">Connected</span>
-        {:else}
-          <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-surface-2 text-text-muted border border-border">Not connected</span>
-        {/if}
+      <div class="flex items-center gap-2 pb-2 border-b border-border">
+        <Cloud class="w-4 h-4 text-brand-500" />
+        <h2 class="text-sm font-bold text-text-main">Backup & Recovery</h2>
       </div>
 
       <div class="space-y-3 text-xs">
         <p class="text-[11px] text-text-muted leading-relaxed">
-          Encrypted backups are stored in <strong class="text-text-main">9router Backups</strong> on Google Drive. Only the newest 5 app-created backups are kept.
+          Backups are encrypted before leaving 9router-go. No Google OAuth setup is required for manual Drive backups on Android.
         </p>
 
-        {#if !driveBackupStatusLoaded}
-          <div class="flex items-center gap-2 text-text-muted">
-            <Loader2 class="w-4 h-4 animate-spin" />
-            <span>Checking Google Drive…</span>
-          </div>
-        {:else if !driveBackupConfigured}
-          <div class="p-3 rounded-xl border border-warning/30 bg-warning/5 text-warning">
-            Google Drive OAuth is not configured in this build yet.
-          </div>
-        {:else if !driveBackupConnected}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <button
             type="button"
-            onclick={handleConnectDrive}
+            onclick={handleDriveBackup}
             disabled={backupBusy()}
-            class="w-full py-2.5 px-3 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+            class="py-2.5 px-3 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <Cloud class="w-4 h-4" />
-            <span>Connect Google Drive</span>
+            <Cloud class="w-3.5 h-3.5" />
+            <span>Save to Google Drive</span>
           </button>
-          <p class="text-[10px] text-text-subtle text-center">
-            You authorize Google once. 9router-go stores a refresh token locally so later backups are one tap.
-          </p>
-        {:else}
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <button
-              type="button"
-              onclick={handleDriveBackup}
-              disabled={backupBusy()}
-              class="py-2.5 px-3 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
-            >
-              <Cloud class="w-3.5 h-3.5" />
-              <span>Create backup now</span>
-            </button>
-            <button
-              type="button"
-              onclick={handleDriveRestore}
-              disabled={backupBusy()}
-              class="py-2.5 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
-            >
-              <RefreshCw class="w-3.5 h-3.5 text-info" />
-              <span>Restore from Google Drive</span>
-            </button>
-          </div>
-        {/if}
+
+          <button
+            type="button"
+            onclick={handleDriveRestore}
+            disabled={backupBusy()}
+            class="py-2.5 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+          >
+            <RefreshCw class="w-3.5 h-3.5 text-info" />
+            <span>Restore from Google Drive</span>
+          </button>
+        </div>
+
+        <p class="text-[10px] text-text-subtle text-center">
+          Android opens its system chooser. Pick Google Drive to save, or choose a .9rbak file from Drive to restore.
+        </p>
+
+        <input
+          type="file"
+          accept=".9rbak,.zip,.json,application/vnd.9router.backup,application/zip,application/json"
+          bind:this={fileInput}
+          onchange={handleFileSelected}
+          class="hidden"
+        />
 
         <details class="pt-2 border-t border-border/60">
           <summary class="cursor-pointer text-[11px] font-semibold text-text-muted hover:text-text-main">Advanced: local file export/import</summary>
@@ -749,14 +572,6 @@
               <Download class="w-3.5 h-3.5 text-brand-500" />
               <span>Export encrypted file</span>
             </button>
-
-            <input
-              type="file"
-              accept=".9rbak,.zip,.json,application/vnd.9router.backup,application/zip,application/json"
-              bind:this={fileInput}
-              onchange={handleFileSelected}
-              class="hidden"
-            />
 
             <button
               type="button"
@@ -1092,26 +907,18 @@
       onClose={closeDbAuth}
       title={backupAction === 'import'
         ? 'Restore backup file'
-        : backupAction === 'drive'
-          ? 'Create Google Drive backup'
-          : backupAction === 'drive-restore'
-            ? 'Restore from Google Drive'
-            : backupAction === 'connect'
-              ? 'Connect Google Drive'
-              : 'Export encrypted backup'}
+        : backupAction === 'drive-share'
+          ? 'Save encrypted backup'
+          : 'Export encrypted backup'}
       size="sm"
     >
       <div class="space-y-3">
         <p class="text-text-muted">
           {backupAction === 'import'
             ? `Restore "${pendingImportFile?.name || 'backup'}"? This will overwrite existing server data.`
-            : backupAction === 'drive'
-              ? 'Create an encrypted recovery backup in your Google Drive?'
-              : backupAction === 'drive-restore'
-                ? 'Choose a Google Drive backup and restore it on this device.'
-                : backupAction === 'connect'
-                  ? 'Authorize this device to use your Google Drive for encrypted 9router backups.'
-                  : 'Export an encrypted recovery backup (.9rbak) to this device?' }
+            : backupAction === 'drive-share'
+              ? 'Create an encrypted backup and open Android sharing. Choose Google Drive in the system sheet.'
+              : 'Export an encrypted recovery backup (.9rbak) to this device?' }
         </p>
         <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2">
           <div>
@@ -1141,37 +948,12 @@
           </div>
         </div>
 
-        {#if backupAction === 'drive-restore'}
-          <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2">
-            <div class="flex items-center justify-between">
-              <p class="text-xs font-bold text-text-main">2. Choose backup</p>
-              {#if isLoadingDriveBackups}<Loader2 class="w-3.5 h-3.5 animate-spin text-brand-500" />{/if}
-            </div>
-            {#if driveBackupFiles.length === 0}
-              <p class="text-[10px] text-text-subtle">Enter your dashboard password, then load the backups stored in Drive.</p>
-            {:else}
-              <div class="space-y-1.5 max-h-40 overflow-y-auto">
-                {#each driveBackupFiles as file}
-                  <button
-                    type="button"
-                    onclick={() => (selectedDriveBackup = file)}
-                    class="w-full text-left p-2.5 rounded-lg border transition {selectedDriveBackup?.id === file.id ? 'border-brand-500 bg-brand-500/10' : 'border-border bg-bg hover:bg-surface-2'}"
-                  >
-                    <div class="text-[11px] font-semibold text-text-main truncate">{file.name}</div>
-                    <div class="text-[10px] text-text-subtle">{file.createdTime ? new Date(file.createdTime).toLocaleString() : 'Unknown date'}</div>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-
         {#if backupPassphraseRequired()}
           <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-3">
             <div>
-              <p class="text-xs font-bold text-text-main">{backupAction === 'import' || backupAction === 'drive-restore' ? '3. Backup decryption' : '2. Backup encryption'}</p>
+              <p class="text-xs font-bold text-text-main">{backupAction === 'import' ? '3. Backup decryption' : '2. Backup encryption'}</p>
               <p class="text-[10px] text-text-subtle">
-                {backupAction === 'import' || backupAction === 'drive-restore'
+                {backupAction === 'import'
                   ? 'Enter the recovery passphrase that was used when this encrypted backup was created.'
                   : 'Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.'}
               </p>
@@ -1183,7 +965,7 @@
                 <input
                   id="backup-recovery-passphrase"
                   type={showBackupPassphrase ? 'text' : 'password'}
-                  placeholder={backupAction === 'import' || backupAction === 'drive-restore' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
+                  placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
                   bind:value={backupPassphrase}
                   autocomplete="new-password"
                   aria-invalid={backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
@@ -1270,7 +1052,7 @@
             {/if}
 
             <p class="text-[10px] text-text-subtle leading-relaxed">
-              {backupAction === 'import' || backupAction === 'drive-restore'
+              {backupAction === 'import'
                 ? 'Required to decrypt this encrypted .9rbak backup.'
                 : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
             </p>
@@ -1289,13 +1071,9 @@
         >
           {backupAction === 'import'
             ? 'Restore'
-            : backupAction === 'drive'
-              ? 'Create backup'
-              : backupAction === 'drive-restore'
-                ? selectedDriveBackup ? 'Restore selected backup' : 'Load backups'
-                : backupAction === 'connect'
-                  ? 'Connect Google Drive'
-                  : 'Export file'}
+            : backupAction === 'drive-share'
+              ? 'Open Android sharing'
+              : 'Export file'}
         </Button>
       {/snippet}
     </Modal>
