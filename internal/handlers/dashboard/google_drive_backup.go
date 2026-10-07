@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -60,8 +59,9 @@ type googleDriveFile struct {
 }
 
 func googleDriveBackupCredentials() (clientID, clientSecret string) {
-	return strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_BACKUP_CLIENT_ID")),
-		strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_BACKUP_CLIENT_SECRET"))
+	cfg := config.LoadConfig()
+	return strings.TrimSpace(cfg.GoogleDriveBackupClientID),
+		strings.TrimSpace(cfg.GoogleDriveBackupClientSecret)
 }
 
 func googleDriveBackupConfigured() bool {
