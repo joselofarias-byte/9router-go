@@ -36,6 +36,17 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 			{
 				"id": "some-free-model",
 				"object": "model"
+			},
+			{
+				"id": "contradictory-free-but-priced",
+				"object": "model",
+				"pricing": {
+					"mode": "free_tier"
+				},
+				"cost": {
+					"prompt": 0.001,
+					"completion": 0.002
+				}
 			}
 		]
 	}`
@@ -67,8 +78,8 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 		t.Errorf("expected Auth Header 'Bearer test-api-key', got '%s'", authHeader)
 	}
 
-	if len(candidates) != 4 {
-		t.Fatalf("expected 4 candidates, got %d", len(candidates))
+	if len(candidates) != 5 {
+		t.Fatalf("expected 5 candidates, got %d", len(candidates))
 	}
 
 	for _, c := range candidates {
@@ -90,6 +101,10 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 
 		if c.ModelID == "some-free-model" && c.PricingMode != "free_tier" {
 			t.Errorf("expected free_tier pricing (inferred from string match) for some-free-model, got %s", c.PricingMode)
+		}
+
+		if c.ModelID == "contradictory-free-but-priced" && c.PricingMode != "paid" {
+			t.Errorf("expected positive advertised costs to force paid pricing, got %s", c.PricingMode)
 		}
 	}
 }

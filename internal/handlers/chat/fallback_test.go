@@ -164,6 +164,55 @@ func TestHandleAccountFallback_RetryableLocksModel(t *testing.T) {
 	}
 }
 
+func TestHandleAccountFallback_SkipsLockedConnectionByID(t *testing.T) {
+	var lockedHits atomic.Int32
+	lockedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lockedHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"locked-should-not-run"}`))
+	}))
+	defer lockedSrv.Close()
+
+	var healthyHits atomic.Int32
+	healthySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer healthySrv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'deepseek'`); err != nil {
+		t.Fatalf("clear seeded deepseek connections: %v", err)
+	}
+	seedConnDB(t, database, "deepseek", "conn-locked", "sk-locked", lockedSrv.URL)
+	seedConnDB(t, database, "deepseek", "conn-healthy", "sk-healthy", healthySrv.URL)
+	if _, err := database.Exec(`UPDATE providerConnections SET priority = CASE id WHEN 'conn-locked' THEN 1 ELSE 2 END WHERE id IN ('conn-locked','conn-healthy')`); err != nil {
+		t.Fatalf("set connection priorities: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	if err := repo.LockConnectionModel("conn-locked", "deepseek-chat", 60, 1); err != nil {
+		t.Fatalf("lock connection: %v", err)
+	}
+	h := NewChatHandler(repo)
+
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := h.handleAccountFallback(context.Background(), rec, "deepseek", "deepseek-chat", "", body, false, false, "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("expected fallback to healthy account, got: %v", err)
+	}
+	if got := lockedHits.Load(); got != 0 {
+		t.Fatalf("locked account was attempted %d times", got)
+	}
+	if got := healthyHits.Load(); got != 1 {
+		t.Fatalf("expected healthy account once, got %d", got)
+	}
+}
+
 func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

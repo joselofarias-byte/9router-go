@@ -119,15 +119,24 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 	}
 
 	totalDiscovered := 0
+	successfulAdapters := 0
+	failedAdapters := 0
+	seenOffers := make(map[string]map[string]struct{})
 	for _, adapter := range o.adapters {
 		candidates, err := adapter.Discover(ctx)
 		if err != nil {
+			failedAdapters++
 			log.Warn("orchestrator", "adapter sync failed", "adapter", adapter.SourceID(), "err", err)
 			continue
 		}
 
+		successfulAdapters++
 		totalDiscovered += len(candidates)
 		for _, c := range candidates {
+			if _, ok := seenOffers[c.ProviderID]; !ok {
+				seenOffers[c.ProviderID] = make(map[string]struct{})
+			}
+			seenOffers[c.ProviderID][c.ModelID] = struct{}{}
 			// Upsert Provider
 			if _, exists := newState.Providers[c.ProviderID]; !exists {
 				newState.Providers[c.ProviderID] = &registry.Provider{
@@ -157,28 +166,54 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 			pm, exists := newState.ProviderModels[c.ProviderID][c.ModelID]
 			if !exists {
 				pm = &registry.ProviderModel{
-					ProviderID:    c.ProviderID,
-					ModelID:       c.ModelID,
-					UpstreamModel: c.UpstreamModel,
-					PricingMode:   c.PricingMode,
-					Capabilities:  c.Capabilities,
-					IsActive:      true,
-					CreatedAt:     time.Now().UTC(),
+					ProviderID: c.ProviderID,
+					ModelID:    c.ModelID,
+					CreatedAt:  time.Now().UTC(),
 				}
 				newState.ProviderModels[c.ProviderID][c.ModelID] = pm
 			}
+			// Discovery is authoritative for mutable offer metadata. Refresh these
+			// fields on every successful observation so free-best cannot retain a
+			// stale price, upstream model, capability set, or inactive state.
+			pm.UpstreamModel = c.UpstreamModel
+			pm.PricingMode = c.PricingMode
+			pm.CostMetadata = c.CostMetadata
+			pm.Capabilities = c.Capabilities
+			pm.IsActive = true
 			pm.UpdatedAt = time.Now().UTC()
 		}
 	}
 
-	if totalDiscovered > 0 {
+	// Only retire offers absent from discovery when every configured adapter
+	// completed successfully. If any source failed, preserve unseen entries so
+	// a transient catalog outage cannot erase otherwise valid routes.
+	if successfulAdapters > 0 && failedAdapters == 0 {
+		for providerID, providerModels := range newState.ProviderModels {
+			for modelID, pm := range providerModels {
+				if pm == nil {
+					continue
+				}
+				if models, ok := seenOffers[providerID]; ok {
+					if _, seen := models[modelID]; seen {
+						continue
+					}
+				}
+				if pm.IsActive {
+					pm.IsActive = false
+					pm.UpdatedAt = time.Now().UTC()
+				}
+			}
+		}
+	}
+
+	if totalDiscovered > 0 || (successfulAdapters > 0 && failedAdapters == 0) {
 		snap, err := registry.CreateSnapshot(o.db, newState, "discovery_sync")
 		if err != nil {
 			log.Warn("orchestrator", "failed to create snapshot", "err", err)
 			return
 		}
 
-		err = registry.ActivateSnapshot(o.db, snap.Version)
+		err = registry.ActivateSnapshotPreservingAccounts(o.db, snap.Version)
 		if err != nil {
 			log.Warn("orchestrator", "failed to activate snapshot", "err", err)
 			return

@@ -188,6 +188,18 @@ func CreateSnapshot(db *sql.DB, state *RegistryState, reason string) (*Snapshot,
 
 // ActivateSnapshot marks a snapshot as "active" and updates the in-memory state.
 func ActivateSnapshot(db *sql.DB, version string) error {
+	return activateSnapshot(db, version, false)
+}
+
+// ActivateSnapshotPreservingAccounts publishes a discovery snapshot without
+// overwriting a newer account map already synchronized from providerConnections.
+// Accounts are DB-authoritative runtime state and can change while discovery is
+// waiting on remote catalogs.
+func ActivateSnapshotPreservingAccounts(db *sql.DB, version string) error {
+	return activateSnapshot(db, version, true)
+}
+
+func activateSnapshot(db *sql.DB, version string, preserveAccounts bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -231,6 +243,18 @@ func ActivateSnapshot(db *sql.DB, version string) error {
 	}
 
 	stateMu.Lock()
+	if preserveAccounts && activeState != nil {
+		accounts := make(map[string]*Account, len(activeState.Accounts))
+		for id, acc := range activeState.Accounts {
+			if acc == nil {
+				accounts[id] = nil
+				continue
+			}
+			cp := *acc
+			accounts[id] = &cp
+		}
+		newState.Accounts = accounts
+	}
 	if activeState != nil {
 		lastKnownGood = activeState
 	}
