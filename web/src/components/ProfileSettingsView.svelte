@@ -553,12 +553,12 @@
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <!-- SECTION 1: Runtime Storage -->
+    <!-- SECTION 1: Backup & Recovery -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
         <div class="flex items-center gap-2">
           <Laptop class="w-4 h-4 text-brand-500" />
-          <h2 class="text-sm font-bold text-text-main">Runtime Storage</h2>
+          <h2 class="text-sm font-bold text-text-main">Backup & Recovery</h2>
         </div>
         <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-success/10 text-success border border-success/20">
           Server managed
@@ -997,7 +997,7 @@
         </p>
       </div>
       {#snippet footer()}
-        <Button variant="ghost" onclick={closeDbAuth} disabled={isImportingBackup || isDownloadingBackup}>
+        <Button variant="ghost" onclick={closeDbAuth} disabled={backupBusy()}>
           Cancel
         </Button>
         <Button
