@@ -34,6 +34,17 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! "$CODEX_BIN" login status >/dev/null 2>&1; then
+  echo "ERROR: este runtime de Codex no esta autenticado." >&2
+  echo "Ejecuta:" >&2
+  echo "  codex-termux login --device-auth" >&2
+  echo "Luego verifica:" >&2
+  echo "  codex-termux login status" >&2
+  echo "Y vuelve a lanzar:" >&2
+  echo "  codex-audit ." >&2
+  exit 5
+fi
+
 MCP_DIR="$HOME/.local/9router-codex-audit-mcp"
 MCP_SERVER="$MCP_DIR/server.mjs"
 if [ ! -f "$MCP_SERVER" ] || [ ! -d "$MCP_DIR/node_modules/@modelcontextprotocol/sdk" ]; then
