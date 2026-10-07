@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PREFIX_DIR="$HOME/.local/codex-termux"
-PKG="@mmmbuto/codex-cli-termux@latest"
+PKG="@mmmbuto/codex-cli-termux@0.160.0-termux.3"
 BIN="$PREFIX_DIR/node_modules/.bin/codex"
 
 if ! command -v npm >/dev/null 2>&1; then
@@ -11,9 +11,10 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 echo "Instalando Codex Termux en prefijo aislado: $PREFIX_DIR"
-echo "No reemplaza tu codex oficial."
+echo "Este runtime NO aporta un sandbox de filesystem en Android."
+echo "codex-audit lo usa solo con shell desactivado y un MCP lector read-only."
 
-npm install --prefix "$PREFIX_DIR" "$PKG"
+npm install --prefix "$PREFIX_DIR" --no-audit --no-fund --allow-scripts=@mmmbuto/codex-cli-termux "$PKG" ||   npm install --prefix "$PREFIX_DIR" --no-audit --no-fund "$PKG"
 
 if [ ! -x "$BIN" ]; then
   echo "ERROR: no aparecio el binario esperado: $BIN" >&2
@@ -32,14 +33,5 @@ EOF
 fi
 
 echo
-echo "Probando sandbox Android..."
-if "$BIN" sandbox linux -- /bin/true; then
-  echo "OK: sandbox Android operativo."
-else
-  echo "ERROR: el sandbox Android tampoco pudo arrancar en este dispositivo." >&2
-  exit 2
-fi
-
-echo
-echo "Si pide autenticacion al ejecutar la auditoria, usa: codex-termux login"
-echo "Luego ejecuta: codex-audit ."
+echo "No se ejecuta 'codex sandbox' en Android: ese subcomando no esta soportado."
+echo "Para auditar usa el flujo MCP read-only: codex-audit ."
