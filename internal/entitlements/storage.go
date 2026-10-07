@@ -28,7 +28,10 @@ const (
 	runtimeLockStale     = 30 * time.Second
 )
 
-var (\n\tErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")\n\tErrTrustedTimeRequired       = errors.New("trusted time is required for cached entitlement lease")\n)
+var (
+	ErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")
+	ErrTrustedTimeRequired       = errors.New("trusted time is required for cached entitlement lease")
+)
 
 // RuntimeStore keeps signed entitlement runtime state below the configured
 // 9router DATA_DIR. It never stores provider credentials, payment credentials,
