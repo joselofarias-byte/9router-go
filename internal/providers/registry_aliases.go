@@ -33,6 +33,7 @@ var RegistryAliases = map[string]string{
 	"elevenlabs":        "el",
 	"fal-ai":            "fal",
 	"featherless":       "fl",
+	"experiential":     "explabs",
 	"fish-audio":        "fish",
 	"gemini-cli":        "gc",
 	"github":            "gh",
