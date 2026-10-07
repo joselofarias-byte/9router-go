@@ -224,3 +224,7 @@ End with:
 10. what should receive a second independent model review.
 
 Do not implement fixes until explicitly instructed.
+
+## 9. Independent Codex follow-up
+
+After the Claude deep pass, use `.agents/workflows/codex-plugin-security-review.md` for the independent Codex native + adversarial reviews. Keep the native Codex pass uncontaminated by Claude conclusions; compare evidence only after Codex finishes.
