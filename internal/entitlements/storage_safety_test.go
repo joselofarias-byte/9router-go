@@ -16,6 +16,9 @@ func TestRuntimeStoreBuildHardExpiryFallsBackToCommunity(t *testing.T) {
 	if err := store.SaveLease(raw); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AdvanceTrustedTime(ctx.Now); err != nil {
+		t.Fatal(err)
+	}
 
 	build := ctx.Build
 	build.ProCapableUntil = ctx.Now
