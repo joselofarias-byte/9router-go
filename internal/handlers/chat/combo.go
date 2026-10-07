@@ -601,24 +601,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			var entrySuccess bool
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
-				var connID string
-				var connData *ConnectionData
-				isKnownNoAuth := false
-				isNoAuthProvider := false
-				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-					isKnownNoAuth = true
-					isNoAuthProvider = cfg.NoAuth
-					connData = &ConnectionData{
-						APIKey:      cfg.DefaultAPIKey,
-						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
-					}
-				} else {
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
-					if err != nil {
-						break
-					}
-					connID = conn.ID
-					connData = cData
+				cfg, known := providers.KnownProviders[modelInfo.Provider]
+				isNoAuthProvider := known && cfg.NoAuth
+				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
+				if connErr != nil {
+					break
 				}
 				// Skip a connection that is already locked for this model
 				if connID != "" {
@@ -662,12 +649,29 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
+					if cw.IsCommitted() {
+						log.Error("combo", "upstream error after response started", "error", fwdErr)
+						return
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
+						if isEmptyCompletionError(ue) {
+							// Empty output is model-scoped; it must not quarantine
+							// an account that can serve the next model in the pool.
+							if err := h.Repo.LockConnectionModel(connID, modelInfo.Model, 30, 0); err != nil {
+								log.Warn("combo", "empty model lock failed", "error", err)
+							}
+							if virtualFree && isNoAuthProvider {
+								now := time.Now().UTC()
+								virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{quarantinedAt: now, until: now.Add(30 * time.Second)})
+							}
+							lastErr = ue
+							break
+						}
 						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
 							lastErr = ue
 							break
@@ -799,24 +803,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			var entrySuccess bool
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
-				var connID string
-				var connData *ConnectionData
-				isKnownNoAuth := false
-				isNoAuthProvider := false
-				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-					isKnownNoAuth = true
-					isNoAuthProvider = cfg.NoAuth
-					connData = &ConnectionData{
-						APIKey:      cfg.DefaultAPIKey,
-						ProxyPoolID: h.ResolveProviderProxyPoolID(modelInfo.Provider),
-					}
-				} else {
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
-					if err != nil {
-						break
-					}
-					connID = conn.ID
-					connData = cData
+				cfg, known := providers.KnownProviders[modelInfo.Provider]
+				isNoAuthProvider := known && cfg.NoAuth
+				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
+				if connErr != nil {
+					break
 				}
 				if connID != "" {
 					lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -78,7 +79,12 @@ func EmptyUpstreamError(body []byte) error {
 		return UpstreamFailure(http.StatusBadGateway, "upstream answered 200 with an error: "+msg)
 	}
 	if reason := missingCompletion(probe); reason != "" {
-		return UpstreamFailure(http.StatusBadGateway, "upstream answered 200 without a completion: "+reason)
+		err := UpstreamFailure(http.StatusBadGateway, "upstream answered 200 without a completion: "+reason)
+		var ue *UpstreamError
+		if errors.As(err, &ue) {
+			ue.EmptyCompletion = true
+		}
+		return err
 	}
 	return nil
 }
