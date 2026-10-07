@@ -76,13 +76,35 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 	}
 
 	if cached, ok := proxyPoolCache.Load(poolID); ok {
-		return cached.(*ProxyPool), nil
+		old := cached.(*ProxyPool)
+		if sameProxyPoolConfig(old, pool) {
+			return old, nil
+		}
+		// Configuration changed in the shared DB. Publish a fresh immutable
+		// object while preserving the round-robin cursor for continuity.
+		atomic.StoreUint64(&pool.index, atomic.LoadUint64(&old.index))
+		proxyPoolCache.Store(poolID, pool)
+		return pool, nil
 	}
-	// Store the freshly-read pool. If another goroutine won the race, return
-	// its value instead of overwriting — never mutate a value in the cache,
-	// since concurrent readers use it lock-free via NextURL.
 	actual, _ := proxyPoolCache.LoadOrStore(poolID, pool)
 	return actual.(*ProxyPool), nil
+}
+
+func sameProxyPoolConfig(a, b *ProxyPool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.ID != b.ID || a.Name != b.Name || a.IsActive != b.IsActive ||
+		a.Strategy != b.Strategy || a.Type != b.Type || a.NoProxy != b.NoProxy ||
+		a.StrictProxy != b.StrictProxy || len(a.URLs) != len(b.URLs) {
+		return false
+	}
+	for i := range a.URLs {
+		if a.URLs[i] != b.URLs[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // NextURL returns the next proxy URL using round-robin selection.
@@ -90,7 +112,7 @@ func (p *ProxyPool) NextURL() string {
 	if len(p.URLs) == 0 {
 		return ""
 	}
-	idx := atomic.AddUint64(&p.index, 1)
+	idx := atomic.AddUint64(&p.index, 1) - 1
 	return p.URLs[idx%uint64(len(p.URLs))]
 }
 

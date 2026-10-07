@@ -291,15 +291,44 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 
 	var proxyURLStr string
 	var proxyType string
-	var strictProxy bool
+	strictProxy := connData.StrictProxy
+	if connData.ProviderSpecificData != nil {
+		if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok && sp {
+			strictProxy = true
+		}
+	}
 
-	// 1. Resolve from ProxyPool
+	failClosed := func(reason string, args ...any) *http.Client {
+		proxyErr := fmt.Errorf(reason, args...)
+		log.Error("proxy", "strict proxy configuration unavailable; failing closed", "pool", connData.ProxyPoolID, "error", proxyErr)
+		return &http.Client{
+			Transport: failingRoundTripper{err: proxyErr},
+			Timeout:   h.Client.Timeout,
+		}
+	}
+
+	// 1. Resolve from ProxyPool. Read strictness even for inactive pools so an
+	// explicit strict policy cannot silently turn into direct egress.
 	if connData.ProxyPoolID != "" {
 		pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID)
-		if err == nil && pool != nil && pool.IsActive {
-			proxyURLStr = pool.NextURL()
-			proxyType = pool.Type
-			strictProxy = pool.StrictProxy
+		if err != nil || pool == nil {
+			if strictProxy {
+				return failClosed("strict proxy pool %q is unavailable", connData.ProxyPoolID)
+			}
+			log.Warn("proxy", "proxy pool unavailable; considering legacy/direct fallback", "pool", connData.ProxyPoolID, "error", err)
+		} else {
+			strictProxy = strictProxy || pool.StrictProxy
+			if !pool.IsActive {
+				if strictProxy {
+					return failClosed("strict proxy pool %q is inactive", connData.ProxyPoolID)
+				}
+			} else {
+				proxyURLStr = pool.NextURL()
+				proxyType = pool.Type
+				if proxyURLStr == "" && strictProxy {
+					return failClosed("strict proxy pool %q has no usable URL", connData.ProxyPoolID)
+				}
+			}
 		}
 	}
 
@@ -307,7 +336,6 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	if proxyURLStr == "" {
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
-		strictProxy = connData.StrictProxy
 		if connData.ProviderSpecificData != nil {
 			if !proxyEnabled {
 				if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
@@ -319,11 +347,6 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 					proxyURL = u
 				}
 			}
-			if !strictProxy {
-				if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
-					strictProxy = sp
-				}
-			}
 		}
 		if proxyEnabled && proxyURL != "" {
 			proxyURLStr = proxyURL
@@ -332,6 +355,9 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	}
 
 	if proxyURLStr == "" {
+		if strictProxy {
+			return failClosed("strict proxy is enabled but no usable proxy route is configured")
+		}
 		return h.Client
 	}
 
@@ -359,7 +385,21 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 		}
 	}
 
-	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
-	// URL rewriting and x-relay headers are handled at request time.
+	// For supported Edge Relays, the standard client is intentional because URL
+	// rewriting and x-relay headers are handled at request time.
+	if proxyType == "vercel" || proxyType == "cloudflare" || proxyType == "deno" {
+		return h.Client
+	}
+
+	// Unknown proxy types must never silently bypass a strict proxy policy.
+	if strictProxy {
+		proxyErr := fmt.Errorf("strict proxy configuration uses unsupported proxy type %q", proxyType)
+		log.Error("proxy", "strict proxy enabled with unsupported proxy type; failing closed", "type", proxyType, "error", proxyErr)
+		return &http.Client{
+			Transport: failingRoundTripper{err: proxyErr},
+			Timeout:   h.Client.Timeout,
+		}
+	}
+	log.Warn("proxy", "unsupported proxy type; using direct client because strict proxy is disabled", "type", proxyType)
 	return h.Client
 }

@@ -484,12 +484,12 @@ func TestNextURL_SingleURL(t *testing.T) {
 func TestNextURL_RoundRobin(t *testing.T) {
 	pool := &ProxyPool{URLs: []string{"http://a:8080", "http://b:8080", "http://c:8080"}}
 
-	// atomic counter starts at 0, first AddUint64 returns 1: 1%3=1 -> b, 2%3=2 -> c, 3%3=0 -> a, 4%3=1 -> b
+	// Round-robin should start with the first configured URL, then wrap in order.
 	expected := []string{
+		"http://a:8080",
 		"http://b:8080",
 		"http://c:8080",
 		"http://a:8080",
-		"http://b:8080",
 	}
 	for i, want := range expected {
 		if got := pool.NextURL(); got != want {
