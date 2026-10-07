@@ -20,6 +20,9 @@ var (
 	codexAuthURLPattern = regexp.MustCompile(`https://auth\.openai\.com/[^\s\x1b]+`)
 	codexANSISequence   = regexp.MustCompile("\\x1b\\[[0-9;?]*[ -/]*[@-~]")
 	codexCLILogins      = newCodexCLILoginManager()
+	// Serializes login creation. Codex owns one loopback callback listener, so
+	// concurrent starts can invalidate each other's OAuth state.
+	codexCLIStartMu sync.Mutex
 )
 
 type codexCLILoginSession struct {
@@ -28,6 +31,7 @@ type codexCLILoginSession struct {
 	email        string
 	err          string
 	name         string
+	authURL      string
 	cancel       context.CancelFunc
 }
 
@@ -44,6 +48,28 @@ func (m *codexCLILoginManager) register(id, name string, cancel context.CancelFu
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[id] = &codexCLILoginSession{status: "pending", name: name, cancel: cancel}
+}
+
+func (m *codexCLILoginManager) setAuthURL(id, authURL string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess := m.sessions[id]; sess != nil {
+		sess.authURL = authURL
+	}
+}
+
+// pending returns the currently usable Codex CLI login, if any. Reusing the
+// same URL is essential: starting another CLI login replaces the loopback
+// listener/state and makes an already-open browser tab fail with "State mismatch".
+func (m *codexCLILoginManager) pending() (string, codexCLILoginSession, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, sess := range m.sessions {
+		if sess != nil && sess.status == "pending" && sess.authURL != "" {
+			return id, *sess, true
+		}
+	}
+	return "", codexCLILoginSession{}, false
 }
 
 func (m *codexCLILoginManager) complete(id, connectionID, email string) {
