@@ -17,6 +17,7 @@ func TestLicenseCommandShape(t *testing.T) {
 		"activate": false,
 		"status":   false,
 		"renew":    false,
+		"release":  false,
 		"menu":     false,
 	}
 	for _, sub := range cmd.Subcommands {
@@ -115,5 +116,56 @@ func TestCurrentLicenseControlPlaneURLAllowsExplicitOverride(t *testing.T) {
 	}
 	if got := currentLicenseControlPlaneURL(); got != override {
 		t.Fatalf("control plane = %q, want %q", got, override)
+	}
+}
+
+
+func TestLicenseKeyRingForBuildUsesStagingOnlyForBeta(t *testing.T) {
+	oldChannel := licenseBuildChannel
+	oldID := licenseBuildID
+	oldDeadline := licenseProCapableUntil
+	t.Cleanup(func() {
+		licenseBuildChannel = oldChannel
+		licenseBuildID = oldID
+		licenseProCapableUntil = oldDeadline
+	})
+
+	licenseBuildChannel = "beta"
+	licenseBuildID = "beta-test"
+	licenseProCapableUntil = ""
+
+	build, err := currentLicenseBuildIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := licenseKeyRingForBuild(build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("beta keyring is empty")
+	}
+}
+
+func TestLicenseKeyRingForBuildRejectsReleaseWithoutProductionKeyring(t *testing.T) {
+	oldChannel := licenseBuildChannel
+	oldID := licenseBuildID
+	oldDeadline := licenseProCapableUntil
+	t.Cleanup(func() {
+		licenseBuildChannel = oldChannel
+		licenseBuildID = oldID
+		licenseProCapableUntil = oldDeadline
+	})
+
+	licenseBuildChannel = "release"
+	licenseBuildID = "release-test"
+	licenseProCapableUntil = ""
+
+	build, err := currentLicenseBuildIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := licenseKeyRingForBuild(build); err == nil {
+		t.Fatal("release build unexpectedly accepted staging trust")
 	}
 }

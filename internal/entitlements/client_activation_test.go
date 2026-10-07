@@ -36,6 +36,17 @@ func TestClientActivationPersistsOnlyVerifiedLease(t *testing.T) {
 			if request.InstallationID != installationIDFromPublicKey(ed25519.PublicKey(publicKey)) {
 				t.Fatal("installation id does not match activation public key")
 			}
+			if request.ProofVersion != ActivationProofVersion {
+				t.Fatalf("proof version = %d", request.ProofVersion)
+			}
+			if err := VerifyActivationProof(request, ed25519.PublicKey(publicKey)); err != nil {
+				t.Fatalf("activation proof invalid: %v", err)
+			}
+			tampered := request
+			tampered.ActivationCode = "different-code"
+			if err := VerifyActivationProof(tampered, ed25519.PublicKey(publicKey)); !errors.Is(err, ErrInvalidActivationProof) {
+				t.Fatalf("tampered activation proof error = %v, want %v", err, ErrInvalidActivationProof)
+			}
 			returnedLease = signer.signLease(t, request.InstallationID, "lic-activation-1", "nonce-a1", nil)
 			return LeaseResponse{
 				Lease:               returnedLease,

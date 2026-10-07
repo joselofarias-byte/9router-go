@@ -30,6 +30,8 @@ type ActivationRequest struct {
 	AppVersion            string `json:"app_version,omitempty"`
 	BuildChannel          string `json:"build_channel"`
 	BuildID               string `json:"build_id,omitempty"`
+	ProofVersion          int    `json:"proof_version"`
+	ProofSignature        string `json:"proof_signature"`
 }
 
 // RenewalRequest identifies the already-verified license/installation without
@@ -47,6 +49,16 @@ type RenewalRequest struct {
 	ProofSignature string `json:"proof_signature"`
 }
 
+// ReleaseRequest authorizes self-service release of the current installation.
+// It is signed by the installation proof key and bound to the current lease nonce.
+type ReleaseRequest struct {
+	LicenseID      string `json:"license_id"`
+	InstallationID string `json:"installation_id"`
+	CurrentNonce   string `json:"current_nonce"`
+	ProofVersion   int    `json:"proof_version"`
+	ProofSignature string `json:"proof_signature"`
+}
+
 // LeaseResponse is returned by activate/renew. Lease must contain the raw
 // signed JSON envelope consumed by VerifySignedLease.
 type LeaseResponse struct {
@@ -60,6 +72,7 @@ type LeaseResponse struct {
 type ControlPlaneTransport interface {
 	Activate(context.Context, ActivationRequest) (LeaseResponse, error)
 	Renew(context.Context, RenewalRequest) (LeaseResponse, error)
+	Release(context.Context, ReleaseRequest) error
 }
 
 type ClientOptions struct {
@@ -154,7 +167,7 @@ func (c *Client) Activate(ctx context.Context, activationCode string) (*ClientRe
 		return nil, err
 	}
 
-	response, err := c.transport.Activate(ctx, ActivationRequest{
+	request := ActivationRequest{
 		ActivationCode:        code,
 		InstallationID:        identity.ID,
 		InstallationPublicKey: publicKey,
@@ -163,7 +176,14 @@ func (c *Client) Activate(ctx context.Context, activationCode string) (*ClientRe
 		AppVersion:            c.appVersion,
 		BuildChannel:          c.build.Channel,
 		BuildID:               c.build.ID,
-	})
+		ProofVersion:          ActivationProofVersion,
+	}
+	request.ProofSignature, err = signActivationProof(identity.PrivateKey, request)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := c.transport.Activate(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("entitlements.Client.Activate: %w", err)
 	}
@@ -209,6 +229,38 @@ func (c *Client) Renew(ctx context.Context) (*ClientResult, error) {
 	}
 
 	return c.acceptLease(response, current.Lease.InstallationID, current.Lease.LicenseID)
+}
+
+func (c *Client) Release(ctx context.Context) error {
+	identity, err := c.store.InstallationIdentity()
+	if err != nil {
+		return err
+	}
+	current, err := c.verifyCachedLease()
+	if err != nil {
+		return err
+	}
+	if current.Lease.InstallationID != identity.ID {
+		return ErrWrongInstallation
+	}
+	if strings.TrimSpace(current.Lease.Nonce) == "" {
+		return ErrRenewalNonceMissing
+	}
+
+	request := ReleaseRequest{
+		LicenseID:      current.Lease.LicenseID,
+		InstallationID: current.Lease.InstallationID,
+		CurrentNonce:   current.Lease.Nonce,
+		ProofVersion:   ReleaseProofVersion,
+	}
+	request.ProofSignature, err = signReleaseProof(identity.PrivateKey, request)
+	if err != nil {
+		return err
+	}
+	if err := c.transport.Release(ctx, request); err != nil {
+		return fmt.Errorf("entitlements.Client.Release: %w", err)
+	}
+	return c.store.ClearLease()
 }
 
 func (c *Client) verifyCachedLease() (*LeaseEvaluation, error) {

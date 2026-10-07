@@ -62,6 +62,12 @@ func licenseCommand() *cli.Command {
 				Action:  licenseRenewAction,
 			},
 			{
+				Name:    "release",
+				Aliases: []string{"desvincular"},
+				Usage:   "Release this installation so the license seat can be reused",
+				Action:  licenseReleaseAction,
+			},
+			{
 				Name:   "menu",
 				Usage:  "Open the simple interactive license menu",
 				Action: licenseMenuAction,
@@ -80,6 +86,7 @@ func licenseMenuAction(cCtx *cli.Context) error {
 		fmt.Println("1) Activar Pro")
 		fmt.Println("2) Ver estado")
 		fmt.Println("3) Renovar licencia")
+		fmt.Println("4) Desvincular este dispositivo")
 		fmt.Println("0) Volver")
 		fmt.Print("> ")
 
@@ -106,6 +113,10 @@ func licenseMenuAction(cCtx *cli.Context) error {
 		case "3":
 			if err := renewLicense(cCtx.Context); err != nil {
 				fmt.Printf("Renovacion fallida: %v\n", err)
+			}
+		case "4":
+			if err := releaseLicense(cCtx.Context); err != nil {
+				fmt.Printf("Desvinculacion fallida: %v\n", err)
 			}
 		case "0", "q", "quit", "salir":
 			return nil
@@ -171,6 +182,11 @@ func licenseRenewAction(cCtx *cli.Context) error {
 	return renewLicense(cCtx.Context)
 }
 
+func licenseReleaseAction(cCtx *cli.Context) error {
+	return releaseLicense(cCtx.Context)
+}
+
+
 func activateLicense(ctx context.Context, code string) error {
 	client, err := newLicenseClient()
 	if err != nil {
@@ -209,12 +225,26 @@ func renewLicense(ctx context.Context) error {
 	return nil
 }
 
-func showLicenseStatus() error {
-	keys, err := entitlements.StagingKeyRing()
+func releaseLicense(ctx context.Context) error {
+	client, err := newLicenseClient()
 	if err != nil {
-		return fmt.Errorf("load staging keyring: %w", err)
+		return err
 	}
+	if err := client.Release(ctx); err != nil {
+		return err
+	}
+	fmt.Println()
+	fmt.Println("Dispositivo desvinculado correctamente.")
+	fmt.Println("El asiento de licencia ya puede reutilizarse.")
+	return nil
+}
+
+func showLicenseStatus() error {
 	build, err := currentLicenseBuildIdentity()
+	if err != nil {
+		return err
+	}
+	keys, err := licenseKeyRingForBuild(build)
 	if err != nil {
 		return err
 	}
@@ -267,11 +297,11 @@ func printLicenseStatus(status entitlements.Status) {
 }
 
 func newLicenseClient() (*entitlements.Client, error) {
-	keys, err := entitlements.StagingKeyRing()
-	if err != nil {
-		return nil, fmt.Errorf("load staging keyring: %w", err)
-	}
 	build, err := currentLicenseBuildIdentity()
+	if err != nil {
+		return nil, err
+	}
+	keys, err := licenseKeyRingForBuild(build)
 	if err != nil {
 		return nil, err
 	}
@@ -289,6 +319,21 @@ func newLicenseClient() (*entitlements.Client, error) {
 		Arch:       runtime.GOARCH,
 		AppVersion: updater.CurrentVersion,
 	})
+}
+
+func licenseKeyRingForBuild(build entitlements.BuildIdentity) (entitlements.KeyRing, error) {
+	switch strings.ToLower(strings.TrimSpace(build.Channel)) {
+	case "dev", "beta":
+		keys, err := entitlements.StagingKeyRing()
+		if err != nil {
+			return nil, fmt.Errorf("load staging keyring: %w", err)
+		}
+		return keys, nil
+	case "stable", "release", "production", "prod":
+		return nil, fmt.Errorf("production license keyring is not configured for channel %q", build.Channel)
+	default:
+		return nil, fmt.Errorf("unsupported license build channel %q", build.Channel)
+	}
 }
 
 func currentLicenseControlPlaneURL() string {

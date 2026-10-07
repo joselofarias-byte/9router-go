@@ -28,7 +28,10 @@ const (
 	runtimeLockStale     = 30 * time.Second
 )
 
-var ErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")
+var (
+	ErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")
+	ErrTrustedTimeRequired       = errors.New("trusted time is required for cached entitlement lease")
+)
 
 // RuntimeStore keeps signed entitlement runtime state below the configured
 // 9router DATA_DIR. It never stores provider credentials, payment credentials,
@@ -161,6 +164,26 @@ func (s *RuntimeStore) LoadLease() ([]byte, error) {
 	return out, err
 }
 
+// ClearLease removes only the cached signed lease after the control plane has
+// confirmed self-service release. Installation identity and trusted time remain
+// intact so a failed/offline release can never silently free or reset state.
+func (s *RuntimeStore) ClearLease() error {
+	if s == nil || strings.TrimSpace(s.dir) == "" {
+		return errors.New("entitlements.RuntimeStore: empty data directory")
+	}
+	path := s.leaseCachePath()
+	if err := withPathLock(path, func() error {
+		err := os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}); err != nil {
+		return fmt.Errorf("entitlements.RuntimeStore.ClearLease: %w", err)
+	}
+	return nil
+}
+
 // LastTrustedTime returns zero time when no trusted clock has been persisted.
 func (s *RuntimeStore) LastTrustedTime() (time.Time, error) {
 	if s == nil || strings.TrimSpace(s.dir) == "" {
@@ -255,18 +278,24 @@ func (s *RuntimeStore) LoadRuntime(options RuntimeOptions) (*RuntimeState, error
 	}
 	state.InstallationID = installationID
 
+	raw, err := s.LoadLease()
+	if errors.Is(err, os.ErrNotExist) {
+		// First-run / Community startup must not require a trusted-time file.
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+
 	lastTrusted, err := s.LastTrustedTime()
 	if err != nil {
 		return state, err
 	}
 	state.LastTrustedTime = lastTrusted
-
-	raw, err := s.LoadLease()
-	if errors.Is(err, os.ErrNotExist) {
-		return state, nil
-	}
-	if err != nil {
-		return state, err
+	if lastTrusted.IsZero() {
+		// Once a signed lease exists, trusted time is part of the integrity
+		// boundary. Missing state must not silently disable rollback protection.
+		return state, ErrTrustedTimeRequired
 	}
 
 	nowFn := options.Now

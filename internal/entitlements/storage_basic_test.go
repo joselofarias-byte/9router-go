@@ -1,6 +1,7 @@
 package entitlements
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -79,5 +80,59 @@ func TestRuntimeStoreTrustedTimeOnlyMovesForward(t *testing.T) {
 	}
 	if !got.Equal(later) {
 		t.Fatalf("trusted time moved backward to %s", got)
+	}
+}
+
+
+func TestRuntimeStoreCommunityStartupDoesNotRequireTrustedTime(t *testing.T) {
+	store := NewRuntimeStore(t.TempDir())
+	state, err := store.LoadRuntime(RuntimeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == nil || state.Provider == nil {
+		t.Fatal("runtime state/provider missing")
+	}
+	if got := state.Provider.Status().Mode; got != "community" {
+		t.Fatalf("mode = %q, want community", got)
+	}
+}
+
+func TestRuntimeStoreCachedLeaseRequiresTrustedTime(t *testing.T) {
+	store := NewRuntimeStore(t.TempDir())
+	if err := store.SaveLease([]byte(`{"signed":"placeholder"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := store.LoadRuntime(RuntimeOptions{})
+	if !errors.Is(err, ErrTrustedTimeRequired) {
+		t.Fatalf("error = %v, want ErrTrustedTimeRequired", err)
+	}
+	if state == nil || state.Provider == nil {
+		t.Fatal("runtime state/provider missing")
+	}
+	if got := state.Provider.Status().Mode; got != "community" {
+		t.Fatalf("mode = %q, want community", got)
+	}
+}
+
+func TestRuntimeStoreCorruptTrustedTimeFailsClosedWithCachedLease(t *testing.T) {
+	store := NewRuntimeStore(t.TempDir())
+	if err := store.SaveLease([]byte(`{"signed":"placeholder"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.lastTrustedTimePath(), []byte("not-a-time\n"), privateFilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := store.LoadRuntime(RuntimeOptions{})
+	if err == nil {
+		t.Fatal("corrupt trusted time unexpectedly accepted")
+	}
+	if state == nil || state.Provider == nil {
+		t.Fatal("runtime state/provider missing")
+	}
+	if got := state.Provider.Status().Mode; got != "community" {
+		t.Fatalf("mode = %q, want community", got)
 	}
 }

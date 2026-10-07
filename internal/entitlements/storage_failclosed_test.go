@@ -37,6 +37,9 @@ func TestRuntimeStoreFinalExpiryFallsBackToCommunity(t *testing.T) {
 	if err := store.SaveLease(raw); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AdvanceTrustedTime(ctx.Now); err != nil {
+		t.Fatal(err)
+	}
 
 	state, err := store.LoadRuntime(RuntimeOptions{
 		Keys:  keys,
@@ -60,6 +63,9 @@ func TestRuntimeStoreWrongInstallationFallsBackToCommunity(t *testing.T) {
 	store := NewRuntimeStore(t.TempDir())
 	writeStoredInstallationID(t, store, localInstallation)
 	if err := store.SaveLease(raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AdvanceTrustedTime(ctx.Now); err != nil {
 		t.Fatal(err)
 	}
 

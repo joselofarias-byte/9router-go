@@ -76,6 +76,44 @@ func (t *HTTPTransport) Renew(ctx context.Context, request RenewalRequest) (Leas
 	return t.post(ctx, "/v1/lease/renew", request)
 }
 
+func (t *HTTPTransport) Release(ctx context.Context, request ReleaseRequest) error {
+	if t == nil || t.client == nil || t.baseURL == "" {
+		return ErrControlPlaneTransport
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("encode control plane request: %w", err)
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/v1/installation/release", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("create control plane request: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+
+	response, err := t.client.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("control plane request failed: %w", err)
+	}
+	defer response.Body.Close()
+
+	limit := t.maxResponseBytes
+	if limit <= 0 {
+		limit = defaultControlPlaneResponseSize
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return fmt.Errorf("read control plane response: %w", err)
+	}
+	if int64(len(raw)) > limit {
+		return ErrControlPlaneResponseTooLarge
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("control plane request failed: HTTP %d %s", response.StatusCode, http.StatusText(response.StatusCode))
+	}
+	return nil
+}
+
 func (t *HTTPTransport) post(ctx context.Context, path string, request any) (LeaseResponse, error) {
 	if t == nil || t.client == nil || t.baseURL == "" {
 		return LeaseResponse{}, ErrControlPlaneTransport

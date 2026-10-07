@@ -13,6 +13,7 @@ import (
 type mockControlPlaneTransport struct {
 	activate func(context.Context, ActivationRequest) (LeaseResponse, error)
 	renew    func(context.Context, RenewalRequest) (LeaseResponse, error)
+	release  func(context.Context, ReleaseRequest) error
 }
 
 func (m mockControlPlaneTransport) Activate(ctx context.Context, request ActivationRequest) (LeaseResponse, error) {
@@ -21,6 +22,13 @@ func (m mockControlPlaneTransport) Activate(ctx context.Context, request Activat
 
 func (m mockControlPlaneTransport) Renew(ctx context.Context, request RenewalRequest) (LeaseResponse, error) {
 	return m.renew(ctx, request)
+}
+
+func (m mockControlPlaneTransport) Release(ctx context.Context, request ReleaseRequest) error {
+	if m.release == nil {
+		return nil
+	}
+	return m.release(ctx, request)
 }
 
 type clientTestSigner struct {

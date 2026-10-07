@@ -51,14 +51,24 @@ jobs:
       # the build would fail — it would just quietly get slower, so the flag is
       # asserted here instead of trusted.
       - name: Build
-        run: go build -ldflags="-s -w" -o /tmp/9router-go ./cmd/9router-go/
+        run: |
+          BUILD_ID="ci-${GITHUB_SHA::12}"
+          go build -ldflags="-s -w -X main.licenseBuildChannel=beta -X main.licenseBuildID=${BUILD_ID}" -o /tmp/9router-go ./cmd/9router-go/
+
+      - name: Smoke license CLI build metadata
+        run: |
+          mkdir -p "$RUNNER_TEMP/license-smoke-home"
+          HOME="$RUNNER_TEMP/license-smoke-home" /tmp/9router-go license status | tee /tmp/license-status.txt
+          grep -q "Estado: Community" /tmp/license-status.txt
 
       - name: Build Termux arm64
         env:
           CGO_ENABLED: "0"
           GOOS: android
           GOARCH: arm64
-        run: go build -ldflags="-s -w" -o /tmp/9router-go-termux-arm64 ./cmd/9router-go/
+        run: |
+          BUILD_ID="ci-${GITHUB_SHA::12}"
+          go build -ldflags="-s -w -X main.licenseBuildChannel=beta -X main.licenseBuildID=${BUILD_ID}" -o /tmp/9router-go-termux-arm64 ./cmd/9router-go/
 
       - name: Upload Termux arm64 test binary
         uses: actions/upload-artifact@v4
