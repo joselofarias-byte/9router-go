@@ -292,15 +292,22 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	if proxyURLStr == "" {
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
-		if !proxyEnabled && connData.ProviderSpecificData != nil {
-			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
-				proxyEnabled = en
+		strictProxy = connData.StrictProxy
+		if connData.ProviderSpecificData != nil {
+			if !proxyEnabled {
+				if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
+					proxyEnabled = en
+				}
 			}
-			if u, ok := connData.ProviderSpecificData["connectionProxyUrl"].(string); ok {
-				proxyURL = u
+			if proxyURL == "" {
+				if u, ok := connData.ProviderSpecificData["connectionProxyUrl"].(string); ok {
+					proxyURL = u
+				}
 			}
-			if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
-				strictProxy = sp
+			if !strictProxy {
+				if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
+					strictProxy = sp
+				}
 			}
 		}
 		if proxyEnabled && proxyURL != "" {
