@@ -65,6 +65,19 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "experiential",
+    "name": "Experiential Labs",
+    "category": "freeTier",
+    "alias": "explabs",
+    "color": "#7C3AED",
+    "icon": "science",
+    "website": "https://experientiallabs.ai",
+    "notice": {"text":"OpenAI-compatible gateway. Models ending in :free are strict promotional lanes and must not fall back to paid credits.","apiKeyUrl":"https://platform.experientiallabs.ai/settings/api-keys"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": ["llm"]
+  },
+  {
     "id": "atria",
     "name": "Atria Dawn",
     "category": "apikey",
