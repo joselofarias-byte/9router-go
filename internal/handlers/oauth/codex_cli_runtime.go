@@ -149,11 +149,16 @@ func readCodexCLIAuth(home string) (*pkceTokens, error) {
 	if strings.TrimSpace(doc.Tokens.AccessToken) == "" {
 		return nil, fmt.Errorf("Codex auth has no access token")
 	}
+	now := time.Now()
+	expiresIn := jwtExpiresIn(doc.Tokens.AccessToken, now)
+	if expiresIn == 0 {
+		expiresIn = jwtExpiresIn(doc.Tokens.IDToken, now)
+	}
 	return &pkceTokens{
 		AccessToken:  doc.Tokens.AccessToken,
 		RefreshToken: doc.Tokens.RefreshToken,
 		IDToken:      doc.Tokens.IDToken,
-		ExpiresIn:    jwtExpiresIn(doc.Tokens.AccessToken, time.Now()),
+		ExpiresIn:    expiresIn,
 	}, nil
 }
 
