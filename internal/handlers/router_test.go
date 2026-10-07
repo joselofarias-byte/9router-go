@@ -56,10 +56,18 @@ func TestSetupServerRouter_AdminFabricRoutesAreMountedAndProtected(t *testing.T)
 	defer cleanup()
 
 	if _, err := database.Exec(`
+		CREATE TABLE IF NOT EXISTS apiKeys (
+			id TEXT PRIMARY KEY,
+			key TEXT UNIQUE NOT NULL,
+			name TEXT,
+			machineId TEXT,
+			isActive INTEGER DEFAULT 1,
+			createdAt TEXT NOT NULL
+		);
 		INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt)
-		VALUES ('admin-test', 'admin-test-key', 'Admin Test', 'test-machine', 1, '2026-10-07T00:00:00Z')
+		VALUES ('admin-test', 'admin-test-key', 'Admin Test', 'test-machine', 1, '2026-10-07T00:00:00Z');
 	`); err != nil {
-		t.Fatalf("seed API key: %v", err)
+		t.Fatalf("create/seed API key: %v", err)
 	}
 
 	registry.InitRegistry(nil)
