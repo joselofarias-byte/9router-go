@@ -73,7 +73,7 @@ func TestSetupServerRouter_MountsAuthenticatedFabricAdminRoutes(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed API key: %v", err)
 	}
-	if err := registry.InitRegistry(database); err != nil {
+	if err := registry.InitRegistry(nil); err != nil {
 		t.Fatalf("init registry: %v", err)
 	}
 
