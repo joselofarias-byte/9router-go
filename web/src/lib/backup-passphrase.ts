@@ -63,3 +63,8 @@ export function assessBackupPassphrase(value: string): BackupPassphraseAssessmen
     isLong,
   }
 }
+
+
+export function backupPassphrasesMatch(passphrase: string, confirmation: string): boolean {
+  return passphrase.length >= BACKUP_PASSPHRASE_MIN_LENGTH && confirmation === passphrase
+}
