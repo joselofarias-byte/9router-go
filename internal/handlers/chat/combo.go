@@ -662,12 +662,29 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
+					if cw.IsCommitted() {
+						log.Error("combo", "upstream error after response started", "error", fwdErr)
+						return
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
+						if isEmptyCompletionError(ue) {
+							// Empty output is model-scoped; it must not quarantine
+							// an account that can serve the next model in the pool.
+							if err := h.Repo.LockConnectionModel(connID, modelInfo.Model, 30, 0); err != nil {
+								log.Warn("combo", "empty model lock failed", "error", err)
+							}
+							if virtualFree && isNoAuthProvider {
+								now := time.Now().UTC()
+								virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{quarantinedAt: now, until: now.Add(30 * time.Second)})
+							}
+							lastErr = ue
+							break
+						}
 						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
 							lastErr = ue
 							break
