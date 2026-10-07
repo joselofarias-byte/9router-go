@@ -3,17 +3,12 @@ package oauth
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
@@ -22,103 +17,12 @@ import (
 const (
 	codexCLIStartTimeout = 20 * time.Second
 	codexCLILoginTimeout = 6 * time.Minute
-	codexCLIAuthMaxBytes = 1 << 20
 )
 
-var (
-	codexAuthURLPattern = regexp.MustCompile(`https://auth\\.openai\\.com/[^\\s\\x1b]+`)
-	codexANSISequence   = regexp.MustCompile("\\x1b\\[[0-9;?]*[ -/]*[@-~]")
-	codexCLILogins      = newCodexCLILoginManager()
-)
-
-type codexCLILoginSession struct {
-	status       string
-	connectionID string
-	email        string
-	err          string
-	name         string
-	cancel       context.CancelFunc
-}
-
-type codexCLILoginManager struct {
-	mu       sync.Mutex
-	sessions map[string]*codexCLILoginSession
-}
-
-func newCodexCLILoginManager() *codexCLILoginManager {
-	return &codexCLILoginManager{sessions: make(map[string]*codexCLILoginSession)}
-}
-
-func (m *codexCLILoginManager) register(id, name string, cancel context.CancelFunc) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sessions[id] = &codexCLILoginSession{status: "pending", name: name, cancel: cancel}
-}
-
-func (m *codexCLILoginManager) complete(id, connectionID, email string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sess := m.sessions[id]; sess != nil {
-		sess.status = "done"
-		sess.connectionID = connectionID
-		sess.email = email
-		sess.cancel = nil
-	}
-}
-
-func (m *codexCLILoginManager) fail(id, message string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sess := m.sessions[id]; sess != nil {
-		sess.status = "error"
-		sess.err = message
-		sess.cancel = nil
-	}
-}
-
-func (m *codexCLILoginManager) name(id string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sess := m.sessions[id]; sess != nil {
-		return sess.name
-	}
-	return ""
-}
-
-func (m *codexCLILoginManager) take(id string) (codexCLILoginSession, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sess := m.sessions[id]
-	if sess == nil {
-		return codexCLILoginSession{}, false
-	}
-	copy := *sess
-	if copy.status != "pending" {
-		delete(m.sessions, id)
-	}
-	return copy, true
-}
-
-func (m *codexCLILoginManager) cancel(id string) bool {
-	m.mu.Lock()
-	sess := m.sessions[id]
-	if sess != nil {
-		delete(m.sessions, id)
-	}
-	m.mu.Unlock()
-	if sess == nil {
-		return false
-	}
-	if sess.cancel != nil {
-		sess.cancel()
-	}
-	return true
-}
-
-// HandleCodexCLIStart delegates ChatGPT OAuth to the installed official Codex
-// CLI, mirroring AnyClaw: Codex owns PKCE, the loopback callback, token
-// exchange and auth.json. 9router only captures the authorization URL and
-// imports the resulting credentials from an isolated CODEX_HOME.
+// HandleCodexCLIStart delegates ChatGPT OAuth to the installed Codex CLI,
+// mirroring AnyClaw: Codex owns PKCE, the loopback callback, token exchange and
+// auth.json. 9router captures only the authorization URL and imports the
+// resulting credentials from an isolated CODEX_HOME.
 //
 // POST /api/oauth/codex/cli-login/start
 func (h *OAuthHandler) HandleCodexCLIStart(w http.ResponseWriter, r *http.Request) {
@@ -142,14 +46,9 @@ func (h *OAuthHandler) HandleCodexCLIStart(w http.ResponseWriter, r *http.Reques
 	// Codex proxy left by an earlier dashboard attempt before spawning it.
 	codexLoopback.stop()
 
-	home, err := os.MkdirTemp("", "9router-codex-login-*")
+	home, err := prepareCodexLoginHome()
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to prepare isolated Codex login")
-		return
-	}
-	if err := os.Chmod(home, 0o700); err != nil {
-		_ = os.RemoveAll(home)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to secure isolated Codex login")
 		return
 	}
 
@@ -211,7 +110,6 @@ func (h *OAuthHandler) HandleCodexCLIStart(w http.ResponseWriter, r *http.Reques
 }
 
 func scanCodexLoginOutput(r io.Reader, urlCh chan<- string) {
-	defer func() { _ = recover() }()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	sent := false
@@ -224,11 +122,6 @@ func scanCodexLoginOutput(r io.Reader, urlCh chan<- string) {
 			sent = true
 		}
 	}
-}
-
-func extractCodexAuthURL(line string) string {
-	clean := codexANSISequence.ReplaceAllString(line, "")
-	return codexAuthURLPattern.FindString(clean)
 }
 
 func (h *OAuthHandler) finishCodexCLILogin(sessionID, home string, ctxErr, waitErr error) {
@@ -261,87 +154,6 @@ func (h *OAuthHandler) finishCodexCLILogin(sessionID, home string, ctxErr, waitE
 		return
 	}
 	codexCLILogins.complete(sessionID, connID, email)
-}
-
-func readCodexCLIAuth(home string) (*pkceTokens, error) {
-	path := filepath.Join(home, "auth.json")
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat Codex auth: %w", err)
-	}
-	if info.Size() > codexCLIAuthMaxBytes {
-		return nil, fmt.Errorf("Codex auth file too large")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read Codex auth: %w", err)
-	}
-	var doc struct {
-		Tokens struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			IDToken      string `json:"id_token"`
-		} `json:"tokens"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("decode Codex auth: %w", err)
-	}
-	if strings.TrimSpace(doc.Tokens.AccessToken) == "" {
-		return nil, fmt.Errorf("Codex auth has no access token")
-	}
-	return &pkceTokens{
-		AccessToken:  doc.Tokens.AccessToken,
-		RefreshToken: doc.Tokens.RefreshToken,
-		IDToken:      doc.Tokens.IDToken,
-		ExpiresIn:    jwtExpiresIn(doc.Tokens.AccessToken, time.Now()),
-	}, nil
-}
-
-func jwtExpiresIn(token string, now time.Time) int {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return 0
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return 0
-	}
-	var claims struct {
-		Exp int64 `json:"exp"`
-	}
-	if json.Unmarshal(payload, &claims) != nil || claims.Exp <= now.Unix() {
-		return 0
-	}
-	seconds := claims.Exp - now.Unix()
-	if seconds > int64(^uint(0)>>1) {
-		return 0
-	}
-	return int(seconds)
-}
-
-func findCodexLoginBinary() (string, error) {
-	if explicit := strings.TrimSpace(os.Getenv("CODEX_LOGIN_BIN")); explicit != "" {
-		if isExecutableFile(explicit) {
-			return explicit, nil
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		native := filepath.Join(home, ".local", "codex-termux", "node_modules", ".bin", "codex")
-		if isExecutableFile(native) {
-			return native, nil
-		}
-	}
-	for _, name := range []string{"codex-termux", "codex"} {
-		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
-		}
-	}
-	return "", fmt.Errorf("Codex CLI not found")
-}
-
-func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
 }
 
 // GET /api/oauth/codex/cli-login/status?id=
