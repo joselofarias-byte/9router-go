@@ -54,7 +54,7 @@ func (h *OAuthHandler) HandleCodexCLIStart(w http.ResponseWriter, r *http.Reques
 
 	ctx, cancel := context.WithTimeout(context.Background(), codexCLILoginTimeout)
 	cmd := exec.CommandContext(ctx, bin, "login", "-c", `cli_auth_credentials_store="file"`)
-	cmd.Env = append(os.Environ(), "CODEX_HOME="+home, "NO_COLOR=1")
+	cmd.Env = codexLoginEnv(home)
 
 	reader, writer := io.Pipe()
 	cmd.Stdout = writer
