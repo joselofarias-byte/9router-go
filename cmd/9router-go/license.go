@@ -210,11 +210,11 @@ func renewLicense(ctx context.Context) error {
 }
 
 func showLicenseStatus() error {
-	keys, err := entitlements.StagingKeyRing()
-	if err != nil {
-		return fmt.Errorf("load staging keyring: %w", err)
-	}
 	build, err := currentLicenseBuildIdentity()
+	if err != nil {
+		return err
+	}
+	keys, err := licenseKeyRingForBuild(build)
 	if err != nil {
 		return err
 	}
@@ -267,11 +267,11 @@ func printLicenseStatus(status entitlements.Status) {
 }
 
 func newLicenseClient() (*entitlements.Client, error) {
-	keys, err := entitlements.StagingKeyRing()
-	if err != nil {
-		return nil, fmt.Errorf("load staging keyring: %w", err)
-	}
 	build, err := currentLicenseBuildIdentity()
+	if err != nil {
+		return nil, err
+	}
+	keys, err := licenseKeyRingForBuild(build)
 	if err != nil {
 		return nil, err
 	}
@@ -289,6 +289,21 @@ func newLicenseClient() (*entitlements.Client, error) {
 		Arch:       runtime.GOARCH,
 		AppVersion: updater.CurrentVersion,
 	})
+}
+
+func licenseKeyRingForBuild(build entitlements.BuildIdentity) (entitlements.KeyRing, error) {
+	switch strings.ToLower(strings.TrimSpace(build.Channel)) {
+	case "dev", "beta":
+		keys, err := entitlements.StagingKeyRing()
+		if err != nil {
+			return nil, fmt.Errorf("load staging keyring: %w", err)
+		}
+		return keys, nil
+	case "stable", "release", "production", "prod":
+		return nil, fmt.Errorf("production license keyring is not configured for channel %q", build.Channel)
+	default:
+		return nil, fmt.Errorf("unsupported license build channel %q", build.Channel)
+	}
 }
 
 func currentLicenseControlPlaneURL() string {
