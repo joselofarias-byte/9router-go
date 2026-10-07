@@ -28,7 +28,7 @@
   import Button from '../lib/ui/Button.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type Settings } from '../api/client'
   import { clearCallback, dashboardCallbackURL, readCallback } from '../lib/oauth-handoff'
-  import { assessBackupPassphrase, BACKUP_PASSPHRASE_MIN_LENGTH } from '../lib/backup-passphrase'
+  import { assessBackupPassphrase, backupPassphrasesMatch, BACKUP_PASSPHRASE_MIN_LENGTH } from '../lib/backup-passphrase'
   import { setRuntimeLocale } from '../lib/i18n'
 
   interface Props {
@@ -88,9 +88,12 @@
   let fileInput: HTMLInputElement | null = $state(null)
   let dbPassword = $state('')
   let backupPassphrase = $state('')
+  let backupPassphraseConfirmation = $state('')
   let showDbPassword = $state(false)
   let showBackupPassphrase = $state(false)
+  let showBackupPassphraseConfirmation = $state(false)
   let backupPassphraseInfo = $derived(assessBackupPassphrase(backupPassphrase))
+  let backupPassphrasesMatchState = $derived(backupPassphrasesMatch(backupPassphrase, backupPassphraseConfirmation))
   let dbAuthOpen = $state(false)
   let pendingImportFile: File | null = $state(null)
   let backupAction = $state<'download' | 'share' | 'drive' | 'import' | null>(null)
@@ -263,8 +266,10 @@
     dbAuthOpen = false
     dbPassword = ''
     backupPassphrase = ''
+    backupPassphraseConfirmation = ''
     showDbPassword = false
     showBackupPassphrase = false
+    showBackupPassphraseConfirmation = false
     pendingImportFile = null
     backupAction = null
   }
@@ -273,8 +278,10 @@
     if (backupBusy()) return
     dbPassword = ''
     backupPassphrase = ''
+    backupPassphraseConfirmation = ''
     showDbPassword = false
     showBackupPassphrase = false
+    showBackupPassphraseConfirmation = false
     pendingImportFile = null
     backupAction = action
     dbAuthOpen = true
@@ -304,8 +311,14 @@
     return backupAction !== 'import' || encryptedRestoreSelected()
   }
 
+  function creatingEncryptedBackup() {
+    return backupAction === 'download' || backupAction === 'share' || backupAction === 'drive'
+  }
+
   function backupPassphraseValid() {
-    return !backupPassphraseRequired() || backupPassphraseInfo.valid
+    if (!backupPassphraseRequired()) return true
+    if (!backupPassphraseInfo.valid) return false
+    return backupAction === 'import' || backupPassphrasesMatchState
   }
 
   function backupFileName() {
@@ -359,6 +372,7 @@
       dbAuthOpen = false
       dbPassword = ''
       backupPassphrase = ''
+      backupPassphraseConfirmation = ''
       backupAction = null
     }
   }
@@ -397,6 +411,7 @@
       dbAuthOpen = false
       dbPassword = ''
       backupPassphrase = ''
+      backupPassphraseConfirmation = ''
       backupAction = null
     }
   }
@@ -467,6 +482,7 @@
       dbAuthOpen = false
       dbPassword = ''
       backupPassphrase = ''
+      backupPassphraseConfirmation = ''
       backupAction = null
     }
   }
@@ -494,8 +510,10 @@
     backupAction = 'import'
     dbPassword = ''
     backupPassphrase = ''
+    backupPassphraseConfirmation = ''
     showDbPassword = false
     showBackupPassphrase = false
+    showBackupPassphraseConfirmation = false
     dbAuthOpen = true
   }
 
@@ -549,6 +567,7 @@
       dbAuthOpen = false
       dbPassword = ''
       backupPassphrase = ''
+      backupPassphraseConfirmation = ''
       backupAction = null
     }
   }
@@ -1022,89 +1041,143 @@
                 ? 'Create an encrypted recovery backup and open Android sharing so you can save it to Drive or Files?'
                 : 'Download an encrypted recovery backup (.9rbak)?'}
         </p>
-        <div class="space-y-1.5">
-          <label for="backup-dashboard-password" class="text-sm font-medium text-text-main">Dashboard password</label>
-          <div class="relative">
-            <input
-              id="backup-dashboard-password"
-              type={showDbPassword ? 'text' : 'password'}
-              placeholder="Authorize this backup operation"
-              bind:value={dbPassword}
-              autocomplete="current-password"
-              class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40"
-            />
-            <button
-              type="button"
-              onclick={() => (showDbPassword = !showDbPassword)}
-              class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
-              aria-label={showDbPassword ? 'Hide password' : 'Show password'}
-            >
-              {#if showDbPassword}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
-            </button>
+        <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2">
+          <div>
+            <p class="text-xs font-bold text-text-main">1. Dashboard authorization</p>
+            <p class="text-[10px] text-text-subtle">This is your current dashboard password. It only authorizes the backup operation.</p>
+          </div>
+          <div class="space-y-1.5">
+            <label for="backup-dashboard-password" class="text-sm font-medium text-text-main">Dashboard password</label>
+            <div class="relative">
+              <input
+                id="backup-dashboard-password"
+                type={showDbPassword ? 'text' : 'password'}
+                placeholder="Current dashboard password"
+                bind:value={dbPassword}
+                autocomplete="current-password"
+                class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40"
+              />
+              <button
+                type="button"
+                onclick={() => (showDbPassword = !showDbPassword)}
+                class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                aria-label={showDbPassword ? 'Hide password' : 'Show password'}
+              >
+                {#if showDbPassword}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+              </button>
+            </div>
           </div>
         </div>
 
         {#if backupPassphraseRequired()}
-          <div class="space-y-1.5">
-            <label for="backup-recovery-passphrase" class="text-sm font-medium text-text-main">Backup recovery passphrase</label>
-            <div class="relative">
-              <input
-                id="backup-recovery-passphrase"
-                type={showBackupPassphrase ? 'text' : 'password'}
-                placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
-                bind:value={backupPassphrase}
-                autocomplete="new-password"
-                aria-invalid={backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
-                class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border placeholder-text-muted/70 focus:outline-none focus:ring-2 transition {backupPassphrase.length > 0 && !backupPassphraseInfo.valid ? 'border-danger/60 focus:ring-danger/30' : 'border-transparent focus:ring-brand-500/30 focus:border-brand-500/40'}"
-              />
-              <button
-                type="button"
-                onclick={() => (showBackupPassphrase = !showBackupPassphrase)}
-                class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
-                aria-label={showBackupPassphrase ? 'Hide password' : 'Show password'}
-              >
-                {#if showBackupPassphrase}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
-              </button>
+          <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-3">
+            <div>
+              <p class="text-xs font-bold text-text-main">{backupAction === 'import' ? '2. Backup decryption' : '2. Backup encryption'}</p>
+              <p class="text-[10px] text-text-subtle">
+                {backupAction === 'import'
+                  ? 'Enter the recovery passphrase that was used when this encrypted backup was created.'
+                  : 'Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.'}
+              </p>
             </div>
 
-            <div class="flex items-center justify-between gap-3 text-[11px]">
-              <span class={backupPassphraseInfo.valid ? 'text-success font-semibold' : 'text-text-muted'}>
-                {backupPassphraseInfo.length} / {BACKUP_PASSPHRASE_MIN_LENGTH} <span>minimum</span>
-                {#if backupPassphraseInfo.valid} ✓{/if}
-              </span>
-              {#if backupAction !== 'import'}
-                <span class="text-text-muted">
-                  Password strength:
-                  <strong class={backupPassphraseInfo.score >= 4 ? 'text-success' : backupPassphraseInfo.score >= 3 ? 'text-info' : backupPassphraseInfo.score >= 2 ? 'text-warning' : 'text-danger'}>
-                    {backupPassphraseInfo.label}
-                  </strong>
+            <div class="space-y-1.5">
+              <label for="backup-recovery-passphrase" class="text-sm font-medium text-text-main">Recovery passphrase</label>
+              <div class="relative">
+                <input
+                  id="backup-recovery-passphrase"
+                  type={showBackupPassphrase ? 'text' : 'password'}
+                  placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
+                  bind:value={backupPassphrase}
+                  autocomplete="new-password"
+                  aria-invalid={backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
+                  class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border placeholder-text-muted/70 focus:outline-none focus:ring-2 transition {backupPassphrase.length > 0 && !backupPassphraseInfo.valid ? 'border-danger/60 focus:ring-danger/30' : 'border-transparent focus:ring-brand-500/30 focus:border-brand-500/40'}"
+                />
+                <button
+                  type="button"
+                  onclick={() => (showBackupPassphrase = !showBackupPassphrase)}
+                  class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                  aria-label={showBackupPassphrase ? 'Hide password' : 'Show password'}
+                >
+                  {#if showBackupPassphrase}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+                </button>
+              </div>
+
+              <div class="flex items-center justify-between gap-3 text-[11px]">
+                <span class={backupPassphraseInfo.valid ? 'text-success font-semibold' : 'text-text-muted'}>
+                  {backupPassphraseInfo.length} / {BACKUP_PASSPHRASE_MIN_LENGTH} <span>minimum</span>
+                  {#if backupPassphraseInfo.valid} ✓{/if}
                 </span>
+                {#if creatingEncryptedBackup()}
+                  <span class="text-text-muted">
+                    Password strength:
+                    <strong class={backupPassphraseInfo.score >= 4 ? 'text-success' : backupPassphraseInfo.score >= 3 ? 'text-info' : backupPassphraseInfo.score >= 2 ? 'text-warning' : 'text-danger'}>
+                      {backupPassphraseInfo.label}
+                    </strong>
+                  </span>
+                {/if}
+              </div>
+
+              {#if creatingEncryptedBackup()}
+                <div class="h-1.5 rounded-full bg-surface-3 overflow-hidden" aria-hidden="true">
+                  <div
+                    class="h-full rounded-full transition-all duration-200 {backupPassphraseInfo.score >= 4 ? 'bg-success' : backupPassphraseInfo.score >= 3 ? 'bg-info' : backupPassphraseInfo.score >= 2 ? 'bg-warning' : 'bg-danger'}"
+                    style:width={`${backupPassphraseInfo.percent}%`}
+                  ></div>
+                </div>
+                <p class="text-[10px] text-text-subtle">Use a mix of upper/lowercase, numbers, and symbols.</p>
+              {/if}
+
+              {#if backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
+                <p class="text-[11px] text-danger flex items-center gap-1">
+                  <AlertCircle class="w-3.5 h-3.5" />
+                  <span>At least 12 characters</span>
+                </p>
               {/if}
             </div>
 
-            {#if backupAction !== 'import'}
-              <div class="h-1.5 rounded-full bg-surface-3 overflow-hidden" aria-hidden="true">
-                <div
-                  class="h-full rounded-full transition-all duration-200 {backupPassphraseInfo.score >= 4 ? 'bg-success' : backupPassphraseInfo.score >= 3 ? 'bg-info' : backupPassphraseInfo.score >= 2 ? 'bg-warning' : 'bg-danger'}"
-                  style:width={`${backupPassphraseInfo.percent}%`}
-                ></div>
+            {#if creatingEncryptedBackup()}
+              <div class="space-y-1.5 pt-1">
+                <label for="backup-recovery-passphrase-confirm" class="text-sm font-medium text-text-main">Confirm recovery passphrase</label>
+                <div class="relative">
+                  <input
+                    id="backup-recovery-passphrase-confirm"
+                    type={showBackupPassphraseConfirmation ? 'text' : 'password'}
+                    placeholder="Type the same recovery passphrase again"
+                    bind:value={backupPassphraseConfirmation}
+                    autocomplete="new-password"
+                    aria-invalid={backupPassphraseConfirmation.length > 0 && !backupPassphrasesMatchState}
+                    class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border placeholder-text-muted/70 focus:outline-none focus:ring-2 transition {backupPassphraseConfirmation.length > 0 && !backupPassphrasesMatchState ? 'border-danger/60 focus:ring-danger/30' : backupPassphrasesMatchState ? 'border-success/50 focus:ring-success/30' : 'border-transparent focus:ring-brand-500/30 focus:border-brand-500/40'}"
+                  />
+                  <button
+                    type="button"
+                    onclick={() => (showBackupPassphraseConfirmation = !showBackupPassphraseConfirmation)}
+                    class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                    aria-label={showBackupPassphraseConfirmation ? 'Hide password' : 'Show password'}
+                  >
+                    {#if showBackupPassphraseConfirmation}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between gap-3 text-[11px]">
+                  <span class={backupPassphraseConfirmation.length >= BACKUP_PASSPHRASE_MIN_LENGTH ? 'text-success font-semibold' : 'text-text-muted'}>
+                    {backupPassphraseConfirmation.length} / {BACKUP_PASSPHRASE_MIN_LENGTH} <span>minimum</span>
+                    {#if backupPassphraseConfirmation.length >= BACKUP_PASSPHRASE_MIN_LENGTH} ✓{/if}
+                  </span>
+                  {#if backupPassphraseConfirmation.length > 0}
+                    <span class={backupPassphrasesMatchState ? 'text-success font-semibold' : 'text-danger font-semibold'}>
+                      {backupPassphrasesMatchState ? 'Passphrases match ✓' : 'Passphrases do not match'}
+                    </span>
+                  {/if}
+                </div>
               </div>
-              <p class="text-[10px] text-text-subtle">Use a mix of upper/lowercase, numbers, and symbols.</p>
             {/if}
 
-            {#if backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
-              <p class="text-[11px] text-danger flex items-center gap-1">
-                <AlertCircle class="w-3.5 h-3.5" />
-                <span>At least 12 characters</span>
-              </p>
-            {/if}
+            <p class="text-[10px] text-text-subtle leading-relaxed">
+              {backupAction === 'import'
+                ? 'Required for encrypted .9rbak files. Legacy JSON/ZIP imports ignore it.'
+                : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
+            </p>
           </div>
-
-          <p class="text-[10px] text-text-subtle leading-relaxed">
-            {backupAction === 'import'
-              ? 'Required for encrypted .9rbak files. Legacy JSON/ZIP imports ignore it.'
-              : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
-          </p>
         {/if}
       </div>
       {#snippet footer()}
