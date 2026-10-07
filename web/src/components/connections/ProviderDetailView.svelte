@@ -333,6 +333,7 @@
   // modal watches the server instead of the browser callback page.
   let codexPollTimer: ReturnType<typeof setInterval> | null = $state(null)
   let codexCliSessionId = $state('')
+  let codexCliMode = $state(false)
 
   function dashboardCallback(): string {
     return dashboardCallbackURL(dashboardOrigin())
@@ -1387,30 +1388,53 @@
   // OAuth end-to-end. If the CLI is absent we fall back to the legacy manual
   // PKCE implementation below instead of making Codex login unavailable.
   async function openCodexCLILogin(): Promise<boolean> {
-    const res = await api.codexCLIStartLogin()
-    if (!res.success) {
-      if (res.reason === 'codex_not_found') return false
-      throw new Error(
-        res.reason === 'url_timeout'
-          ? 'Codex CLI started but did not provide an authorization URL'
-          : 'Codex CLI login could not be started',
-      )
-    }
-    if (!res.sessionId || !res.authUrl) {
-      throw new Error('Codex CLI login returned an incomplete session')
-    }
+    // Reserve the browser tab synchronously while this click still carries a
+    // user gesture. Opening it only after the API await is what Chrome reports
+    // as a blocked popup and encourages repeated Login clicks/new OAuth states.
+    const popup =
+      typeof window !== 'undefined'
+        ? window.open('about:blank', '_blank', 'width=600,height=700')
+        : null
 
-    stopCodexPoll()
-    codexCliSessionId = res.sessionId
-    pkceState = res.sessionId
-    oauthAuthUrl = res.authUrl
-    showOAuthModal = true
-    codexPollTimer = setInterval(pollCodexCLIStatus, 1500)
+    try {
+      const res = await api.codexCLIStartLogin()
+      if (!res.success) {
+        try {
+          popup?.close()
+        } catch {
+          /* noop */
+        }
+        if (res.reason === 'codex_not_found') return false
+        throw new Error(
+          res.reason === 'url_timeout'
+            ? 'Codex CLI started but did not provide an authorization URL'
+            : 'Codex CLI login could not be started',
+        )
+      }
+      if (!res.sessionId || !res.authUrl) {
+        throw new Error('Codex CLI login returned an incomplete session')
+      }
 
-    if (typeof window !== 'undefined') {
-      window.open(oauthAuthUrl, '_blank', 'width=600,height=700')
+      stopCodexPoll()
+      codexCliMode = true
+      codexCliSessionId = res.sessionId
+      pkceState = res.sessionId
+      oauthAuthUrl = res.authUrl
+      showOAuthModal = true
+      codexPollTimer = setInterval(pollCodexCLIStatus, 1500)
+
+      if (popup && !popup.closed) {
+        popup.location.replace(oauthAuthUrl)
+      }
+      return true
+    } catch (err) {
+      try {
+        popup?.close()
+      } catch {
+        /* noop */
+      }
+      throw err
     }
-    return true
   }
 
   async function pollCodexCLIStatus() {
@@ -1420,6 +1444,7 @@
       if (res.status === 'done') {
         stopCodexPoll()
         codexCliSessionId = ''
+        codexCliMode = false
         showOAuthModal = false
         onRefresh()
       } else if (res.status === 'error') {
@@ -1494,6 +1519,7 @@
     stopDevicePoll()
     stopCodexPoll()
     if (providerId === 'codex') {
+      codexCliMode = false
       if (codexCliSessionId) {
         const sessionId = codexCliSessionId
         codexCliSessionId = ''
@@ -4174,6 +4200,14 @@
             </div>
           </div>
         {/if}
+        {#if providerId === 'codex' && codexCliMode}
+          <div class="p-3 border border-border rounded-md bg-sidebar/50">
+            <p class="text-sm font-medium text-text-main">Finish the login in the browser</p>
+            <p class="text-[11px] text-text-muted mt-1">
+              Codex CLI owns this callback. Keep this dialog open; 9router will import the account automatically. Do not start another login while this one is in progress.
+            </p>
+          </div>
+        {:else}
         <div>
           <p class="text-sm font-medium mb-1">
             {providerId === 'freebuff'
@@ -4203,12 +4237,14 @@
                   : 'Paste the access token here, then click Connect.'}
           </p>
         </div>
+        {/if}
 
         {#if oauthError}
           <p class="text-xs text-red-500">{oauthError}</p>
         {/if}
 
         <div class="flex gap-2 pt-2">
+          {#if !(providerId === 'codex' && codexCliMode)}
           <button
             type="button"
             onclick={() => {
@@ -4223,9 +4259,14 @@
           >
             {isConnecting ? 'Checking…' : deviceUserCode ? 'Check now' : providerId === 'freebuff' ? 'Check & Connect' : 'Connect'}
           </button>
+          {/if}
           <button
             type="button"
             onclick={() => {
+              if (providerId === 'codex') {
+                closeOAuthModal()
+                return
+              }
               showOAuthModal = false
               stopDevicePoll()
               if (freebuffPollTimer) {
