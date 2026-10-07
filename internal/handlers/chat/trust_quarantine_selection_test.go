@@ -1,6 +1,10 @@
 package chat
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"9router/proxy/internal/controlplane/registry"
@@ -96,5 +100,112 @@ func TestAccountTrustSelectable_AllowsDegradedState(t *testing.T) {
 	}
 	if !isAccountTrustSelectable(provider, model, account) {
 		t.Fatal("degraded account should remain selectable")
+	}
+}
+
+
+func TestHandleAccountFallback_QuarantinedSyntheticDefaultStopsBeforeNetwork(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":{"message":"free tier denied","type":"FreeTierError"}}`))
+	}))
+	defer upstream.Close()
+
+	database, cleanupDB := setupChatTestDB(t)
+	defer cleanupDB()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'opencode'`); err != nil {
+		t.Fatalf("clear opencode connections: %v", err)
+	}
+
+	orig := providers.KnownProviders["opencode"]
+	cfg := orig
+	cfg.BaseURL = upstream.URL
+	providers.KnownProviders["opencode"] = cfg
+	defer func() { providers.KnownProviders["opencode"] = orig }()
+
+	oldTM := globalTrustManager
+	oldEngine := globalRoutingEngine
+	tm := trust.NewManager()
+	globalTrustManager = tm
+	globalRoutingEngine = &routing.Engine{TrustManager: tm}
+	defer func() {
+		globalTrustManager = oldTM
+		globalRoutingEngine = oldEngine
+	}()
+
+	h := NewChatHandler(db.NewRepo(database))
+	const model = "audit-public-default"
+	body := []byte(`{"model":"audit-public-default","messages":[{"role":"user","content":"hi"}]}`)
+
+	first := httptest.NewRecorder()
+	if err := h.handleAccountFallback(context.Background(), first, "opencode", model, "", body, false, false, "/v1/chat/completions"); err == nil {
+		t.Fatal("expected first public route call to return upstream 403")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expected one upstream hit, got %d", got)
+	}
+	if level := tm.GetTrustLevel("opencode", model, "default"); level != trust.TrustQuarantined {
+		t.Fatalf("expected synthetic default route quarantined, got %s", level)
+	}
+
+	second := httptest.NewRecorder()
+	if err := h.handleAccountFallback(context.Background(), second, "opencode", model, "", body, false, false, "/v1/chat/completions"); err == nil {
+		t.Fatal("expected quarantined public route to fail locally")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("quarantined public route retried upstream; hits=%d", got)
+	}
+}
+
+func TestComboConnection_QuarantinedSyntheticDefaultIsUnavailable(t *testing.T) {
+	database, cleanupDB := setupChatTestDB(t)
+	defer cleanupDB()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'opencode'`); err != nil {
+		t.Fatalf("clear opencode connections: %v", err)
+	}
+
+	oldTM := globalTrustManager
+	tm := trust.NewManager()
+	globalTrustManager = tm
+	defer func() { globalTrustManager = oldTM }()
+
+	const model = "audit-combo-default-quarantine"
+	tm.RecordObservation("opencode", model, "default", false, providers.ErrAuth)
+
+	h := NewChatHandler(db.NewRepo(database))
+	if _, _, _, err := h.comboConnection(&ModelInfo{Provider: "opencode", Model: model}, nil); err == nil {
+		t.Fatal("expected quarantined synthetic default route to be unavailable")
+	}
+}
+
+func TestGetBestConnection_QuarantinedSyntheticNoAuthIsUnavailable(t *testing.T) {
+	database, cleanupDB := setupChatTestDB(t)
+	defer cleanupDB()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'mimo-free'`); err != nil {
+		t.Fatalf("clear mimo-free connections: %v", err)
+	}
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
+
+	oldTM := globalTrustManager
+	oldEngine := globalRoutingEngine
+	tm := trust.NewManager()
+	globalTrustManager = tm
+	globalRoutingEngine = &routing.Engine{TrustManager: tm}
+	defer func() {
+		globalTrustManager = oldTM
+		globalRoutingEngine = oldEngine
+	}()
+
+	const model = "audit-noauth-quarantine"
+	tm.RecordObservation("mimo-free", model, "noauth", false, providers.ErrAuth)
+
+	h := NewChatHandler(db.NewRepo(database))
+	if _, _, err := h.getBestConnection("mimo-free", "", nil, model); err == nil {
+		t.Fatal("expected quarantined synthetic noauth route to be unavailable")
 	}
 }
