@@ -1,0 +1,23 @@
+name: Provider Live Health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+jobs:
+  opencode-muse-spark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: OpenCode Muse Spark live contract
+        env:
+          RUN_LIVE_OPENCODE: "1"
+        run: go test ./internal/handlers/chat -run '^TestIntegration_OpenCode_MuseSpark_' -count=1 -v
