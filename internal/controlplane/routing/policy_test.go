@@ -66,3 +66,43 @@ func TestEngine_SelectCandidates(t *testing.T) {
 		t.Errorf("Expected p2 to be first due to free-first bonus, got %s", resFirst[0].ProviderID)
 	}
 }
+
+
+func TestEngine_SelectCandidatesUsesRequestFeedback(t *testing.T) {
+	registry.InitRegistry(nil)
+	state := registry.GetActiveState()
+
+	state.Providers["p1"] = &registry.Provider{ID: "p1", IsActive: true}
+	state.Providers["p2"] = &registry.Provider{ID: "p2", IsActive: true}
+	state.ProviderModels["p1"] = map[string]*registry.ProviderModel{
+		"m": {ProviderID: "p1", ModelID: "m", PricingMode: "free", IsActive: true},
+	}
+	state.ProviderModels["p2"] = map[string]*registry.ProviderModel{
+		"m": {ProviderID: "p2", ModelID: "m", PricingMode: "free", IsActive: true},
+	}
+	state.Accounts["a1"] = &registry.Account{ID: "a1", ProviderID: "p1", IsActive: true}
+	state.Accounts["a2"] = &registry.Account{ID: "a2", ProviderID: "p2", IsActive: true}
+
+	tm := trust.NewManager()
+	// Keep both nodes at the same trust level while giving p1 a better real
+	// success rate. The score difference must survive random tie shuffling.
+	for i := 0; i < 4; i++ {
+		tm.RecordRequestOutcome("p1", "m", "a1", true, "", 100, 50)
+	}
+	for i := 0; i < 2; i++ {
+		tm.RecordRequestOutcome("p2", "m", "a2", true, "", 100, 50)
+		tm.RecordRequestOutcome("p2", "m", "a2", false, "", 100, 50)
+	}
+
+	engine := &Engine{TrustManager: tm}
+	res := engine.SelectCandidates("m", PolicyFreeOnly)
+	if len(res) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(res))
+	}
+	if res[0].ProviderID != "p1" {
+		t.Fatalf("expected observed success rate to rank p1 first, got %+v", res)
+	}
+	if res[0].Score.Dimensions["success_rate"] <= res[1].Score.Dimensions["success_rate"] {
+		t.Fatalf("expected p1 success-rate score to exceed p2: %+v", res)
+	}
+}
