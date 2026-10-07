@@ -109,7 +109,6 @@ func (a *OrcaRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 	var candidates []Candidate
 	now := time.Now().UTC()
 
-	isFreeEndpoint := strings.Contains(successfulEndpoint, "/free") || strings.Contains(successfulEndpoint, "/public")
 
 	for _, mData := range modelList.Data {
 		if mData.Object != "model" && mData.Object != "" {
@@ -119,18 +118,27 @@ func (a *OrcaRouterAdapter) Discover(ctx context.Context) ([]Candidate, error) {
 		modelID := mData.ID
 		pricingMode := "paid"
 
-		// Infer free tier from endpoint heuristics or cost metrics if available
-		if mData.Pricing.Mode != "" && mData.Pricing.Mode != "paid" {
-			pricingMode = mData.Pricing.Mode
-		} else if mData.Pricing.Mode == "paid" {
+		// free-best must fail closed on contradictory or ambiguous pricing.
+		// Any explicitly positive cost wins over endpoint/name heuristics.
+		hasPositiveCost := mData.Cost != nil && (mData.Cost.Prompt > 0 || mData.Cost.Completion > 0)
+		hasZeroCost := mData.Cost != nil && mData.Cost.Prompt == 0 && mData.Cost.Completion == 0
+		isExplicitFreeEndpoint := strings.Contains(successfulEndpoint, "/models/free")
+
+		switch {
+		case hasPositiveCost:
 			pricingMode = "paid"
-		} else if isFreeEndpoint {
+		case mData.Pricing.Mode == "paid":
+			pricingMode = "paid"
+		case mData.Pricing.Mode == "free" || mData.Pricing.Mode == "free_tier":
+			pricingMode = mData.Pricing.Mode
+		case hasZeroCost:
 			pricingMode = "free_tier"
-		} else if mData.Cost != nil && mData.Cost.Prompt == 0 && mData.Cost.Completion == 0 {
+		case isExplicitFreeEndpoint:
 			pricingMode = "free_tier"
-		} else if strings.Contains(strings.ToLower(modelID), "free") || strings.Contains(strings.ToLower(modelID), "glm-5.3") {
-			// Specific free-tier lineup detection, including GLM 5.3 Flash.
-			pricingMode = "free_tier"
+		default:
+			// /public/models and model-name hints are discovery hints, not billing evidence.
+			// Keep ambiguous entries out of PolicyFreeOnly.
+			pricingMode = "paid"
 		}
 
 		candidates = append(candidates, Candidate{

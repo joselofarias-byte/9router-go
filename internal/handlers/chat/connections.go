@@ -20,6 +20,22 @@ var CredentialFallbacks = map[string]string{
 	"zai-search":    "glm",
 }
 
+
+type rejectingRoundTripper struct {
+	err error
+}
+
+func (r rejectingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, r.err
+}
+
+func (h *ChatHandler) strictProxyFailure(reason string) *http.Client {
+	return &http.Client{
+		Transport: rejectingRoundTripper{err: fmt.Errorf("strict proxy unavailable: %s", reason)},
+		Timeout:   h.Client.Timeout,
+	}
+}
+
 // GetBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly.
 func (h *ChatHandler) GetBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
@@ -84,6 +100,18 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		}
 		if conn == nil {
 			return nil, nil, fmt.Errorf("connection %s not found", connectionID)
+		}
+		if model != "" {
+			locked, lockErr := h.Repo.IsConnectionModelLocked(conn.ID, model)
+			if lockErr != nil {
+				return nil, nil, fmt.Errorf("check connection %s model lock: %w", conn.ID, lockErr)
+			}
+			if locked {
+				return nil, nil, fmt.Errorf("connection %s is locked for model %s", conn.ID, model)
+			}
+			if provider == "antigravity" && IsAntigravityModelBlocked(conn.ID, model) {
+				return nil, nil, fmt.Errorf("connection %s is blocked for antigravity model %s", conn.ID, model)
+			}
 		}
 	} else {
 		connections, queryErr := h.Repo.GetProviderConnections(provider, true)
@@ -302,6 +330,10 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	}
 
 	if proxyURLStr == "" {
+		if strictProxy {
+			log.Error("proxy", "strict proxy enabled but no usable proxy url", "pool", connData.ProxyPoolID)
+			return h.strictProxyFailure("no usable proxy URL")
+		}
 		return h.Client
 	}
 
@@ -310,6 +342,7 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
 		if strictProxy {
 			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
+			return h.strictProxyFailure(err.Error())
 		}
 		return h.Client
 	}

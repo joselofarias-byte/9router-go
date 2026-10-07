@@ -36,6 +36,14 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 			{
 				"id": "some-free-model",
 				"object": "model"
+			},
+			{
+				"id": "free-name-but-priced",
+				"object": "model",
+				"cost": {
+					"prompt": 0.01,
+					"completion": 0.02
+				}
 			}
 		]
 	}`
@@ -67,8 +75,8 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 		t.Errorf("expected Auth Header 'Bearer test-api-key', got '%s'", authHeader)
 	}
 
-	if len(candidates) != 4 {
-		t.Fatalf("expected 4 candidates, got %d", len(candidates))
+	if len(candidates) != 5 {
+		t.Fatalf("expected 5 candidates, got %d", len(candidates))
 	}
 
 	for _, c := range candidates {
@@ -88,8 +96,12 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 			t.Errorf("expected paid pricing for deepseek-coder, got %s", c.PricingMode)
 		}
 
-		if c.ModelID == "some-free-model" && c.PricingMode != "free_tier" {
-			t.Errorf("expected free_tier pricing (inferred from string match) for some-free-model, got %s", c.PricingMode)
+		if c.ModelID == "some-free-model" && c.PricingMode != "paid" {
+			t.Errorf("expected ambiguous public/name-only model to stay paid, got %s", c.PricingMode)
+		}
+
+		if c.ModelID == "free-name-but-priced" && c.PricingMode != "paid" {
+			t.Errorf("expected positive costs to override free-looking name/public endpoint, got %s", c.PricingMode)
 		}
 	}
 }

@@ -2,6 +2,8 @@ package chat
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -63,5 +65,58 @@ func TestGetClientForConnection_ProxyPool(t *testing.T) {
 	}
 	if proxyURL == nil || proxyURL.String() != "http://user:pass@proxy.example.com:8080" {
 		t.Errorf("expected proxy URL http://user:pass@proxy.example.com:8080, got %v", proxyURL)
+	}
+}
+
+
+func TestGetClientForConnection_StrictProxyInvalidURLFailsClosed(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name:        "strict-invalid",
+		ProxyURL:    "://invalid",
+		Type:        "http",
+		StrictProxy: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to insert proxy pool: %v", err)
+	}
+
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	client := h.GetClientForConnection(&ConnectionData{ProxyPoolID: pool["id"].(string)})
+
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("expected strict invalid proxy to reject request")
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("strict proxy failed open: upstream received %d requests", got)
 	}
 }
