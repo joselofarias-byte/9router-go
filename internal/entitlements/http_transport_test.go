@@ -160,3 +160,36 @@ func TestHTTPTransportRejectsCredentialsInBaseURL(t *testing.T) {
 		t.Fatal("base URL credentials unexpectedly accepted")
 	}
 }
+
+
+func TestHTTPTransportReleasePath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/installation/release" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var request ReleaseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.LicenseID != "lic-release-http" || request.CurrentNonce != "nonce-release-http" {
+			t.Fatalf("release request = %+v", request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	transport, err := NewHTTPTransport(server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Release(context.Background(), ReleaseRequest{
+		LicenseID:      "lic-release-http",
+		InstallationID: "install-release-http",
+		CurrentNonce:   "nonce-release-http",
+		ProofVersion:   ReleaseProofVersion,
+		ProofSignature: "proof",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
