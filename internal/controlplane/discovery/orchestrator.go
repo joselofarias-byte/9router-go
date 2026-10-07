@@ -213,7 +213,7 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 			return
 		}
 
-		err = registry.ActivateSnapshot(o.db, snap.Version)
+		err = registry.ActivateSnapshotPreservingAccounts(o.db, snap.Version)
 		if err != nil {
 			log.Warn("orchestrator", "failed to activate snapshot", "err", err)
 			return
