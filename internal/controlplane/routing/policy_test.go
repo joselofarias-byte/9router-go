@@ -95,7 +95,7 @@ func TestEngine_SelectCandidates_UsesObservedPerformance(t *testing.T) {
 	if got[0].ProviderID != "fast" {
 		t.Fatalf("expected lower observed TTFT to rank first, got %#v", got)
 	}
-	if got[0].Score.Factors.TTFTMs != 100 || got[1].Score.Factors.TTFTMs != 2500 {
-		t.Fatalf("routing did not consume observed TTFT: %#v", got)
+	if got[0].Score.Dimensions["performance"] <= got[1].Score.Dimensions["performance"] {
+		t.Fatalf("observed TTFT did not affect performance score: %#v", got)
 	}
 }
