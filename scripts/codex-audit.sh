@@ -7,7 +7,16 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
-ROOT="${1:-$HOME/9router-license-test}"
+if [ "$#" -gt 0 ]; then
+  ROOT="$1"
+elif [ -d "$PWD/.git" ]; then
+  ROOT="$PWD"
+elif [ -d "$HOME/9router-license-test/.git" ]; then
+  ROOT="$HOME/9router-license-test"
+else
+  echo "ERROR: no encontre un repositorio Git. Ejecuta codex-audit dentro del repo o pasale una ruta." >&2
+  exit 1
+fi
 ROOT="$(cd "$ROOT" && pwd)"
 
 if [ ! -d "$ROOT/.git" ]; then
