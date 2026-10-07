@@ -332,6 +332,7 @@
   // Codex completes its login on a server-owned loopback listener, so the
   // modal watches the server instead of the browser callback page.
   let codexPollTimer: ReturnType<typeof setInterval> | null = $state(null)
+  let codexCliSessionId = $state('')
 
   function dashboardCallback(): string {
     return dashboardCallbackURL(dashboardOrigin())
@@ -1338,6 +1339,10 @@
     callbackInput = ''
     copiedAuthUrl = false
     try {
+      if (providerId === 'codex') {
+        const delegated = await openCodexCLILogin()
+        if (delegated) return
+      }
       // Codex cannot use the dashboard callback: OpenAI only accepts the
       // redirect URI registered for the Codex CLI client.
       const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
@@ -1375,6 +1380,59 @@
       }
     } catch (err) {
       alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Preferred path: exactly like AnyClaw, let the installed Codex CLI own
+  // OAuth end-to-end. If the CLI is absent we fall back to the legacy manual
+  // PKCE implementation below instead of making Codex login unavailable.
+  async function openCodexCLILogin(): Promise<boolean> {
+    const res = await api.codexCLIStartLogin()
+    if (!res.success) {
+      if (res.reason === 'codex_not_found') return false
+      throw new Error(
+        res.reason === 'url_timeout'
+          ? 'Codex CLI started but did not provide an authorization URL'
+          : 'Codex CLI login could not be started',
+      )
+    }
+    if (!res.sessionId || !res.authUrl) {
+      throw new Error('Codex CLI login returned an incomplete session')
+    }
+
+    stopCodexPoll()
+    codexCliSessionId = res.sessionId
+    pkceState = res.sessionId
+    oauthAuthUrl = res.authUrl
+    showOAuthModal = true
+    codexPollTimer = setInterval(pollCodexCLIStatus, 1500)
+
+    if (typeof window !== 'undefined') {
+      window.open(oauthAuthUrl, '_blank', 'width=600,height=700')
+    }
+    return true
+  }
+
+  async function pollCodexCLIStatus() {
+    if (!codexCliSessionId) return
+    try {
+      const res = await api.codexCLIStatus(codexCliSessionId)
+      if (res.status === 'done') {
+        stopCodexPoll()
+        codexCliSessionId = ''
+        showOAuthModal = false
+        onRefresh()
+      } else if (res.status === 'error') {
+        stopCodexPoll()
+        codexCliSessionId = ''
+        oauthError = res.error || 'Codex CLI authorization failed'
+      } else if (res.status === 'unknown') {
+        stopCodexPoll()
+        codexCliSessionId = ''
+        oauthError = 'The Codex CLI login session is no longer available. Click Login to try again.'
+      }
+    } catch {
+      // A transient dashboard request failure should not kill an active login.
     }
   }
 
@@ -1436,6 +1494,11 @@
     stopDevicePoll()
     stopCodexPoll()
     if (providerId === 'codex') {
+      if (codexCliSessionId) {
+        const sessionId = codexCliSessionId
+        codexCliSessionId = ''
+        void api.codexCLICancel(sessionId).catch(() => {})
+      }
       void api.codexStopProxy().catch(() => {})
     }
   }
