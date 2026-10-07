@@ -119,6 +119,18 @@ func consumeGoogleBackupState(state, redirectURI string) bool {
 	return ok && time.Now().Before(expected.ExpiresAt) && expected.RedirectURI == strings.TrimSpace(redirectURI)
 }
 
+
+// HandleGoogleBackupStatus reports whether direct Google Drive backup can be
+// used on this runtime. It never returns OAuth client credentials.
+func (h *DashboardHandler) HandleGoogleBackupStatus(w http.ResponseWriter, r *http.Request) {
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"configured": googleDriveBackupConfigured(),
+		"folder":     googleDriveBackupFolderName,
+		"retention":  googleDriveBackupKeep,
+		"encrypted":  true,
+	})
+}
+
 // HandleGoogleBackupAuthorize starts a one-shot Google Drive authorization.
 // The narrow drive.file scope can only access files the app creates/uses; it
 // does not grant blanket read access to the user's Drive.
