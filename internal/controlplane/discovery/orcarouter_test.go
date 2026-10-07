@@ -78,8 +78,8 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 		t.Errorf("expected Auth Header 'Bearer test-api-key', got '%s'", authHeader)
 	}
 
-	if len(candidates) != 4 {
-		t.Fatalf("expected 4 candidates, got %d", len(candidates))
+	if len(candidates) != 5 {
+		t.Fatalf("expected 5 candidates, got %d", len(candidates))
 	}
 
 	for _, c := range candidates {
