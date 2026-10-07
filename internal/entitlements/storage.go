@@ -28,7 +28,7 @@ const (
 	runtimeLockStale     = 30 * time.Second
 )
 
-var ErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")
+var (\n\tErrRuntimeStoreLockTimeout = errors.New("entitlement runtime store lock timeout")\n\tErrTrustedTimeRequired       = errors.New("trusted time is required for cached entitlement lease")\n)
 
 // RuntimeStore keeps signed entitlement runtime state below the configured
 // 9router DATA_DIR. It never stores provider credentials, payment credentials,
@@ -255,18 +255,24 @@ func (s *RuntimeStore) LoadRuntime(options RuntimeOptions) (*RuntimeState, error
 	}
 	state.InstallationID = installationID
 
+	raw, err := s.LoadLease()
+	if errors.Is(err, os.ErrNotExist) {
+		// First-run / Community startup must not require a trusted-time file.
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+
 	lastTrusted, err := s.LastTrustedTime()
 	if err != nil {
 		return state, err
 	}
 	state.LastTrustedTime = lastTrusted
-
-	raw, err := s.LoadLease()
-	if errors.Is(err, os.ErrNotExist) {
-		return state, nil
-	}
-	if err != nil {
-		return state, err
+	if lastTrusted.IsZero() {
+		// Once a signed lease exists, trusted time is part of the integrity
+		// boundary. Missing state must not silently disable rollback protection.
+		return state, ErrTrustedTimeRequired
 	}
 
 	nowFn := options.Now
