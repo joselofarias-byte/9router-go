@@ -70,3 +70,38 @@ func TestCodexLoginEnvIsolatesCredentialSources(t *testing.T) {
 		t.Fatalf("codexLoginEnv did not set isolated CODEX_HOME")
 	}
 }
+
+
+func TestCodexCLILoginManagerReusesPendingSession(t *testing.T) {
+	m := newCodexCLILoginManager()
+	cancelled := false
+	m.register("session-a", "Account A", func() { cancelled = true })
+	m.setAuthURL("session-a", "https://auth.openai.com/oauth/authorize?state=stable")
+
+	id, sess, ok := m.pending()
+	if !ok {
+		t.Fatal("pending() did not return active login")
+	}
+	if id != "session-a" {
+		t.Fatalf("pending() id = %q, want session-a", id)
+	}
+	if sess.authURL != "https://auth.openai.com/oauth/authorize?state=stable" {
+		t.Fatalf("pending() authURL = %q", sess.authURL)
+	}
+	if cancelled {
+		t.Fatal("reusing a pending login must not cancel it")
+	}
+
+	m.complete("session-a", "codex-1", "person@example.com")
+	if _, _, ok := m.pending(); ok {
+		t.Fatal("completed login must not remain reusable")
+	}
+}
+
+func TestCodexCLILoginManagerIgnoresPendingWithoutURL(t *testing.T) {
+	m := newCodexCLILoginManager()
+	m.register("starting", "", func() {})
+	if _, _, ok := m.pending(); ok {
+		t.Fatal("login without captured authorization URL must not be reused")
+	}
+}
