@@ -296,3 +296,35 @@ func TestValidateGoogleBackupRedirectURIRejectsPlainHTTPRemoteHost(t *testing.T)
 		t.Fatalf("https redirect rejected: %v", err)
 	}
 }
+
+
+func TestHandleGoogleBackupStatusDoesNotExposeCredentials(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	t.Setenv("GOOGLE_DRIVE_BACKUP_CLIENT_ID", "CLIENT_ID_VALUE")
+	t.Setenv("GOOGLE_DRIVE_BACKUP_CLIENT_SECRET", "CLIENT_SECRET_VALUE")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/backup/google/status", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["configured"] != true || body["encrypted"] != true {
+		t.Fatalf("unexpected status response: %s", rec.Body.String())
+	}
+	if body["folder"] != googleDriveBackupFolderName {
+		t.Fatalf("folder=%v", body["folder"])
+	}
+	raw := rec.Body.String()
+	if strings.Contains(raw, "CLIENT_ID_VALUE") || strings.Contains(raw, "CLIENT_SECRET_VALUE") {
+		t.Fatal("status endpoint leaked OAuth credentials")
+	}
+}
