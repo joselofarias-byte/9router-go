@@ -16,6 +16,7 @@ func experientialTestDB(t *testing.T, data string) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec("CREATE TABLE providerConnections (id TEXT PRIMARY KEY, provider TEXT NOT NULL, isActive INTEGER NOT NULL, data TEXT NOT NULL)"); err != nil {
 		t.Fatal(err)
