@@ -134,8 +134,8 @@ func TestHandleModels_ConnectedModeFreshInstall(t *testing.T) {
 	}
 	// A known noAuth provider must survive, otherwise the filter is too tight.
 	joined := strings.Join(connected.ids(), "\n")
-	if !strings.Contains(joined, "oc/") {
-		t.Errorf("expected noAuth opencode models in connected mode, got:\n%s", firstLines(joined, 20))
+	if strings.Contains(joined, "oc/") || strings.Contains(joined, "opencode/") {
+		t.Errorf("unconnected Zen models must not appear in connected mode:\n%s", firstLines(joined, 20))
 	}
 }
 
@@ -220,8 +220,8 @@ func TestHandleModels_ConnectedModeKeepsNoAuthAlongsideConnections(t *testing.T)
 	if !ids["kr/auto"] && !hasPrefixID(ids, "kr/") {
 		t.Error("connected mode dropped the active kiro connection")
 	}
-	if !hasPrefixID(ids, "oc/") {
-		t.Errorf("connected mode dropped noAuth opencode models while a connection exists")
+	if hasPrefixID(ids, "oc/") || hasPrefixID(ids, "opencode/") {
+		t.Error("connected mode advertised Zen without an API-key connection")
 	}
 	// An unconnected credentialed provider must still be excluded.
 	if hasPrefixID(ids, "nv/") || hasPrefixID(ids, "nvidia/") {
@@ -242,7 +242,7 @@ func TestHandleModels_ConnectedModeConnectionOwnsItsCatalog(t *testing.T) {
 		t.Fatalf("delete disabled: %v", err)
 	}
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
-		('conn-oc-1', 'opencode', 'api_key', 'OpenCode', 1, 1, '{"apiKey":"public","enabledModels":["big-pickle"]}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		('conn-oc-1', 'opencode', 'api_key', 'OpenCode', 1, 1, '{"apiKey":"test-key","enabledModels":["big-pickle"]}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("seed opencode: %v", err)
 	}
 
@@ -350,6 +350,11 @@ func TestHandleModels_DisabledModelsStillWin(t *testing.T) {
 	}
 	if _, err := database.Exec(`DELETE FROM kv WHERE scope='disabledModels'`); err != nil {
 		t.Fatalf("delete disabled: %v", err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-oc-disabled', 'opencode', 'api_key', 'Zen', 1, 1, '{"apiKey":"test-key"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed Zen connection: %v", err)
 	}
 
 	// Prove the model is listed before it is disabled, otherwise the

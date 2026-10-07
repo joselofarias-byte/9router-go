@@ -234,12 +234,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// Zen requires an account-issued API key; a synthetic "public" token is not authentication.
 	"opencode": {
 		BaseURL:       "https://opencode.ai/zen/v1/chat/completions",
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
-		DefaultAPIKey: "public",
-		NoAuth:        true,
 		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
 		StaticHeaders: map[string]string{"x-opencode-client": "desktop", "User-Agent": "opencode/1.18.31"},
 	},
@@ -247,8 +246,6 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:       "https://opencode.ai/zen/v1/chat/completions",
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
-		DefaultAPIKey: "public",
-		NoAuth:        true,
 		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
 		StaticHeaders: map[string]string{
 			"x-opencode-client": "desktop",

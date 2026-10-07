@@ -2,6 +2,7 @@ package executor
 
 import (
 	"9router/proxy/internal/providers"
+	"errors"
 	"9router/proxy/internal/proxy"
 	json "encoding/json/v2"
 	"io"
@@ -34,10 +35,23 @@ func TestInjectReasoningContent(t *testing.T) {
 	}
 }
 
+func TestForwardOpencodeRequiresRealAPIKey(t *testing.T) {
+	for _, key := range []string{"", "public", "   "} {
+		t.Run("key="+key, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			err := ForwardOpencode(rec, &Request{APIKey: key})
+			var upstream *proxy.UpstreamError
+			if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("expected 401 without an account key, got %v", err)
+			}
+		})
+	}
+}
+
 func TestForwardOpencode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer public" {
-			t.Errorf("expected Bearer public, got %s", r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("expected Bearer test-key, got %s", r.Header.Get("Authorization"))
 		}
 		if r.Header.Get("x-opencode-client") != "cli" {
 			t.Errorf("expected cli client header, got %s", r.Header.Get("x-opencode-client"))
@@ -72,7 +86,7 @@ func TestForwardOpencode(t *testing.T) {
 	req := &Request{
 		Client:        srv.Client(),
 		Config:        cfg,
-		APIKey:        "", // Should fallback to "public"
+		APIKey:        "test-key",
 		Body:          []byte(`{"model":"deepseek-v4-flash-free","messages":[{"role":"assistant","content":"prev"}]}`),
 		IsStream:      false,
 		TranslateResp: false,
@@ -112,7 +126,7 @@ func TestForwardOpencode_MuseSpark_EdgeRelay(t *testing.T) {
 	req := &Request{
 		Client:        srv.Client(),
 		Config:        cfg,
-		APIKey:        "public",
+		APIKey:        "test-key",
 		Body:          []byte(`{"model":"muse-spark-1.3-contributor-free","input":"test"}`),
 		IsStream:      false,
 		TranslateResp: false,
@@ -191,7 +205,7 @@ func TestForwardOpencode_MuseSparkResponsesRouting(t *testing.T) {
 	req := &Request{
 		Client:        srv.Client(),
 		Config:        cfg,
-		APIKey:        "",
+		APIKey:        "test-key",
 		Body:          []byte(`{"model":"muse-spark-1.2-contributor-free","messages":[{"role":"user","content":"2+2?"}],"reasoning_effort":"max"}`),
 		IsStream:      false,
 		TranslateResp: false,
@@ -226,7 +240,7 @@ func TestForwardOpencode_MuseSpark13_ResponsesRouting(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/chat/completions"}
 	rec := httptest.NewRecorder()
 	req := &Request{
-		Client: srv.Client(), Config: cfg, APIKey: "",
+		Client: srv.Client(), Config: cfg, APIKey: "test-key",
 		Body:     []byte(`{"model":"oc/muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}],"stream":false}`),
 		IsStream: false, TranslateResp: false,
 	}
@@ -251,7 +265,7 @@ func TestForwardOpencode_MuseSpark_OCPrefix(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/chat/completions"}
 	rec := httptest.NewRecorder()
 	req := &Request{
-		Client: srv.Client(), Config: cfg, APIKey: "",
+		Client: srv.Client(), Config: cfg, APIKey: "test-key",
 		Body:     []byte(`{"model":"oc/muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}]}`),
 		IsStream: false, TranslateResp: false,
 	}

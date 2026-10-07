@@ -60,7 +60,7 @@ func TestHandleSystemone_Opencode_Mock(t *testing.T) {
 	defer cleanup()
 	repo := db.NewRepo(sqlDB)
 	p := 1
-	err := repo.CreateProviderConnectionFull("conn-oc-1", "opencode", "none", "OpenCode Free", &p, `{"baseUrl":"`+server.URL+`"}`)
+	err := repo.CreateProviderConnectionFull("conn-oc-1", "opencode", "api_key", "OpenCode Zen", &p, `{"apiKey":"test-key","baseUrl":"`+server.URL+`"}`)
 	if err != nil {
 		t.Fatalf("failed to create connection: %v", err)
 	}
@@ -79,8 +79,8 @@ func TestHandleSystemone_Opencode_Mock(t *testing.T) {
 	if !strings.HasPrefix(gotSession, "ses_") {
 		t.Errorf("expected session header starting with ses_, got %q", gotSession)
 	}
-	if gotAuth != "Bearer public" {
-		t.Errorf("expected Bearer public auth header, got %q", gotAuth)
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("expected account API key auth header, got %q", gotAuth)
 	}
 	if !strings.Contains(rec.Body.String(), "jev-1.13-free") {
 		t.Errorf("expected body to contain jev-1.13-free, got %s", rec.Body.String())

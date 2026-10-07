@@ -52,6 +52,20 @@ func TestKnownProviders_NoAuthOverridesScheme(t *testing.T) {
 	}
 }
 
+func TestOpenCodeZenRequiresAccountAPIKey(t *testing.T) {
+	for _, provider := range []string{"opencode", "opencode-zen"} {
+		t.Run(provider, func(t *testing.T) {
+			cfg := KnownProviders[provider]
+			if cfg.NoAuth || cfg.DefaultAPIKey != "" {
+				t.Fatalf("%s must require a real API key, got NoAuth=%v, DefaultAPIKey=%q", provider, cfg.NoAuth, cfg.DefaultAPIKey)
+			}
+			if risk := GetProviderRiskProfile(provider); risk.AccessMode != AccessAPIKey {
+				t.Errorf("%s risk profile should require API key, got %s", provider, risk.AccessMode)
+			}
+		})
+	}
+}
+
 func TestKnownProviders_StaticHeaders(t *testing.T) {
 	cfg := KnownProviders["opencode"]
 	if cfg.StaticHeaders["x-opencode-client"] != "desktop" {

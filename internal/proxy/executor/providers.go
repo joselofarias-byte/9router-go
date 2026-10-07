@@ -567,9 +567,12 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 
 // ForwardOpencode handles requests for opencode (free tier).
 func ForwardOpencode(w http.ResponseWriter, req *Request) error {
-	apiKey := req.APIKey
-	if apiKey == "" {
-		apiKey = "public"
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" || apiKey == "public" {
+		return &proxy.UpstreamError{
+			StatusCode: http.StatusUnauthorized,
+			Body:       []byte(`{"error":{"type":"authentication_error","message":"OpenCode Zen requires an account API key"}}`),
+		}
 	}
 
 	var reqObj struct {

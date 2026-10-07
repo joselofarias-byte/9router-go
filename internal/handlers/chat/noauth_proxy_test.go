@@ -130,7 +130,7 @@ func TestResolveProviderProxyPoolID_CrossAlias(t *testing.T) {
 	}
 }
 
-func TestGetBestConnection_Opencode_InheritsProxyFromStrategy(t *testing.T) {
+func TestGetBestConnection_Opencode_UsesAccountProxyPool(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -149,18 +149,22 @@ func TestGetBestConnection_Opencode_InheritsProxyFromStrategy(t *testing.T) {
 		t.Fatalf("insert settings: %v", err)
 	}
 
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-oc-proxy', 'opencode', 'api_key', 'Zen', 1, 1, '{"apiKey":"test-key","proxyPoolId":"pool-vercel-relay-xyz"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed Zen connection: %v", err)
+	}
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
 
-	// Opencode is NoAuth, so GetBestConnection returns a virtual connection
+	// A configured Zen account carries its explicit proxy pool
 	conn, connData, err := h.GetBestConnection("opencode", "", nil, "")
 	if err != nil {
 		t.Fatalf("GetBestConnection(opencode) failed: %v", err)
 	}
 	if conn == nil || connData == nil {
-		t.Fatal("expected virtual connection for opencode")
+		t.Fatal("expected API-key connection for opencode")
 	}
 	if connData.ProxyPoolID != "pool-vercel-relay-xyz" {
-		t.Errorf("expected ProxyPoolID 'pool-vercel-relay-xyz' on opencode virtual connection, got %q", connData.ProxyPoolID)
+		t.Errorf("expected ProxyPoolID 'pool-vercel-relay-xyz' on opencode connection, got %q", connData.ProxyPoolID)
 	}
 }
