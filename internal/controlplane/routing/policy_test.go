@@ -66,3 +66,36 @@ func TestEngine_SelectCandidates(t *testing.T) {
 		t.Errorf("Expected p2 to be first due to free-first bonus, got %s", resFirst[0].ProviderID)
 	}
 }
+
+
+func TestEngine_SelectCandidates_UsesObservedPerformance(t *testing.T) {
+	registry.InitRegistry(nil)
+	state := registry.GetActiveState()
+
+	for _, providerID := range []string{"fast", "slow"} {
+		state.Providers[providerID] = &registry.Provider{ID: providerID, IsActive: true}
+		state.ProviderModels[providerID] = map[string]*registry.ProviderModel{
+			"model": {ProviderID: providerID, ModelID: "model", PricingMode: "paid", IsActive: true},
+		}
+		state.Accounts[providerID+"-account"] = &registry.Account{
+			ID: providerID + "-account", ProviderID: providerID, IsActive: true,
+		}
+	}
+
+	tm := trust.NewManager()
+	// Keep trust and success rate equal; TTFT is the only scoring difference.
+	tm.RecordRequestOutcome("fast", "model", "fast-account", true, "", 150, 100)
+	tm.RecordRequestOutcome("slow", "model", "slow-account", true, "", 150, 2500)
+
+	engine := &Engine{TrustManager: tm}
+	got := engine.SelectCandidates("model", PolicyBalanced)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(got))
+	}
+	if got[0].ProviderID != "fast" {
+		t.Fatalf("expected lower observed TTFT to rank first, got %#v", got)
+	}
+	if got[0].Score.Factors.TTFTMs != 100 || got[1].Score.Factors.TTFTMs != 2500 {
+		t.Fatalf("routing did not consume observed TTFT: %#v", got)
+	}
+}
