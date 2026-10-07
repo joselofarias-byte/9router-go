@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -27,11 +28,8 @@ type codexCLILoginSession struct {
 	email        string
 	err          string
 	name         string
-	cancel       contextCancel
+	cancel       context.CancelFunc
 }
-
-// A narrow alias keeps the session manager independent from command execution.
-type contextCancel func()
 
 type codexCLILoginManager struct {
 	mu       sync.Mutex
@@ -42,7 +40,7 @@ func newCodexCLILoginManager() *codexCLILoginManager {
 	return &codexCLILoginManager{sessions: make(map[string]*codexCLILoginSession)}
 }
 
-func (m *codexCLILoginManager) register(id, name string, cancel contextCancel) {
+func (m *codexCLILoginManager) register(id, name string, cancel context.CancelFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[id] = &codexCLILoginSession{status: "pending", name: name, cancel: cancel}
