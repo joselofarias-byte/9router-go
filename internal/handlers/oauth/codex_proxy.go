@@ -7,6 +7,7 @@ import (
 	"html"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"syscall"
@@ -327,6 +328,82 @@ func (p *codexProxy) writeResultPage(w http.ResponseWriter, ok bool, message str
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 	_, _ = w.Write([]byte(page))
+}
+
+// HandleCodexBegin is the mobile-safe one-click login entry point.
+//
+// The browser opens this local URL synchronously from the user's tap. The
+// server then creates the PKCE verifier, starts/registers the fixed-port Codex
+// callback listener, and redirects the same tab to OpenAI. No browser-side
+// async gap exists between the tap and navigation, so Android Chrome cannot
+// strand the user on a blocked/paused about:blank popup.
+//
+// GET /api/oauth/codex/begin?app_port=&state=&name=
+func (h *OAuthHandler) HandleCodexBegin(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	appPort := q.Get("app_port")
+	if appPort == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing app_port")
+		return
+	}
+
+	cfg := pkceProviders["codex"]
+	if cfg == nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "codex oauth configuration missing")
+		return
+	}
+
+	state := q.Get("state")
+	if state == "" {
+		state = randomString(32)
+	}
+	codeVerifier := pkceVerifier()
+	challenge := sha256Base64(codeVerifier)
+
+	params := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {cfg.clientID},
+		"redirect_uri":          {codexRedirectURI},
+		"scope":                 {cfg.scope},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {state},
+	}
+	for k, v := range cfg.extraAuth {
+		params.Set(k, v)
+	}
+	authURL := cfg.authorizeURL + "?" + params.Encode()
+
+	err := codexLoopback.start(appPort, func(ctx context.Context, code string, sess *codexSession) (pkceExchangeResult, error) {
+		ex := &pkceExchange{
+			cfg:          cfg,
+			provider:     "codex",
+			code:         code,
+			codeVerifier: sess.codeVerifier,
+			state:        state,
+			name:         sess.name,
+			redirectURI:  sess.redirectURI,
+			clientID:     cfg.clientID,
+			tokenURL:     cfg.tokenURL,
+		}
+		res, fail := h.completePKCEExchange(ctx, ex)
+		if fail != nil {
+			return pkceExchangeResult{}, fmt.Errorf("codex exchange: %s", fail.message)
+		}
+		return res, nil
+	})
+	if err != nil {
+		reason := "start_failed"
+		if isAddrInUse(err) {
+			reason = "port_busy"
+		}
+		handlerutil.WriteJSONError(w, http.StatusConflict, reason)
+		return
+	}
+
+	codexLoopback.register(state, codeVerifier, codexRedirectURI, q.Get("name"))
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
 // HandleCodexStartProxy starts the fixed-port loopback listener and registers
