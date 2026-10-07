@@ -37,3 +37,40 @@ func TestTrustManager(t *testing.T) {
 		t.Errorf("Expected Degraded, got %s", lvl)
 	}
 }
+
+
+func TestRequestOutcomeStats(t *testing.T) {
+	tm := NewManager()
+
+	tm.RecordRequestOutcome("prov", "mod", "acc", true, "", 120, 40)
+	tm.RecordRequestOutcome("prov", "mod", "acc", false, providers.ErrRateLimit, 280, 80)
+
+	stats := tm.GetRequestStats("prov", "mod", "acc")
+	if stats.Samples != 2 {
+		t.Fatalf("expected 2 samples, got %d", stats.Samples)
+	}
+	if stats.SuccessRate != 0.5 {
+		t.Fatalf("expected success rate 0.5, got %f", stats.SuccessRate)
+	}
+	if stats.AvgLatencyMs != 200 {
+		t.Fatalf("expected avg latency 200ms, got %d", stats.AvgLatencyMs)
+	}
+	if stats.AvgTTFTMs != 60 {
+		t.Fatalf("expected avg TTFT 60ms, got %d", stats.AvgTTFTMs)
+	}
+}
+
+func TestRequestOutcomeStatsIgnoresMissingTTFT(t *testing.T) {
+	tm := NewManager()
+
+	tm.RecordRequestOutcome("prov", "mod", "acc", true, "", 100, 0)
+	tm.RecordRequestOutcome("prov", "mod", "acc", true, "", 200, 50)
+
+	stats := tm.GetRequestStats("prov", "mod", "acc")
+	if stats.AvgLatencyMs != 150 {
+		t.Fatalf("expected avg latency 150ms, got %d", stats.AvgLatencyMs)
+	}
+	if stats.AvgTTFTMs != 50 {
+		t.Fatalf("expected TTFT average to use observed samples only, got %d", stats.AvgTTFTMs)
+	}
+}
