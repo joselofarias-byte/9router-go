@@ -26,9 +26,10 @@
   import Toggle from '../lib/ui/Toggle.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import Input from '../lib/ui/Input.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type Settings } from '../api/client'
   import { clearCallback, dashboardCallbackURL, readCallback } from '../lib/oauth-handoff'
+  import { assessBackupPassphrase, BACKUP_PASSPHRASE_MIN_LENGTH } from '../lib/backup-passphrase'
+  import { setRuntimeLocale } from '../lib/i18n'
 
   interface Props {
     settings?: Settings
@@ -44,6 +45,7 @@
   let requireLogin = $state(false)
   let sessionTimeout = $state('24h')
   let selectedLanguage = $state('en')
+  let isApplyingLanguage = $state(false)
   let enableObservability = $state(false)
 
   // Routing Strategy State
@@ -86,6 +88,9 @@
   let fileInput: HTMLInputElement | null = $state(null)
   let dbPassword = $state('')
   let backupPassphrase = $state('')
+  let showDbPassword = $state(false)
+  let showBackupPassphrase = $state(false)
+  let backupPassphraseInfo = $derived(assessBackupPassphrase(backupPassphrase))
   let dbAuthOpen = $state(false)
   let pendingImportFile: File | null = $state(null)
   let backupAction = $state<'download' | 'share' | 'drive' | 'import' | null>(null)
@@ -160,6 +165,27 @@
     loadSettings()
     loadDriveBackupStatus()
   })
+
+  async function handleLanguageSelection(event: Event) {
+    const next = (event.currentTarget as HTMLSelectElement).value
+    const previous = selectedLanguage
+    if (next === previous || isApplyingLanguage) return
+
+    selectedLanguage = next
+    isApplyingLanguage = true
+    try {
+      // Apply first so the choice feels immediate; persist right after.
+      await setRuntimeLocale(next)
+      await api.updateSettings({ language: next })
+      onRefresh?.()
+    } catch (err) {
+      selectedLanguage = previous
+      try { await setRuntimeLocale(previous) } catch {}
+      alert(`Failed to change language: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isApplyingLanguage = false
+    }
+  }
 
   async function handleSaveAll() {
     isSavingSettings = true
@@ -237,6 +263,8 @@
     dbAuthOpen = false
     dbPassword = ''
     backupPassphrase = ''
+    showDbPassword = false
+    showBackupPassphrase = false
     pendingImportFile = null
     backupAction = null
   }
@@ -245,6 +273,8 @@
     if (backupBusy()) return
     dbPassword = ''
     backupPassphrase = ''
+    showDbPassword = false
+    showBackupPassphrase = false
     pendingImportFile = null
     backupAction = action
     dbAuthOpen = true
@@ -261,6 +291,21 @@
   function handleDriveBackup() {
     if (!driveBackupConfigured) return
     openBackupAuth('drive')
+  }
+
+  function encryptedRestoreSelected() {
+    const file = pendingImportFile
+    if (!file) return false
+    const lowerName = file.name.toLowerCase()
+    return lowerName.endsWith('.9rbak') || file.type === 'application/vnd.9router.backup'
+  }
+
+  function backupPassphraseRequired() {
+    return backupAction !== 'import' || encryptedRestoreSelected()
+  }
+
+  function backupPassphraseValid() {
+    return !backupPassphraseRequired() || backupPassphraseInfo.valid
   }
 
   function backupFileName() {
@@ -300,8 +345,7 @@
     isDownloadingBackup = true
     const password = dbPassword
     const passphrase = backupPassphrase
-    if (passphrase.length < 12) {
-      alert('Backup recovery passphrase must be at least 12 characters.')
+    if (!backupPassphraseInfo.valid) {
       isDownloadingBackup = false
       return
     }
@@ -323,8 +367,7 @@
     isSharingBackup = true
     const password = dbPassword
     const passphrase = backupPassphrase
-    if (passphrase.length < 12) {
-      alert('Backup recovery passphrase must be at least 12 characters.')
+    if (!backupPassphraseInfo.valid) {
       isSharingBackup = false
       return
     }
@@ -377,10 +420,7 @@
   async function runDriveBackup() {
     const password = dbPassword
     const passphrase = backupPassphrase
-    if (passphrase.length < 12) {
-      alert('Backup recovery passphrase must be at least 12 characters.')
-      return
-    }
+    if (!backupPassphraseInfo.valid) return
     const popup = window.open('about:blank', '_blank', 'width=600,height=700')
     isUploadingDriveBackup = true
     try {
@@ -453,6 +493,9 @@
     pendingImportFile = file
     backupAction = 'import'
     dbPassword = ''
+    backupPassphrase = ''
+    showDbPassword = false
+    showBackupPassphrase = false
     dbAuthOpen = true
   }
 
@@ -465,10 +508,7 @@
     const password = dbPassword
     const passphrase = backupPassphrase
     const lowerNameForPassphrase = file.name.toLowerCase()
-    if (lowerNameForPassphrase.endsWith('.9rbak') && passphrase.length < 12) {
-      alert('Enter the recovery passphrase used to create this encrypted backup.')
-      return
-    }
+    if (lowerNameForPassphrase.endsWith('.9rbak') && !backupPassphraseInfo.valid) return
     isImportingBackup = true
     try {
       let res: Response
@@ -657,8 +697,11 @@
           <label for="lang-select" class="block font-semibold text-text-main">Dashboard Language</label>
           <select
             id="lang-select"
-            bind:value={selectedLanguage}
-            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500"
+            value={selectedLanguage}
+            onchange={handleLanguageSelection}
+            disabled={isApplyingLanguage}
+            data-i18n-skip="true"
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500 disabled:opacity-60"
           >
             <option value="en">English (US)</option>
             <option value="zh-CN">简体中文 (Simplified Chinese)</option>
@@ -668,8 +711,9 @@
             <option value="es">Español</option>
             <option value="de">Deutsch</option>
           </select>
-          <p class="text-[11px] text-text-subtle">
-            Select the primary interface language for the 9router-go web dashboard.
+          <p class="text-[11px] text-text-subtle flex items-center gap-1.5">
+            <span>Applies immediately and is saved automatically.</span>
+            {#if isApplyingLanguage}<Loader2 class="w-3 h-3 animate-spin" />{/if}
           </p>
         </div>
       </div>
@@ -978,23 +1022,90 @@
                 ? 'Create an encrypted recovery backup and open Android sharing so you can save it to Drive or Files?'
                 : 'Download an encrypted recovery backup (.9rbak)?'}
         </p>
-        <Input
-          type="password"
-          label="Dashboard password"
-          placeholder="Authorize this backup operation"
-          bind:value={dbPassword}
-        />
-        <Input
-          type="password"
-          label="Backup recovery passphrase"
-          placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
-          bind:value={backupPassphrase}
-        />
-        <p class="text-[10px] text-text-subtle leading-relaxed">
-          {backupAction === 'import'
-            ? 'Required for encrypted .9rbak files. Legacy JSON/ZIP imports ignore it.'
-            : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
-        </p>
+        <div class="space-y-1.5">
+          <label for="backup-dashboard-password" class="text-sm font-medium text-text-main">Dashboard password</label>
+          <div class="relative">
+            <input
+              id="backup-dashboard-password"
+              type={showDbPassword ? 'text' : 'password'}
+              placeholder="Authorize this backup operation"
+              bind:value={dbPassword}
+              autocomplete="current-password"
+              class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40"
+            />
+            <button
+              type="button"
+              onclick={() => (showDbPassword = !showDbPassword)}
+              class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+              aria-label={showDbPassword ? 'Hide password' : 'Show password'}
+            >
+              {#if showDbPassword}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+            </button>
+          </div>
+        </div>
+
+        {#if backupPassphraseRequired()}
+          <div class="space-y-1.5">
+            <label for="backup-recovery-passphrase" class="text-sm font-medium text-text-main">Backup recovery passphrase</label>
+            <div class="relative">
+              <input
+                id="backup-recovery-passphrase"
+                type={showBackupPassphrase ? 'text' : 'password'}
+                placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
+                bind:value={backupPassphrase}
+                autocomplete="new-password"
+                aria-invalid={backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
+                class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border placeholder-text-muted/70 focus:outline-none focus:ring-2 transition {backupPassphrase.length > 0 && !backupPassphraseInfo.valid ? 'border-danger/60 focus:ring-danger/30' : 'border-transparent focus:ring-brand-500/30 focus:border-brand-500/40'}"
+              />
+              <button
+                type="button"
+                onclick={() => (showBackupPassphrase = !showBackupPassphrase)}
+                class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                aria-label={showBackupPassphrase ? 'Hide password' : 'Show password'}
+              >
+                {#if showBackupPassphrase}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+              </button>
+            </div>
+
+            <div class="flex items-center justify-between gap-3 text-[11px]">
+              <span class={backupPassphraseInfo.valid ? 'text-success font-semibold' : 'text-text-muted'}>
+                {backupPassphraseInfo.length} / {BACKUP_PASSPHRASE_MIN_LENGTH} <span>minimum</span>
+                {#if backupPassphraseInfo.valid} ✓{/if}
+              </span>
+              {#if backupAction !== 'import'}
+                <span class="text-text-muted">
+                  Password strength:
+                  <strong class={backupPassphraseInfo.score >= 4 ? 'text-success' : backupPassphraseInfo.score >= 3 ? 'text-info' : backupPassphraseInfo.score >= 2 ? 'text-warning' : 'text-danger'}>
+                    {backupPassphraseInfo.label}
+                  </strong>
+                </span>
+              {/if}
+            </div>
+
+            {#if backupAction !== 'import'}
+              <div class="h-1.5 rounded-full bg-surface-3 overflow-hidden" aria-hidden="true">
+                <div
+                  class="h-full rounded-full transition-all duration-200 {backupPassphraseInfo.score >= 4 ? 'bg-success' : backupPassphraseInfo.score >= 3 ? 'bg-info' : backupPassphraseInfo.score >= 2 ? 'bg-warning' : 'bg-danger'}"
+                  style:width={`${backupPassphraseInfo.percent}%`}
+                ></div>
+              </div>
+              <p class="text-[10px] text-text-subtle">Use a mix of upper/lowercase, numbers, and symbols.</p>
+            {/if}
+
+            {#if backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
+              <p class="text-[11px] text-danger flex items-center gap-1">
+                <AlertCircle class="w-3.5 h-3.5" />
+                <span>At least 12 characters</span>
+              </p>
+            {/if}
+          </div>
+
+          <p class="text-[10px] text-text-subtle leading-relaxed">
+            {backupAction === 'import'
+              ? 'Required for encrypted .9rbak files. Legacy JSON/ZIP imports ignore it.'
+              : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
+          </p>
+        {/if}
       </div>
       {#snippet footer()}
         <Button variant="ghost" onclick={closeDbAuth} disabled={backupBusy()}>
@@ -1004,6 +1115,7 @@
           variant="primary"
           onclick={runPendingBackupAction}
           loading={backupBusy()}
+          disabled={backupBusy() || !backupPassphraseValid()}
         >
           {backupAction === 'import'
             ? 'Restore'
