@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/controlplane/registry"
+	cpsync "9router/proxy/internal/controlplane/sync"
 	"9router/proxy/internal/log"
 )
 
@@ -183,6 +184,15 @@ func (o *Orchestrator) RunSync(ctx context.Context) {
 			log.Warn("orchestrator", "failed to activate snapshot", "err", err)
 			return
 		}
+
+		// Activation replaces the entire in-memory RegistryState, including the
+		// Accounts map captured before adapter discovery. Re-read accounts after
+		// activation so a newer request-time sync cannot be rolled back by this
+		// older snapshot while the generation cache incorrectly says "unchanged".
+		if err := cpsync.ForceSyncAccountsFromDB(o.db); err != nil {
+			log.Warn("orchestrator", "failed to refresh accounts after snapshot activation", "err", err)
+		}
+
 		log.Info("orchestrator", "sync complete, new snapshot activated", "version", snap.Version, "candidates", totalDiscovered)
 	} else {
 		log.Info("orchestrator", "sync complete, no new candidates found")
