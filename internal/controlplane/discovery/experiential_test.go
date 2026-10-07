@@ -35,7 +35,7 @@ func TestExperientialFreeAdapterDiscoversOnlyStrictFreeAliases(t *testing.T) {
 			t.Fatalf("Authorization = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"data\":[{\"id\":\"anthropic/claude-haiku-5.5:free\",\"canonical_slug\":\"claude-haiku-5.5\",\"name\":\"Claude Haiku 5.5\"},{\"id\":\"openai/gpt-6-luna-decisions:free\",\"canonical_slug\":\"gpt-6-luna-decisions\",\"name\":\"GPT-6 Luna Decisions\"},{\"id\":\"openai/gpt-6-sol\",\"canonical_slug\":\"gpt-6-sol\",\"name\":\"GPT-6 Sol\"},{\"id\":\"anthropic/claude-haiku-5.5:free\",\"canonical_slug\":\"claude-haiku-5.5\",\"name\":\"duplicate\"}]}"))
+		_, _ = w.Write([]byte("{\"data\":[{\"id\":\"anthropic/claude-haiku-5.5:free\",\"canonical_slug\":\"claude-haiku-5.5\",\"name\":\"Claude Haiku 5.5\"},{\"id\":\"openai/gpt-6-luna-decisions:free\",\"canonical_slug\":\"gpt-6-luna-decisions\",\"name\":\"GPT-6 Luna Decisions\"},{\"id\":\"openai/gpt-6-sol\",\"canonical_slug\":\"gpt-6-sol\",\"name\":\"GPT-6 Sol\"},{\"id\":\"type-safe/jev-latest:free\",\"canonical_slug\":\"jev-latest\",\"name\":\"Jev\"},{\"id\":\"anthropic/claude-haiku-5.5:free\",\"canonical_slug\":\"claude-haiku-5.5\",\"name\":\"duplicate\"}]}"))
 	}))
 	defer server.Close()
 
@@ -113,5 +113,18 @@ func TestExperientialFreeAdapterTransientFailurePreservesSnapshot(t *testing.T) 
 	_, err := NewExperientialFreeAdapter(db, server.Client()).Discover(context.Background())
 	if err == nil {
 		t.Fatal("expected transient catalog error")
+	}
+}
+
+func TestExperientialFreeChatCompatibleRejectsJev(t *testing.T) {
+	if experientialFreeChatCompatible(experientialCatalogModel{
+		ID: "type-safe/jev-latest:free", CanonicalSlug: "jev-latest",
+	}) {
+		t.Fatal("Jev is native /v1/systemone only and must stay out of free-best")
+	}
+	if !experientialFreeChatCompatible(experientialCatalogModel{
+		ID: "openai/gpt-6-luna-decisions:free", CanonicalSlug: "gpt-6-luna-decisions",
+	}) {
+		t.Fatal("chat-capable Experiential free model was rejected")
 	}
 }
