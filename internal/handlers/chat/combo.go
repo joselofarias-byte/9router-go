@@ -343,6 +343,51 @@ func keysString(m map[string]bool) string {
 	return strings.Join(keys, ",")
 }
 
+
+// comboConnection resolves a concrete configured account first. Providers with
+// a built-in public/default credential only fall back to the synthetic default
+// route when no active local connection exists at all. This preserves account
+// trust/cooldown/proxy/baseURL semantics for free-best and other combos.
+func (h *ChatHandler) comboConnection(modelInfo *ModelInfo, excludeIDs []string) (string, *ConnectionData, bool, error) {
+	conn, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+	if err == nil && conn != nil {
+		// The virtual noauth connection is a single synthetic route; do not spin
+		// through the same route repeatedly inside one combo entry.
+		return conn.ID, connData, conn.ID == "noauth", nil
+	}
+
+	if modelInfo.ConnectionID != "" {
+		return "", nil, false, err
+	}
+
+	cfg, ok := providers.KnownProviders[modelInfo.Provider]
+	if !ok || (!cfg.NoAuth && cfg.DefaultAPIKey == "") {
+		return "", nil, false, err
+	}
+
+	// Configured connections exist but none is selectable (locked/excluded/etc).
+	// Do not bypass their account policy with the built-in default credential.
+	connections, queryErr := h.Repo.GetProviderConnections(modelInfo.Provider, true)
+	if queryErr != nil {
+		if err != nil {
+			return "", nil, false, err
+		}
+		return "", nil, false, queryErr
+	}
+	if len(connections) > 0 {
+		if err != nil {
+			return "", nil, false, err
+		}
+		return "", nil, false, fmt.Errorf("no selectable configured connection for provider %s", modelInfo.Provider)
+	}
+
+	apiKey := cfg.DefaultAPIKey
+	if apiKey == "" {
+		apiKey = "public"
+	}
+	return "default", &ConnectionData{APIKey: apiKey}, true, nil
+}
+
 // handleComboFallback iterates through combo model entries, trying each one.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
@@ -406,21 +451,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			var entrySuccess bool
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
-				var connID string
-				var connData *ConnectionData
-				isKnownNoAuth := false
-				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-					isKnownNoAuth = true
-					connData = &ConnectionData{
-						APIKey: cfg.DefaultAPIKey,
-					}
-				} else {
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
-					if err != nil {
-						break
-					}
-					connID = conn.ID
-					connData = cData
+				connID, connData, oneShot, connErr := h.comboConnection(modelInfo, excludeIDs)
+				if connErr != nil {
+					break
 				}
 				// Skip a connection that is already locked for this model
 				if connID != "" {
@@ -480,13 +513,13 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 							}
 						}
 						lastErr = ue
-						if isKnownNoAuth {
+						if oneShot {
 							break
 						}
 						continue
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-					if isKnownNoAuth {
+					if oneShot {
 						break
 					}
 					continue
@@ -603,21 +636,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			var entrySuccess bool
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
-				var connID string
-				var connData *ConnectionData
-				isKnownNoAuth := false
-				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-					isKnownNoAuth = true
-					connData = &ConnectionData{
-						APIKey: cfg.DefaultAPIKey,
-					}
-				} else {
-					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
-					if err != nil {
-						break
-					}
-					connID = conn.ID
-					connData = cData
+				connID, connData, oneShot, connErr := h.comboConnection(modelInfo, excludeIDs)
+				if connErr != nil {
+					break
 				}
 				// Skip a connection that is already locked for this model
 				if connID != "" {
@@ -669,13 +690,13 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							}
 						}
 						lastErr = ue
-						if isKnownNoAuth {
+						if oneShot {
 							break
 						}
 						continue
 					}
 					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-					if isKnownNoAuth {
+					if oneShot {
 						break
 					}
 					continue
