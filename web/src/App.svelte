@@ -337,7 +337,7 @@
         }}
       />
 
-      <main class="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10">
+      <main class="flex-1 overflow-y-auto custom-scrollbar p-3 sm:p-6 lg:p-10">
         <div class="max-w-7xl mx-auto">
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">
