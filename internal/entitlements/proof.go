@@ -14,11 +14,13 @@ import (
 const (
 	RenewalProofVersion    = 1
 	ActivationProofVersion = 1
+	ReleaseProofVersion    = 1
 )
 
 var (
 	ErrInvalidRenewalProof    = errors.New("invalid renewal proof")
 	ErrInvalidActivationProof = errors.New("invalid activation proof")
+	ErrInvalidReleaseProof    = errors.New("invalid release proof")
 )
 
 type activationProofPayload struct {
@@ -90,6 +92,60 @@ func VerifyActivationProof(request ActivationRequest, publicKey ed25519.PublicKe
 	}
 	if !ed25519.Verify(publicKey, payload, signature) {
 		return ErrInvalidActivationProof
+	}
+	return nil
+}
+
+type releaseProofPayload struct {
+	ProofVersion   int    `json:"proof_version"`
+	Action         string `json:"action"`
+	LicenseID      string `json:"license_id"`
+	InstallationID string `json:"installation_id"`
+	CurrentNonce   string `json:"current_nonce"`
+}
+
+func canonicalReleaseProofPayload(request ReleaseRequest) ([]byte, error) {
+	payload := releaseProofPayload{
+		ProofVersion:   request.ProofVersion,
+		Action:         "release",
+		LicenseID:      strings.TrimSpace(request.LicenseID),
+		InstallationID: strings.TrimSpace(request.InstallationID),
+		CurrentNonce:   strings.TrimSpace(request.CurrentNonce),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("entitlements.canonicalReleaseProofPayload: %w", err)
+	}
+	return raw, nil
+}
+
+func signReleaseProof(privateKey ed25519.PrivateKey, request ReleaseRequest) (string, error) {
+	if len(privateKey) != ed25519.PrivateKeySize || request.ProofVersion != ReleaseProofVersion {
+		return "", ErrInvalidReleaseProof
+	}
+	payload, err := canonicalReleaseProofPayload(request)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload)), nil
+}
+
+func VerifyReleaseProof(request ReleaseRequest, publicKey ed25519.PublicKey) error {
+	if len(publicKey) != ed25519.PublicKeySize ||
+		request.ProofVersion != ReleaseProofVersion ||
+		strings.TrimSpace(request.ProofSignature) == "" {
+		return ErrInvalidReleaseProof
+	}
+	signature, err := base64.StdEncoding.DecodeString(request.ProofSignature)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return ErrInvalidReleaseProof
+	}
+	payload, err := canonicalReleaseProofPayload(request)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(publicKey, payload, signature) {
+		return ErrInvalidReleaseProof
 	}
 	return nil
 }
