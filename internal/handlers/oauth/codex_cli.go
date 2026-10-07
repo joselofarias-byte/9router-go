@@ -26,6 +26,23 @@ const (
 //
 // POST /api/oauth/codex/cli-login/start
 func (h *OAuthHandler) HandleCodexCLIStart(w http.ResponseWriter, r *http.Request) {
+	// A second login while the first browser tab is still authenticating would
+	// rotate Codex's loopback state underneath that tab. Serialize creation and
+	// hand the caller the existing pending session instead.
+	codexCLIStartMu.Lock()
+	defer codexCLIStartMu.Unlock()
+
+	if sessionID, sess, ok := codexCLILogins.pending(); ok {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"success":   true,
+			"sessionId": sessionID,
+			"authUrl":   sess.authURL,
+			"source":    "codex_cli",
+			"reused":    true,
+		})
+		return
+	}
+
 	var body struct {
 		Name string `json:"name,omitempty"`
 	}
@@ -88,11 +105,13 @@ func (h *OAuthHandler) HandleCodexCLIStart(w http.ResponseWriter, r *http.Reques
 	defer timer.Stop()
 	select {
 	case authURL := <-urlCh:
+		codexCLILogins.setAuthURL(sessionID, authURL)
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"success":   true,
 			"sessionId": sessionID,
 			"authUrl":   authURL,
 			"source":    "codex_cli",
+			"reused":    false,
 		})
 	case <-exitCh:
 		codexCLILogins.cancel(sessionID)
