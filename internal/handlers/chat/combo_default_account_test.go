@@ -169,6 +169,70 @@ func TestHandleComboFallback_Opencode503SwitchesConfiguredAccount(t *testing.T) 
 	}
 }
 
+func TestHandleComboFallback_Opencode503SwitchesModelProvider(t *testing.T) {
+	const failedModel = "audit-opencode-model-failover"
+
+	var failedHits atomic.Int32
+	failedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failedHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":{"message":"Endpoint is unavailable"}}`))
+	}))
+	defer failedUpstream.Close()
+
+	var healthyHits atomic.Int32
+	healthyUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"provider-recovered","choices":[{"message":{"content":"next provider worked"}}]}`))
+	}))
+	defer healthyUpstream.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider IN ('opencode', 'deepseek')`); err != nil {
+		t.Fatalf("clear provider connections: %v", err)
+	}
+	seedConnDB(t, database, "opencode", "conn-opencode-provider-failed", "", failedUpstream.URL)
+	seedConnDB(t, database, "deepseek", "conn-deepseek-provider-healthy", "sk-healthy", healthyUpstream.URL)
+
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+	body := []byte(`{"model":"free-best","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+
+	h.handleComboFallback(
+		context.Background(),
+		rec,
+		body,
+		[]string{"opencode/" + failedModel, "deepseek/deepseek-chat"},
+		"fallback",
+		false,
+		false,
+		"free-best",
+		0,
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected next provider to succeed with 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "next provider worked") {
+		t.Fatalf("expected response from next provider, got %s", rec.Body.String())
+	}
+	if got := failedHits.Load(); got != 1 {
+		t.Fatalf("expected failed OpenCode route once, got %d attempts", got)
+	}
+	if got := healthyHits.Load(); got != 1 {
+		t.Fatalf("expected next provider once, got %d attempts", got)
+	}
+}
+
 func TestComboConnection_DefaultKeyUsedOnlyWhenNoConfiguredAccountsExist(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
