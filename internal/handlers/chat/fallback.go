@@ -258,7 +258,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 				errCat = classification.Category
 			}
 		}
-		globalTrustManager.RecordRequestOutcome(provider, model, connectionID, fwdErr == nil, errCat, int(latencyMs), metrics.TTFT)
+		globalTrustManager.RecordRequestOutcome(provider, model, connectionID, fwdErr == nil, errCat, int(latencyMs), int(metrics.TTFT))
 	}
 
 	if fwdErr == nil {
