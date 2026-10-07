@@ -84,9 +84,7 @@ func TestGetClientForConnection_StrictInvalidProxyFailsClosed(t *testing.T) {
 	connData := &ConnectionData{
 		ConnectionProxyEnabled: true,
 		ConnectionProxyURL:     "://invalid",
-		ProviderSpecificData: map[string]any{
-			"strictProxy": true,
-		},
+		StrictProxy:            true,
 	}
 
 	client := h.GetClientForConnection(connData)
