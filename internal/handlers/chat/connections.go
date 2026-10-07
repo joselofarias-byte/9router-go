@@ -359,7 +359,21 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 		}
 	}
 
-	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
-	// URL rewriting and x-relay headers are handled at request time.
+	// For supported Edge Relays, the standard client is intentional because URL
+	// rewriting and x-relay headers are handled at request time.
+	if proxyType == "vercel" || proxyType == "cloudflare" || proxyType == "deno" {
+		return h.Client
+	}
+
+	// Unknown proxy types must never silently bypass a strict proxy policy.
+	if strictProxy {
+		proxyErr := fmt.Errorf("strict proxy configuration uses unsupported proxy type %q", proxyType)
+		log.Error("proxy", "strict proxy enabled with unsupported proxy type; failing closed", "type", proxyType, "error", proxyErr)
+		return &http.Client{
+			Transport: failingRoundTripper{err: proxyErr},
+			Timeout:   h.Client.Timeout,
+		}
+	}
+	log.Warn("proxy", "unsupported proxy type; using direct client because strict proxy is disabled", "type", proxyType)
 	return h.Client
 }
