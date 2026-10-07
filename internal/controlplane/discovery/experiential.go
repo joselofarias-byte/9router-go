@@ -54,7 +54,10 @@ type experientialConnectionData struct {
 func experientialFreeChatCompatible(model experientialCatalogModel) bool {
 	id := strings.ToLower(strings.TrimSpace(model.ID))
 	canonical := strings.ToLower(strings.TrimSpace(model.CanonicalSlug))
-	if canonical == "jev-latest" || strings.HasPrefix(id, "type-safe/jev-") {
+	if canonical == "jev-latest" ||
+		strings.HasPrefix(id, "type-safe/jev-") ||
+		canonical == "gpt-6-luna-decisions" ||
+		strings.HasPrefix(id, "openai/gpt-6-luna-decisions") {
 		return false
 	}
 	return true
