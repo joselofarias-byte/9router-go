@@ -14,14 +14,26 @@ import (
 
 func TestForwardGrokCLIRequest_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" {
-			t.Errorf("expected grok-shell User-Agent, got %q", r.Header.Get("User-Agent"))
+		if !strings.HasPrefix(r.Header.Get("User-Agent"), "grok-shell/1.0.45 (") {
+			t.Errorf("expected current grok-shell User-Agent, got %q", r.Header.Get("User-Agent"))
 		}
 		if r.Header.Get("x-grok-client-identifier") != "grok-shell" {
 			t.Errorf("expected x-grok-client-identifier header, got %q", r.Header.Get("x-grok-client-identifier"))
 		}
-		if r.Header.Get("x-grok-client-version") != "0.2.99" {
-			t.Errorf("expected x-grok-client-version header, got %q", r.Header.Get("x-grok-client-version"))
+		if r.Header.Get("x-grok-client-version") != "1.0.45" {
+			t.Errorf("expected x-grok-client-version 1.0.45, got %q", r.Header.Get("x-grok-client-version"))
+		}
+		if r.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" {
+			t.Errorf("expected X-XAI-Token-Auth=xai-grok-cli, got %q", r.Header.Get("X-XAI-Token-Auth"))
+		}
+		if r.Header.Get("x-authenticateresponse") != "authenticate-response" {
+			t.Errorf("expected x-authenticateresponse header, got %q", r.Header.Get("x-authenticateresponse"))
+		}
+		if r.Header.Get("x-grok-client-mode") != "headless" {
+			t.Errorf("expected x-grok-client-mode=headless, got %q", r.Header.Get("x-grok-client-mode"))
+		}
+		if r.Header.Get("x-grok-model-override") != "grok-build" {
+			t.Errorf("expected x-grok-model-override=grok-build, got %q", r.Header.Get("x-grok-model-override"))
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("expected Authorization: Bearer test-key, got %q", r.Header.Get("Authorization"))
@@ -137,5 +149,36 @@ func TestForwardGrokCLIRequest_EndpointPath(t *testing.T) {
 	}
 	if receivedPath != "/v1/responses" {
 		t.Errorf("expected request path /v1/responses, got %q", receivedPath)
+	}
+}
+
+
+func TestForwardGrokCLIRequest_ClientVersionOverrideAndModelHeader(t *testing.T) {
+	t.Setenv("GROK_CLI_CLIENT_VERSION", "9.9.9-test")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-grok-client-version"); got != "9.9.9-test" {
+			t.Fatalf("client version override = %q", got)
+		}
+		if got := r.Header.Get("x-grok-model-override"); got != "grok-4.6" {
+			t.Fatalf("model override = %q", got)
+		}
+		if got := r.Header.Get("User-Agent"); !strings.HasPrefix(got, "grok-shell/9.9.9-test (") {
+			t.Fatalf("user agent = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	rec := httptest.NewRecorder()
+	err := executor.ForwardGrokCLI(rec, &executor.Request{
+		Client: srv.Client(), Config: cfg, APIKey: "test-key",
+		Body: []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}]}`),
+		IsStream: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
