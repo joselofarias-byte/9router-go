@@ -99,6 +99,9 @@ Verificar que los paquetes Fabric listados en `docs/FABRIC_PORT_MANIFEST.md` rea
 
 ## Pasada B — segunda revisión fuerte e independiente
 
+Cuando Codex se ejecute desde Claude Code, usar preferentemente el plugin oficial de OpenAI y seguir `docs/agent-briefs/CODEX_PLUGIN_SECURITY_REVIEW.md` / `.agents/workflows/codex-plugin-security-review.md`. Hacer una pasada nativa con `/codex:review` y una pasada separada con `/codex:adversarial-review`; no mezclar conclusiones previas en la primera pasada independiente.
+
+
 Usar uno de los mejores modelos disponibles fuera de la primera pasada, por ejemplo Astra/Sol/Codex especializado, sobre los hallazgos P0/P1 y zonas críticas.
 
 Candidatos de programación cuando estén disponibles:
