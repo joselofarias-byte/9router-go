@@ -9,7 +9,7 @@ import (
 	"9router/proxy/web"
 )
 
-func TestHandler_PWAAssets(t *testing.T) {
+func TestHandler_WebAssetsAndPWARetirement(t *testing.T) {
 	handler := web.Handler()
 
 	tests := []struct {
@@ -20,32 +20,19 @@ func TestHandler_PWAAssets(t *testing.T) {
 		expectedHeaderPart string
 	}{
 		{
-			name:               "serves manifest.webmanifest with correct Content-Type",
-			targetPath:         "/manifest.webmanifest",
-			expectedStatus:     http.StatusOK,
-			expectedHeaderKey:  "Content-Type",
-			expectedHeaderPart: "application/manifest+json",
+			name:           "manifest.webmanifest is retired",
+			targetPath:     "/manifest.webmanifest",
+			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:               "serves manifest.json with JSON or text Content-Type",
-			targetPath:         "/manifest.json",
-			expectedStatus:     http.StatusOK,
-			expectedHeaderKey:  "Content-Type",
-			expectedHeaderPart: "application/json",
+			name:           "manifest.json is retired",
+			targetPath:     "/manifest.json",
+			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:               "serves sw.js with no-cache and javascript Content-Type",
-			targetPath:         "/sw.js",
-			expectedStatus:     http.StatusOK,
-			expectedHeaderKey:  "Content-Type",
-			expectedHeaderPart: "javascript",
-		},
-		{
-			name:               "serves sw.js with Service-Worker-Allowed header",
-			targetPath:         "/sw.js",
-			expectedStatus:     http.StatusOK,
-			expectedHeaderKey:  "Service-Worker-Allowed",
-			expectedHeaderPart: "/",
+			name:           "service worker is retired",
+			targetPath:     "/sw.js",
+			expectedStatus: http.StatusNotFound,
 		},
 		{
 			name:               "serves icon-192.png",
@@ -87,6 +74,9 @@ func TestHandler_PWAAssets(t *testing.T) {
 					t.Errorf("expected header %s to contain %q for %q, got %q",
 						tt.expectedHeaderKey, tt.expectedHeaderPart, tt.targetPath, val)
 				}
+			}
+			if tt.targetPath == "/sw.js" && rec.Header().Get("Service-Worker-Allowed") != "" {
+				t.Errorf("retired service worker route must not advertise Service-Worker-Allowed")
 			}
 		})
 	}
