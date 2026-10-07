@@ -36,6 +36,17 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 			{
 				"id": "some-free-model",
 				"object": "model"
+			},
+			{
+				"id": "contradictory-free-but-priced",
+				"object": "model",
+				"pricing": {
+					"mode": "free_tier"
+				},
+				"cost": {
+					"prompt": 0.001,
+					"completion": 0.002
+				}
 			}
 		]
 	}`
@@ -90,6 +101,10 @@ func TestOrcaRouterAdapter_Discover(t *testing.T) {
 
 		if c.ModelID == "some-free-model" && c.PricingMode != "free_tier" {
 			t.Errorf("expected free_tier pricing (inferred from string match) for some-free-model, got %s", c.PricingMode)
+		}
+
+		if c.ModelID == "contradictory-free-but-priced" && c.PricingMode != "paid" {
+			t.Errorf("expected positive advertised costs to force paid pricing, got %s", c.PricingMode)
 		}
 	}
 }
