@@ -5,7 +5,6 @@ import (
 
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
-	"9router/proxy/internal/controlplane/trust"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -36,12 +35,9 @@ func (h *ChatHandler) HandleAdminExplainRoute(w http.ResponseWriter, r *http.Req
 		policy = routing.Policy(policyParam)
 	}
 
-	// For explanation, we just instantiate the Engine directly (in production, passed down)
-	engine := &routing.Engine{
-		TrustManager: trust.NewManager(),
-	}
-
-	candidates := engine.SelectCandidates(model, policy)
+	// Explain using the same stateful engine that serves production routing so
+	// observed trust and performance are reflected in the result.
+	candidates := globalRoutingEngine.SelectCandidates(model, policy)
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"requestedModel": model,
