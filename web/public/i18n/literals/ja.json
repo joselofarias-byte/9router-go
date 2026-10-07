@@ -226,5 +226,17 @@
   "Strong": "強い",
   "minimum": "最小",
   "Show password": "パスワードを表示",
-  "Hide password": "パスワードを隠す"
+  "Hide password": "パスワードを隠す",
+  "1. Dashboard authorization": "1. ダッシュボード認証",
+  "This is your current dashboard password. It only authorizes the backup operation.": "これは現在のダッシュボードパスワードです。バックアップ操作の承認にのみ使用されます。",
+  "Current dashboard password": "現在のダッシュボードパスワード",
+  "2. Backup encryption": "2. バックアップの暗号化",
+  "2. Backup decryption": "2. バックアップの復号",
+  "Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.": "この .9rbak ファイル用に別の復元パスフレーズを作成してください。後で復元する際に必要です。",
+  "Enter the recovery passphrase that was used when this encrypted backup was created.": "この暗号化バックアップの作成時に使用した復元パスフレーズを入力してください。",
+  "Recovery passphrase": "復元パスフレーズ",
+  "Confirm recovery passphrase": "復元パスフレーズを確認",
+  "Type the same recovery passphrase again": "同じ復元パスフレーズをもう一度入力してください",
+  "Passphrases match ✓": "パスフレーズが一致しています ✓",
+  "Passphrases do not match": "パスフレーズが一致しません"
 }
