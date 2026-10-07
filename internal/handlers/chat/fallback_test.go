@@ -114,6 +114,13 @@ func TestTryForwardWithConnection_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
+	if level := globalTrustManager.GetTrustLevel("deepseek", "deepseek-chat", "conn-try"); level != "verified" {
+		t.Fatalf("expected real successful request to update trust to verified, got %s", level)
+	}
+	stats := globalTrustManager.GetStats("deepseek", "deepseek-chat", "conn-try")
+	if stats.SuccessRate != 1 {
+		t.Fatalf("expected success rate 1 after successful request, got %v", stats.SuccessRate)
+	}
 }
 
 func TestTryForwardWithConnection_NoAPIKey(t *testing.T) {
