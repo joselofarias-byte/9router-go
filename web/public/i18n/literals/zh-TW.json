@@ -226,5 +226,17 @@
   "Strong": "強",
   "minimum": "最少",
   "Show password": "顯示密碼",
-  "Hide password": "隱藏密碼"
+  "Hide password": "隱藏密碼",
+  "1. Dashboard authorization": "1. 儀表板授權",
+  "This is your current dashboard password. It only authorizes the backup operation.": "這是你目前的儀表板密碼，只用來授權備份操作。",
+  "Current dashboard password": "目前的儀表板密碼",
+  "2. Backup encryption": "2. 備份加密",
+  "2. Backup decryption": "2. 備份解密",
+  "Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.": "請為此 .9rbak 檔案建立獨立的復原密語，之後還原備份時會用到。",
+  "Enter the recovery passphrase that was used when this encrypted backup was created.": "請輸入建立此加密備份時使用的復原密語。",
+  "Recovery passphrase": "復原密語",
+  "Confirm recovery passphrase": "確認復原密語",
+  "Type the same recovery passphrase again": "再次輸入相同的復原密語",
+  "Passphrases match ✓": "密語一致 ✓",
+  "Passphrases do not match": "密語不一致"
 }
