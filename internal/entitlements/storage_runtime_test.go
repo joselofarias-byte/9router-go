@@ -32,6 +32,9 @@ func TestRuntimeStoreLoadsActiveAndGraceLease(t *testing.T) {
 	if err := store.SaveLease(raw); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AdvanceTrustedTime(ctx.Now); err != nil {
+		t.Fatal(err)
+	}
 
 	now := ctx.Now
 	state, err := store.LoadRuntime(RuntimeOptions{
