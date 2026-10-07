@@ -184,6 +184,25 @@ func jwtExpiresIn(token string, now time.Time) int {
 	return int(seconds)
 }
 
+func codexLoginEnv(home string) []string {
+	blocked := map[string]bool{
+		"CODEX_HOME":         true,
+		"OPENAI_API_KEY":     true,
+		"CODEX_API_KEY":      true,
+		"CODEX_ACCESS_TOKEN": true,
+	}
+	base := os.Environ()
+	env := make([]string, 0, len(base)+2)
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && blocked[strings.ToUpper(key)] {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "CODEX_HOME="+home, "NO_COLOR=1")
+}
+
 func findCodexLoginBinary() (string, error) {
 	if explicit := strings.TrimSpace(os.Getenv("CODEX_LOGIN_BIN")); explicit != "" {
 		if isExecutableFile(explicit) {
