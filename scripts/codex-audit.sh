@@ -17,17 +17,30 @@ if [ ! -d "$ROOT/.git" ]; then
   exit 1
 fi
 
-TERMUX_CODEX="$HOME/.local/codex-termux/node_modules/.bin/codex"
+NATIVE_CODEX="$HOME/.local/codex-termux/node_modules/.bin/codex"
 if [ -n "${CODEX_AUDIT_BIN:-}" ]; then
   CODEX_BIN="$CODEX_AUDIT_BIN"
-elif [ -x "$TERMUX_CODEX" ]; then
-  CODEX_BIN="$TERMUX_CODEX"
+elif [ -x "$NATIVE_CODEX" ]; then
+  CODEX_BIN="$NATIVE_CODEX"
 elif command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(command -v codex)"
 else
   echo "ERROR: no encontre Codex CLI." >&2
   exit 1
 fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "ERROR: falta Node.js para el lector MCP." >&2
+  exit 1
+fi
+
+MCP_DIR="$HOME/.local/9router-codex-audit-mcp"
+MCP_SERVER="$MCP_DIR/server.mjs"
+if [ ! -f "$MCP_SERVER" ] || [ ! -d "$MCP_DIR/node_modules/@modelcontextprotocol/sdk" ]; then
+  echo "ERROR: falta el lector MCP read-only. Reejecuta el bootstrap de codex-audit." >&2
+  exit 2
+fi
+node --check "$MCP_SERVER" >/dev/null
 
 OUTDIR="$HOME/storage/downloads"
 if [ ! -d "$OUTDIR" ]; then
@@ -36,35 +49,42 @@ fi
 OUT="$OUTDIR/CODEX_REPO_AUDIT.md"
 ERR="$OUTDIR/CODEX_REPO_AUDIT.stderr.txt"
 
-PROMPT_FILE="$ROOT/codex-skills/9router-code-audit/SKILL.md"
-if [ -f "$PROMPT_FILE" ]; then
-  PROMPT="$(cat "$PROMPT_FILE")"
+SKILL_FILE="${CODEX_HOME:-$HOME/.codex}/skills/9router-code-audit/SKILL.md"
+if [ -f "$SKILL_FILE" ]; then
+  PROMPT="$(cat "$SKILL_FILE")"
 else
-  PROMPT='Realiza una auditoria read-only, evidence-first y defect-first de este repositorio. Prioriza seguridad, autenticacion, licencias/entitlements, client-vs-server trust, fail-open, routing/fallback, quota/cooldown/stale state, concurrencia/TOCTOU, persistencia, aislamiento de credenciales, downgrade/rollback y Termux/ARM64. No modifiques ningun archivo. Cada hallazgo material debe incluir severidad, estado, archivo:linea, evidencia, impacto, como probarlo y cambio minimo sugerido.'
+  PROMPT='Realiza una auditoria evidence-first y defect-first. No modifiques archivos. Prioriza seguridad, autenticacion, licencias/entitlements, fail-open, routing/fallback, cuota/cooldown, concurrencia, persistencia y aislamiento de credenciales.'
 fi
+
+NODE_BIN="$(command -v node)"
+MCP_SERVER_TOML="${MCP_SERVER//\\/\\\\}"
+MCP_SERVER_TOML="${MCP_SERVER_TOML//\"/\\\"}"
+ROOT_TOML="${ROOT//\\/\\\\}"
+ROOT_TOML="${ROOT_TOML//\"/\\\"}"
+NODE_TOML="${NODE_BIN//\\/\\\\}"
+NODE_TOML="${NODE_TOML//\"/\\\"}"
 
 echo "Repo: $ROOT"
 echo "Salida: $OUT"
 echo "Codex: $("$CODEX_BIN" --version 2>/dev/null || echo "$CODEX_BIN")"
-echo "Modo: SOLO LECTURA"
+echo "Acceso al codigo: MCP LOCAL SOLO LECTURA"
+echo "Shell de Codex: DESACTIVADO"
 echo
 
-# Fail fast on Android/Termux builds whose Linux bubblewrap sandbox cannot start.
-# The community Termux build provides an Android seccomp+ptrace backend and should
-# pass this probe. Do not silently downgrade to unsandboxed execution.
-if ! "$CODEX_BIN" sandbox linux -- /bin/true >/dev/null 2>"$ERR"; then
-  if grep -Eqi 'bwrap|bubblewrap|bind mount|oldroot|sandbox.*(fail|error)|overflowuid' "$ERR"; then
-    echo "ERROR: este Codex no puede establecer el sandbox read-only en Android/Termux." >&2
-    echo "No voy a continuar sin sandbox." >&2
-    echo "Instala el runtime Termux aislado con:" >&2
-    echo "  bash ~/9router-go/scripts/install-codex-termux-audit-runtime.sh" >&2
-    exit 2
-  fi
-fi
+EXTRA='
+REGLAS DE EJECUCION PARA ESTA AUDITORIA:
+- Usa EXCLUSIVAMENTE las herramientas del servidor MCP audit_repo para inspeccionar codigo y Git.
+- El shell de Codex esta desactivado deliberadamente por incompatibilidad de sandbox en Android/Termux.
+- No uses apply_patch ni ninguna herramienta de escritura, aunque aparezca disponible.
+- No modifiques archivos, configuracion, Git, ramas ni credenciales.
+- Empieza con repo_info y list_files; usa read_file/search_text/git_diff/git_log para obtener evidencia.
+- No declares que el repositorio es inaccesible salvo que repo_info falle.
+- Cada hallazgo material debe citar path:line y distinguir confirmado, probable-necesita-test, diseno o falso-positivo.
+'
 
-rm -f "$ERR"
+rm -f "$OUT" "$ERR"
 set +e
-printf '%s\n\n%s\n' "$PROMPT" 'Audita ahora el repositorio indicado. No modifiques nada.' |   "$CODEX_BIN" exec     --skip-git-repo-check     -C "$ROOT"     --sandbox read-only     --output-last-message "$OUT"     - 2> >(tee "$ERR" >&2)
+printf '%s\n%s\n' "$PROMPT" "$EXTRA" |   "$CODEX_BIN" exec     --skip-git-repo-check     -C "$ROOT"     --sandbox read-only     -c 'features.shell_tool=false'     -c "mcp_servers.audit_repo.command=\"$NODE_TOML\""     -c "mcp_servers.audit_repo.args=[\"$MCP_SERVER_TOML\",\"$ROOT_TOML\"]"     -c 'mcp_servers.audit_repo.required=true'     -c 'mcp_servers.audit_repo.default_tools_approval_mode="approve"'     --output-last-message "$OUT"     - 2> >(tee "$ERR" >&2)
 rc=$?
 set -e
 
@@ -78,8 +98,8 @@ if [ ! -s "$OUT" ]; then
   exit 3
 fi
 
-if grep -Eqi 'bloquead[oa] por un fallo|no pude acceder al repositorio|sandbox.*(fail|error)|bwrap:' "$OUT"; then
-  echo "ERROR: Codex devolvio un informe de entorno bloqueado; no cuenta como auditoria." >&2
+if grep -Eqi 'no pude acceder al repositorio|could not access the repository|MCP.*(failed|unavailable)|required MCP server.*failed' "$OUT"; then
+  echo "ERROR: Codex no logro leer el repo por MCP; no cuenta como auditoria." >&2
   exit 4
 fi
 
