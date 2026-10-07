@@ -75,8 +75,12 @@ func (e *Engine) SelectCandidates(requestedModel string, policy Policy) []RouteN
 					continue
 				}
 
+				stats := e.TrustManager.GetStats(provID, pm.ModelID, acc.ID)
 				factors := scoring.Factors{
 					TrustLevel:         trustLvl,
+					LatencyMs:          stats.LatencyMs,
+					TTFTMs:             stats.TTFTMs,
+					SuccessRate:        stats.SuccessRate,
 					IsFreeTier:         isFree,
 					AccountRiskPenalty: riskProfile.ScorePenalty,
 				}

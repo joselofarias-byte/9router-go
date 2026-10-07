@@ -245,6 +245,22 @@ func (h *ChatHandler) tryForwardWithConnection(
 		TTFTMs:     metrics.TTFT,
 	})
 
+	// Feed real request outcomes back into the same trust/scoring state used
+	// by Control Plane routing. This makes health and performance adaptive.
+	if connectionID != "" {
+		errCat := providers.ErrTransient
+		if fwdErr == nil {
+			errCat = ""
+		} else {
+			var outcomeErr *upstreamError
+			if errors.As(fwdErr, &outcomeErr) {
+				classification := providers.ClassifyError(outcomeErr.StatusCode, string(outcomeErr.Body), h.Repo.GetConnectionBackoffLevel(connectionID))
+				errCat = classification.Category
+			}
+		}
+		globalTrustManager.RecordRequestOutcome(provider, model, connectionID, fwdErr == nil, errCat, int(latencyMs), int(metrics.TTFT))
+	}
+
 	if fwdErr == nil {
 		// Clear any existing model lock on success (matching Next.js clearAccountError)
 		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, model); unlockErr != nil {

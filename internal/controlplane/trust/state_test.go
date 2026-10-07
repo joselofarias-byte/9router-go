@@ -37,3 +37,21 @@ func TestTrustManager(t *testing.T) {
 		t.Errorf("Expected Degraded, got %s", lvl)
 	}
 }
+
+
+func TestTrustManager_RequestStats(t *testing.T) {
+	tm := NewManager()
+	tm.RecordRequestOutcome("prov", "mod", "acc", true, "", 100, 40)
+	tm.RecordRequestOutcome("prov", "mod", "acc", false, providers.ErrRateLimit, 300, 80)
+
+	stats := tm.GetStats("prov", "mod", "acc")
+	if stats.SuccessRate != 0.5 {
+		t.Fatalf("expected success rate 0.5, got %v", stats.SuccessRate)
+	}
+	if stats.LatencyMs != 200 {
+		t.Fatalf("expected average latency 200ms, got %d", stats.LatencyMs)
+	}
+	if stats.TTFTMs != 60 {
+		t.Fatalf("expected average TTFT 60ms, got %d", stats.TTFTMs)
+	}
+}

@@ -271,6 +271,14 @@ func extractAPIKey(connData *ConnectionData) string {
 	return connData.AccessToken
 }
 
+type failingRoundTripper struct {
+	err error
+}
+
+func (t failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, t.err
+}
+
 // GetClientForConnection returns an http.Client configured with ProxyPool transport if set.
 func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) *http.Client {
 	return h.getClientForConnection(connData)
@@ -299,15 +307,22 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	if proxyURLStr == "" {
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
-		if !proxyEnabled && connData.ProviderSpecificData != nil {
-			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
-				proxyEnabled = en
+		strictProxy = connData.StrictProxy
+		if connData.ProviderSpecificData != nil {
+			if !proxyEnabled {
+				if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
+					proxyEnabled = en
+				}
 			}
-			if u, ok := connData.ProviderSpecificData["connectionProxyUrl"].(string); ok {
-				proxyURL = u
+			if proxyURL == "" {
+				if u, ok := connData.ProviderSpecificData["connectionProxyUrl"].(string); ok {
+					proxyURL = u
+				}
 			}
-			if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
-				strictProxy = sp
+			if !strictProxy {
+				if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
+					strictProxy = sp
+				}
 			}
 		}
 		if proxyEnabled && proxyURL != "" {
@@ -324,7 +339,12 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	if err != nil {
 		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
 		if strictProxy {
-			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
+			proxyErr := fmt.Errorf("strict proxy configuration invalid for %q: %w", proxyURLStr, err)
+			log.Error("proxy", "strict proxy enabled but proxy url invalid; failing closed", "url", proxyURLStr, "error", proxyErr)
+			return &http.Client{
+				Transport: failingRoundTripper{err: proxyErr},
+				Timeout:   h.Client.Timeout,
+			}
 		}
 		return h.Client
 	}

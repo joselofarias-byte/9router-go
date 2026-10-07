@@ -2,6 +2,8 @@ package chat
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -63,5 +65,37 @@ func TestGetClientForConnection_ProxyPool(t *testing.T) {
 	}
 	if proxyURL == nil || proxyURL.String() != "http://user:pass@proxy.example.com:8080" {
 		t.Errorf("expected proxy URL http://user:pass@proxy.example.com:8080, got %v", proxyURL)
+	}
+}
+
+
+func TestGetClientForConnection_StrictInvalidProxyFailsClosed(t *testing.T) {
+	var directHits atomic.Int32
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer direct.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := &ChatHandler{Client: &http.Client{}, Repo: db.NewRepo(database)}
+
+	connData := &ConnectionData{
+		ConnectionProxyEnabled: true,
+		ConnectionProxyURL:     "://invalid",
+		StrictProxy:            true,
+	}
+
+	client := h.GetClientForConnection(connData)
+	if client == h.Client {
+		t.Fatal("strict invalid proxy must not fall back to the direct client")
+	}
+	_, err := client.Get(direct.URL)
+	if err == nil {
+		t.Fatal("expected strict invalid proxy client to fail closed")
+	}
+	if got := directHits.Load(); got != 0 {
+		t.Fatalf("strict proxy failure leaked %d direct request(s)", got)
 	}
 }

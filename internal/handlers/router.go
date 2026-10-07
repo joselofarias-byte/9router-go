@@ -57,6 +57,11 @@ func SetupRoutes(r interface {
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
 	r.Post("/api/chat", chatH.HandleOllamaChat)
 
+	// Fabric / Control Plane admin endpoints. SetupServerRouter mounts SetupRoutes
+	// inside RequireApiKey, so these are authenticated in the production router.
+	r.Get("/api/admin/registry", chatH.HandleAdminRegistry)
+	r.Get("/api/admin/explain-route", chatH.HandleAdminExplainRoute)
+
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
 	r.Post("/responses", mediaH.HandleResponses)
