@@ -302,7 +302,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#FF6B35",
     "icon": "code",
     "website": "https://kilocode.ai",
-    "notice": {"signupUrl":"https://kilocode.ai"},
+    "notice": {"text":"Kilo Code has a free account path with no credit card for hosted $0 models; Auto Free routes among the currently available free models. Availability and upstream rate limits can change.","signupUrl":"https://kilocode.ai"},
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -649,7 +649,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#8B5CF6",
     "icon": "login",
     "website": "https://kilo.ai",
-    "notice": {"apiKeyUrl":"https://kilo.ai/dashboard?tab=apiKeys"},
+    "notice": {"text":"Kilo Gateway supports free hosted models and Auto Free with a free account; no paid inference plan is required for those $0 models.","apiKeyUrl":"https://kilo.ai/dashboard?tab=apiKeys"},
     "authType": "apikey",
     "noAuth": false,
     "serviceKinds": [
@@ -2057,7 +2057,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#888888",
     "icon": "dns",
     "website": "https://windsurf.com",
-    "notice": {"signupUrl":"https://windsurf.com"},
+    "notice": {"text":"Windsurf is now branded Devin Desktop. The individual Free plan is $0 and includes free model usage; 9router compatibility should be tested against the current account flow.","signupUrl":"https://windsurf.com"},
     "authType": "oauth",
     "noAuth": false,
     "authModes": ["oauth", "apikey"],
