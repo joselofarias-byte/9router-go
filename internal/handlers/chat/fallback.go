@@ -376,6 +376,11 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
+	var usable *usableResponseWriter
+	if provider == "opencode" && !translateResponse && endpoint == "/v1/chat/completions" {
+		usable = newUsableResponseWriter(w)
+		w = usable
+	}
 
 	usagetracker.GetTracker().TrackPending(model, provider, connectionID, true, false)
 	defer func() {
@@ -481,6 +486,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 	}
 
+	if fwdErr == nil && usable != nil {
+		fwdErr = usable.finish()
+	}
 	latencyMs := time.Since(start).Milliseconds()
 
 	// Lightweight request trace for /debug/traces (provider/model latency).
