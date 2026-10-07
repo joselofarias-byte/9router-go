@@ -260,6 +260,74 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 	}
 }
 
+func TestHandleAccountFallback_SkipsLockedHigherPriorityConnection(t *testing.T) {
+	var lockedHits atomic.Int32
+	lockedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lockedHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"should-not-be-called","choices":[]}`))
+	}))
+	defer lockedSrv.Close()
+
+	var openHits atomic.Int32
+	openSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		openHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer openSrv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id IN ('conn-1', 'conn-2')`); err != nil {
+		t.Fatalf("clear seeded connections: %v", err)
+	}
+	seedConnDB(t, database, "deepseek", "conn-locked", "sk-locked", lockedSrv.URL)
+	seedConnDB(t, database, "deepseek", "conn-open", "sk-open", openSrv.URL)
+	if _, err := database.Exec(`UPDATE providerConnections SET priority = 1 WHERE id = 'conn-locked'`); err != nil {
+		t.Fatalf("set locked priority: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE providerConnections SET priority = 2 WHERE id = 'conn-open'`); err != nil {
+		t.Fatalf("set open priority: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	if err := repo.LockConnectionModel("conn-locked", "deepseek-chat", 60, 1); err != nil {
+		t.Fatalf("lock conn-locked: %v", err)
+	}
+	h := NewChatHandler(repo)
+
+	rec := httptest.NewRecorder()
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if err := h.handleAccountFallback(context.Background(), rec, "deepseek", "deepseek-chat", "", body, false, false, "/v1/chat/completions"); err != nil {
+		t.Fatalf("expected fallback to unlocked account, got %v", err)
+	}
+
+	if got := lockedHits.Load(); got != 0 {
+		t.Fatalf("locked connection received %d upstream requests, want 0", got)
+	}
+	if got := openHits.Load(); got != 1 {
+		t.Fatalf("open connection received %d upstream requests, want 1", got)
+	}
+}
+
+func TestGetBestConnection_RejectsSpecificLockedConnection(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedConnDB(t, database, "deepseek", "conn-specific-locked", "sk", "https://example.invalid")
+
+	repo := db.NewRepo(database)
+	if err := repo.LockConnectionModel("conn-specific-locked", "deepseek-chat", 60, 1); err != nil {
+		t.Fatalf("lock connection: %v", err)
+	}
+	h := NewChatHandler(repo)
+
+	if _, _, err := h.getBestConnection("deepseek", "conn-specific-locked", nil, "deepseek-chat"); err == nil {
+		t.Fatal("expected specific locked connection lookup to fail")
+	}
+}
+
 func TestHandleAccountFallback_NoConnections(t *testing.T) {
 	h, cleanup := setupHandlerForForward(t)
 	defer cleanup()
