@@ -145,9 +145,13 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 						}
 					}
 				}
+				const syntheticID = "noauth"
+				if !isAccountTrustSelectable(provider, model, syntheticID) {
+					return nil, nil, fmt.Errorf("public no-auth route unavailable for model %s: trust quarantine active", model)
+				}
 				publicName := "Public"
 				conn := &models.ProviderConnection{
-					ID:       "noauth",
+					ID:       syntheticID,
 					Provider: provider,
 					Name:     &publicName,
 					IsActive: 1,
