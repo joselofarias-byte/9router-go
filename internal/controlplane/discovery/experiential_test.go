@@ -128,3 +128,17 @@ func TestExperientialFreeChatCompatibleRejectsJev(t *testing.T) {
 		t.Fatal("chat-capable Experiential free model was rejected")
 	}
 }
+
+
+func TestExperientialFreeChatCompatibleRejectsLunaDecisions(t *testing.T) {
+	if experientialFreeChatCompatible(experientialCatalogModel{
+		ID: "openai/gpt-6-luna-decisions:free", CanonicalSlug: "gpt-6-luna-decisions",
+	}) {
+		t.Fatal("GPT-6 Luna Decisions is a Decisions API model and must stay out of chat-only free-best")
+	}
+	if !experientialFreeChatCompatible(experientialCatalogModel{
+		ID: "anthropic/claude-haiku-5.5:free", CanonicalSlug: "claude-haiku-5.5",
+	}) {
+		t.Fatal("chat-capable Experiential free model was rejected")
+	}
+}
