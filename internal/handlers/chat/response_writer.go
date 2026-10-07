@@ -36,6 +36,7 @@ func (cw *committedResponseWriter) IsCommitted() bool {
 // Flush implements http.Flusher if the underlying writer supports it.
 func (cw *committedResponseWriter) Flush() {
 	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+		atomic.StoreInt32(&cw.committed, 1)
 		f.Flush()
 	}
 }
