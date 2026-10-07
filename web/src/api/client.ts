@@ -790,6 +790,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  // Preferred Codex OAuth path: let the installed official Codex CLI own
+  // PKCE, callback handling and token exchange (AnyClaw-style).
+  codexCLIStartLogin: (name?: string) =>
+    request<{ success: boolean; sessionId?: string; authUrl?: string; source?: string; reason?: string }>(
+      '/api/oauth/codex/cli-login/start',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      },
+    ),
+  codexCLIStatus: (id: string) =>
+    request<{ status: string; connectionId?: string; email?: string; error?: string }>(
+      `/api/oauth/codex/cli-login/status?id=${encodeURIComponent(id)}`
+    ),
+  codexCLICancel: (id: string) =>
+    request<{ success: boolean }>(
+      `/api/oauth/codex/cli-login/cancel?id=${encodeURIComponent(id)}`,
+      { method: 'POST' },
+    ),
   // Codex's OAuth client has exactly one registered loopback redirect URI, so
   // the callback lands on a fixed-port listener the server owns rather than on
   // the dashboard's /callback page. start-proxy binds it, the login completes
