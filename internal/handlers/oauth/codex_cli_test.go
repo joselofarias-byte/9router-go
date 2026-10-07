@@ -50,4 +50,21 @@ func TestJWTExpiresInRejectsExpiredAndMalformed(t *testing.T) {
 			t.Errorf("jwtExpiresIn(%q) = %d, want 0", token, got)
 		}
 	}
+}\n
+func TestCodexLoginEnvIsolatesCredentialSources(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/old")
+	t.Setenv("OPENAI_API_KEY", "secret-openai")
+	t.Setenv("CODEX_API_KEY", "secret-codex")
+	t.Setenv("CODEX_ACCESS_TOKEN", "secret-access")
+
+	env := codexLoginEnv("/isolated")
+	joined := strings.Join(env, "\n")
+	for _, secret := range []string{"secret-openai", "secret-codex", "secret-access", "CODEX_HOME=/old"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("codexLoginEnv leaked %q", secret)
+		}
+	}
+	if !strings.Contains(joined, "CODEX_HOME=/isolated") {
+		t.Fatalf("codexLoginEnv did not set isolated CODEX_HOME")
+	}
 }
