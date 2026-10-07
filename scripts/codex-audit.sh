@@ -37,7 +37,7 @@ echo "Salida: $OUT"
 echo "Modo: SOLO LECTURA"
 echo
 
-codex exec --sandbox read-only --output-last-message "$OUT" '$9router-code-audit realiza una auditoria completa de este repositorio. Prioriza seguridad, autenticacion, licencias/entitlements, fail-open, routing/fallback, cuota/cooldown, concurrencia, persistencia y aislamiento de credenciales. No modifiques nada.'
+codex exec --skip-git-repo-check --sandbox read-only --output-last-message "$OUT" '$9router-code-audit realiza una auditoria completa de este repositorio. Prioriza seguridad, autenticacion, licencias/entitlements, fail-open, routing/fallback, cuota/cooldown, concurrencia, persistencia y aislamiento de credenciales. No modifiques nada.'
 
 echo
 echo "Auditoria terminada: $OUT"
