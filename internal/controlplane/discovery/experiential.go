@@ -46,6 +46,23 @@ type experientialConnectionData struct {
 	AccessToken string `json:"accessToken"`
 }
 
+// Experiential's account-scoped model list includes native helpers that are
+// callable by the organization but are not OpenAI chat models. Fabric's
+// free-best route is a chat route, so those entries must never be advertised
+// there. Jev is documented as /v1/systemone-only (no Chat Completions,
+// Responses, or Messages facade).
+func experientialFreeChatCompatible(model experientialCatalogModel) bool {
+	id := strings.ToLower(strings.TrimSpace(model.ID))
+	canonical := strings.ToLower(strings.TrimSpace(model.CanonicalSlug))
+	if canonical == "jev-latest" ||
+		strings.HasPrefix(id, "type-safe/jev-") ||
+		canonical == "gpt-6-luna-decisions" ||
+		strings.HasPrefix(id, "openai/gpt-6-luna-decisions") {
+		return false
+	}
+	return true
+}
+
 // Discover publishes only provider-enforced :free aliases. Keeping the suffix
 // in UpstreamModel guarantees that exhausting a promotion cannot fall through
 // to paid account credit.
@@ -142,7 +159,7 @@ func (a *ExperientialFreeAdapter) Discover(ctx context.Context) ([]Candidate, er
 
 		for _, model := range models {
 			id := strings.TrimSpace(model.ID)
-			if id == "" || !strings.HasSuffix(strings.ToLower(id), ":free") {
+			if id == "" || !strings.HasSuffix(strings.ToLower(id), ":free") || !experientialFreeChatCompatible(model) {
 				continue
 			}
 			if _, duplicate := seen[id]; duplicate {
