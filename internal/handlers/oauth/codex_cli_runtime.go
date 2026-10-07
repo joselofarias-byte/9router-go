@@ -17,7 +17,7 @@ import (
 const codexCLIAuthMaxBytes = 1 << 20
 
 var (
-	codexAuthURLPattern = regexp.MustCompile(`https://auth\\.openai\\.com/[^\\s\\x1b]+`)
+	codexAuthURLPattern = regexp.MustCompile(`https://auth\.openai\.com/[^\s\x1b]+`)
 	codexANSISequence   = regexp.MustCompile("\\x1b\\[[0-9;?]*[ -/]*[@-~]")
 	codexCLILogins      = newCodexCLILoginManager()
 )
