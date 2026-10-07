@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
 )
 
 func TestHandleDeviceStart_qoderLocal(t *testing.T) {
@@ -100,7 +101,7 @@ func (f devicePollFixture) RoundTrip(r *http.Request) (*http.Response, error) { 
 
 func TestGrokCLIProxyHeadersCurrentAndOverride(t *testing.T) {
 	t.Setenv("GROK_CLI_CLIENT_VERSION", "1.2.3-test")
-	h := grokcliProxyHeaders("token-value")
+	h := providers.GrokCLIProxyHeaders("token-value")
 	if h["x-grok-client-version"] != "1.2.3-test" {
 		t.Fatalf("client version = %q", h["x-grok-client-version"])
 	}
