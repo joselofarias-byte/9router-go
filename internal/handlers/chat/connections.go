@@ -85,6 +85,18 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		if conn == nil {
 			return nil, nil, fmt.Errorf("connection %s not found", connectionID)
 		}
+		if model != "" {
+			locked, lockErr := h.Repo.IsConnectionModelLocked(conn.ID, model)
+			if lockErr != nil {
+				return nil, nil, fmt.Errorf("check connection %s model lock: %w", conn.ID, lockErr)
+			}
+			if locked {
+				return nil, nil, fmt.Errorf("connection %s is locked for model %s", conn.ID, model)
+			}
+			if provider == "antigravity" && IsAntigravityModelBlocked(conn.ID, model) {
+				return nil, nil, fmt.Errorf("connection %s is blocked for antigravity model %s", conn.ID, model)
+			}
+		}
 	} else {
 		connections, queryErr := h.Repo.GetProviderConnections(provider, true)
 		if queryErr != nil {
