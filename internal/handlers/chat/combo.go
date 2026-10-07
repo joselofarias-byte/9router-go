@@ -385,7 +385,11 @@ func (h *ChatHandler) comboConnection(modelInfo *ModelInfo, excludeIDs []string)
 	if apiKey == "" {
 		apiKey = "public"
 	}
-	return "default", &ConnectionData{APIKey: apiKey}, true, nil
+	const syntheticID = "default"
+	if !isAccountTrustSelectable(modelInfo.Provider, modelInfo.Model, syntheticID) {
+		return "", nil, false, fmt.Errorf("public default route unavailable for provider %s model %s: trust quarantine active", modelInfo.Provider, modelInfo.Model)
+	}
+	return syntheticID, &ConnectionData{APIKey: apiKey}, true, nil
 }
 
 // handleComboFallback iterates through combo model entries, trying each one.

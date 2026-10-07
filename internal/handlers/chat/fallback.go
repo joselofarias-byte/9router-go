@@ -53,7 +53,14 @@ func (h *ChatHandler) handleAccountFallback(
 			if apiKey == "" {
 				apiKey = "public"
 			}
-			return h.tryForwardWithConnection(ctx, w, provider, model, "default", &ConnectionData{APIKey: apiKey}, body, isStream, translateResponse, endpoint)
+			syntheticID := "default"
+			if cfg.NoAuth {
+				syntheticID = "noauth"
+			}
+			if !isAccountTrustSelectable(provider, model, syntheticID) {
+				return fmt.Errorf("public route %s/%s unavailable: trust quarantine active", provider, model)
+			}
+			return h.tryForwardWithConnection(ctx, w, provider, model, syntheticID, &ConnectionData{APIKey: apiKey}, body, isStream, translateResponse, endpoint)
 		}
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
