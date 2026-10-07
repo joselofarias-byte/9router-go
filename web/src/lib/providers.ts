@@ -230,7 +230,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#00D4AA",
     "icon": "edit_note",
     "website": "https://cursor.com",
-    "notice": {"signupUrl":"https://cursor.com"},
+    "notice": {"text":"Cursor Hobby is free with no card, limited Agent requests and Composer. OAuth/proxy usefulness depends on the current free entitlement.","signupUrl":"https://cursor.com"},
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -244,7 +244,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#333333",
     "icon": "code",
     "website": "https://github.com/features/copilot",
-    "notice": {"signupUrl":"https://github.com/features/copilot"},
+    "notice": {"text":"Copilot Free is $0 with no card and includes Copilot CLI plus limited monthly usage. Good candidate for 9router testing.","signupUrl":"https://github.com/features/copilot"},
     "authType": "apikey",
     "noAuth": false,
     "serviceKinds": [
@@ -260,7 +260,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#FC6D26",
     "icon": "code",
     "website": "https://gitlab.com",
-    "notice": {"signupUrl":"https://gitlab.com"},
+    "notice": {"text":"GitLab Free itself does not include permanent Duo AI credits; an Ultimate trial currently gives 30 days and 24 Duo credits per user.","signupUrl":"https://gitlab.com"},
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -383,7 +383,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#EC4899",
     "icon": "water_drop",
     "website": "https://qoder.com",
-    "notice": {"signupUrl":"https://qoder.com"},
+    "notice": {"text":"Qoder Free includes a 2-week Pro trial, then limited completions/next edits and BYOK. Do not count on ongoing free agent inference after the trial.","signupUrl":"https://qoder.com"},
     "authHint": "Personal Access Token (pt-...) từ https://qoder.com/account/integrations",
     "noAuth": false,
     "authModes": ["oauth", "apikey"],
@@ -463,7 +463,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#4285F4",
     "icon": "terminal",
     "website": "https://github.com/google-gemini/gemini-cli",
-    "notice": {"signupUrl":"https://github.com/google-gemini/gemini-cli"},
+    "notice": {"text":"Consumer free Google sign-in stopped serving Gemini CLI requests on June 18, 2026. Use Antigravity or the Gemini API-key provider instead; enterprise/API-key access remains separate.","signupUrl":"https://github.com/google-gemini/gemini-cli"},
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -477,7 +477,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#FF6B35",
     "icon": "psychology_alt",
     "website": "https://kiro.dev",
-    "notice": {"signupUrl":"https://kiro.dev"},
+    "notice": {"text":"Kiro Free: 50 credits/month; open-weight models and Claude Sonnet 4.5 subject to rate limits.","signupUrl":"https://kiro.dev"},
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -568,7 +568,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#F38020",
     "icon": "cloud",
     "website": "https://developers.cloudflare.com/workers-ai/",
-    "notice": {"text":"Workers AI free tier. Requires a Cloudflare API token and Account ID.","apiKeyUrl":"https://dash.cloudflare.com/profile/api-tokens"},
+    "notice": {"text":"Workers AI Free includes 10,000 Neurons/day on eligible models. Requires a Cloudflare API token and Account ID.","apiKeyUrl":"https://dash.cloudflare.com/profile/api-tokens"},
     "authType": "apikey",
     "noAuth": false,
     "serviceKinds": [
@@ -711,7 +711,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#ffffffff",
     "icon": "cloud",
     "website": "https://ollama.com",
-    "notice": {"text":"Free tier: light usage, 1 cloud model at a time (limits reset every 5h & 7d). Pro $20/mo · Max $100/mo.","apiKeyUrl":"https://ollama.com/settings/keys"},
+    "notice": {"text":"Free plan: starter monthly usage credits for starter cloud models, plus unlimited local models; 1 concurrent cloud request.","apiKeyUrl":"https://ollama.com/settings/keys"},
     "authType": "apikey",
     "noAuth": false,
     "priority": 30,
@@ -728,7 +728,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#F97316",
     "icon": "router",
     "website": "https://openrouter.ai",
-    "notice": {"text":"Free tier: 27+ free models, no credit card needed, 200 req/day. After  0 credit: 1,000 req/day.","apiKeyUrl":"https://openrouter.ai/settings/keys"},
+    "notice": {"text":"Free plan: 25+ free models, API access, no payment method, currently 50 requests/day.","apiKeyUrl":"https://openrouter.ai/settings/keys"},
     "authType": "apikey",
     "noAuth": false,
     "priority": 10,
@@ -1931,7 +1931,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "color": "#888888",
     "icon": "dns",
     "website": "https://www.trae.ai",
-    "notice": {"signupUrl":"https://www.trae.ai"},
+    "notice": {"text":"TRAE currently offers a 14-day Pro trial for new users; ongoing AI membership is paid.","signupUrl":"https://www.trae.ai"},
     "authType": "oauth",
     "noAuth": false,
     "serviceKinds": [
