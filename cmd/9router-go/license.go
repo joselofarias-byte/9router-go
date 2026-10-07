@@ -62,6 +62,12 @@ func licenseCommand() *cli.Command {
 				Action:  licenseRenewAction,
 			},
 			{
+				Name:    "release",
+				Aliases: []string{"desvincular"},
+				Usage:   "Release this installation so the license seat can be reused",
+				Action:  licenseReleaseAction,
+			},
+			{
 				Name:   "menu",
 				Usage:  "Open the simple interactive license menu",
 				Action: licenseMenuAction,
@@ -80,6 +86,7 @@ func licenseMenuAction(cCtx *cli.Context) error {
 		fmt.Println("1) Activar Pro")
 		fmt.Println("2) Ver estado")
 		fmt.Println("3) Renovar licencia")
+		fmt.Println("4) Desvincular este dispositivo")
 		fmt.Println("0) Volver")
 		fmt.Print("> ")
 
@@ -106,6 +113,10 @@ func licenseMenuAction(cCtx *cli.Context) error {
 		case "3":
 			if err := renewLicense(cCtx.Context); err != nil {
 				fmt.Printf("Renovacion fallida: %v\n", err)
+			}
+		case "4":
+			if err := releaseLicense(cCtx.Context); err != nil {
+				fmt.Printf("Desvinculacion fallida: %v\n", err)
 			}
 		case "0", "q", "quit", "salir":
 			return nil
@@ -171,6 +182,11 @@ func licenseRenewAction(cCtx *cli.Context) error {
 	return renewLicense(cCtx.Context)
 }
 
+func licenseReleaseAction(cCtx *cli.Context) error {
+	return releaseLicense(cCtx.Context)
+}
+
+
 func activateLicense(ctx context.Context, code string) error {
 	client, err := newLicenseClient()
 	if err != nil {
@@ -206,6 +222,20 @@ func renewLicense(ctx context.Context) error {
 	if result.RenewalAfter > 0 {
 		fmt.Printf("Proxima renovacion sugerida en: %s\n", result.RenewalAfter.Round(time.Minute))
 	}
+	return nil
+}
+
+func releaseLicense(ctx context.Context) error {
+	client, err := newLicenseClient()
+	if err != nil {
+		return err
+	}
+	if err := client.Release(ctx); err != nil {
+		return err
+	}
+	fmt.Println()
+	fmt.Println("Dispositivo desvinculado correctamente.")
+	fmt.Println("El asiento de licencia ya puede reutilizarse.")
 	return nil
 }
 
