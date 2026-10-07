@@ -281,6 +281,11 @@ func mountOAuthRoutes(r interface {
 	r.Get("/api/oauth/kiro/auto-import", oauthH.HandleKiroAutoImport)
 	r.Post("/api/oauth/kiro/api-key", oauthH.HandleKiroAPIKey)
 	r.Post("/api/oauth/codex/bulk-import", oauthH.HandleOAuthCodexBulkImport)
+	// Preferred Codex login: delegate OAuth to the installed official Codex CLI.
+	// The existing PKCE proxy remains below as a compatibility fallback.
+	r.Post("/api/oauth/codex/cli-login/start", oauthH.HandleCodexCLIStart)
+	r.Get("/api/oauth/codex/cli-login/status", oauthH.HandleCodexCLIStatus)
+	r.Post("/api/oauth/codex/cli-login/cancel", oauthH.HandleCodexCLICancel)
 	r.Post("/api/oauth/grok-cli/bulk-import", oauthH.HandleOAuthGrokCliBulkImport)
 	r.Post("/api/oauth/freebuff/initiate", oauthH.HandleFreebuffInitiate)
 	r.Post("/api/oauth/freebuff/poll", oauthH.HandleFreebuffPoll)

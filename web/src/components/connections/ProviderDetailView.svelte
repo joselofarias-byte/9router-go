@@ -332,6 +332,8 @@
   // Codex completes its login on a server-owned loopback listener, so the
   // modal watches the server instead of the browser callback page.
   let codexPollTimer: ReturnType<typeof setInterval> | null = $state(null)
+  let codexCliSessionId = $state('')
+  let codexCliMode = $state(false)
 
   function dashboardCallback(): string {
     return dashboardCallbackURL(dashboardOrigin())
@@ -1338,6 +1340,10 @@
     callbackInput = ''
     copiedAuthUrl = false
     try {
+      if (providerId === 'codex') {
+        const delegated = await openCodexCLILogin()
+        if (delegated) return
+      }
       // Codex cannot use the dashboard callback: OpenAI only accepts the
       // redirect URI registered for the Codex CLI client.
       const cb = providerId === 'codex' ? CODEX_REDIRECT_URI : dashboardCallback()
@@ -1375,6 +1381,83 @@
       }
     } catch (err) {
       alert(`Failed to initiate authorization: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Preferred path: exactly like AnyClaw, let the installed Codex CLI own
+  // OAuth end-to-end. If the CLI is absent we fall back to the legacy manual
+  // PKCE implementation below instead of making Codex login unavailable.
+  async function openCodexCLILogin(): Promise<boolean> {
+    // Reserve the browser tab synchronously while this click still carries a
+    // user gesture. Opening it only after the API await is what Chrome reports
+    // as a blocked popup and encourages repeated Login clicks/new OAuth states.
+    const popup =
+      typeof window !== 'undefined'
+        ? window.open('about:blank', '_blank', 'width=600,height=700')
+        : null
+
+    try {
+      const res = await api.codexCLIStartLogin()
+      if (!res.success) {
+        try {
+          popup?.close()
+        } catch {
+          /* noop */
+        }
+        if (res.reason === 'codex_not_found') return false
+        throw new Error(
+          res.reason === 'url_timeout'
+            ? 'Codex CLI started but did not provide an authorization URL'
+            : 'Codex CLI login could not be started',
+        )
+      }
+      if (!res.sessionId || !res.authUrl) {
+        throw new Error('Codex CLI login returned an incomplete session')
+      }
+
+      stopCodexPoll()
+      codexCliMode = true
+      codexCliSessionId = res.sessionId
+      pkceState = res.sessionId
+      oauthAuthUrl = res.authUrl
+      showOAuthModal = true
+      codexPollTimer = setInterval(pollCodexCLIStatus, 1500)
+
+      if (popup && !popup.closed) {
+        popup.location.replace(oauthAuthUrl)
+      }
+      return true
+    } catch (err) {
+      try {
+        popup?.close()
+      } catch {
+        /* noop */
+      }
+      throw err
+    }
+  }
+
+  async function pollCodexCLIStatus() {
+    if (!codexCliSessionId) return
+    try {
+      const res = await api.codexCLIStatus(codexCliSessionId)
+      if (res.status === 'done') {
+        stopCodexPoll()
+        codexCliSessionId = ''
+        codexCliMode = false
+        showOAuthModal = false
+        onRefresh()
+      } else if (res.status === 'error') {
+        stopCodexPoll()
+        codexCliSessionId = ''
+        oauthError = res.error || 'Codex CLI authorization failed'
+      } else if (res.status === 'unknown') {
+        stopCodexPoll()
+        codexCliSessionId = ''
+        oauthError = 'The Codex CLI login session is no longer available. Click Login to try again.'
+      }
+    } catch {
+      // A transient dashboard request failure should not kill an active login.
     }
   }
 
@@ -1436,6 +1519,12 @@
     stopDevicePoll()
     stopCodexPoll()
     if (providerId === 'codex') {
+      codexCliMode = false
+      if (codexCliSessionId) {
+        const sessionId = codexCliSessionId
+        codexCliSessionId = ''
+        void api.codexCLICancel(sessionId).catch(() => {})
+      }
       void api.codexStopProxy().catch(() => {})
     }
   }
@@ -4059,7 +4148,7 @@
             <p class="text-2xl font-mono font-bold tracking-[0.3em] text-text-main select-all">{deviceUserCode}</p>
           </div>
         {/if}
-        {#if oauthAuthUrl}
+        {#if oauthAuthUrl && !(providerId === 'codex' && codexCliMode)}
           <div>
             <p class="text-sm font-medium mb-1">Step 1: Open this URL in your browser</p>
           <div class="flex gap-2">
@@ -4111,6 +4200,15 @@
             </div>
           </div>
         {/if}
+        {#if providerId === 'codex' && codexCliMode}
+          <div class="p-4 border border-border rounded-md bg-sidebar/50 text-center">
+            <span class="material-symbols-outlined text-xl animate-spin text-primary">progress_activity</span>
+            <p class="text-sm font-medium text-text-main mt-2">Waiting for browser authorization…</p>
+            <p class="text-[11px] text-text-muted mt-1">
+              Nothing to paste or submit here. Finish signing in in the browser and this dialog will close automatically.
+            </p>
+          </div>
+        {:else}
         <div>
           <p class="text-sm font-medium mb-1">
             {providerId === 'freebuff'
@@ -4140,12 +4238,26 @@
                   : 'Paste the access token here, then click Connect.'}
           </p>
         </div>
+        {/if}
 
         {#if oauthError}
           <p class="text-xs text-red-500">{oauthError}</p>
         {/if}
 
         <div class="flex gap-2 pt-2">
+          {#if providerId === 'codex' && codexCliMode}
+          <button
+            type="button"
+            onclick={() => {
+              if (oauthAuthUrl && typeof window !== 'undefined') {
+                window.open(oauthAuthUrl, '_blank', 'width=600,height=700')
+              }
+            }}
+            class="flex-1 py-1.5 text-xs font-semibold rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-main border border-border cursor-pointer"
+          >
+            Reopen login
+          </button>
+          {:else}
           <button
             type="button"
             onclick={() => {
@@ -4160,9 +4272,14 @@
           >
             {isConnecting ? 'Checking…' : deviceUserCode ? 'Check now' : providerId === 'freebuff' ? 'Check & Connect' : 'Connect'}
           </button>
+          {/if}
           <button
             type="button"
             onclick={() => {
+              if (providerId === 'codex') {
+                closeOAuthModal()
+                return
+              }
               showOAuthModal = false
               stopDevicePoll()
               if (freebuffPollTimer) {
