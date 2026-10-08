@@ -63,7 +63,7 @@
 
       const name = quickConnectionName(preset, providerId, connections)
       const chosenModel = modelId
-      await api.createConnection({
+      const created = await api.createConnection({
         provider: providerId,
         authType: preset.providerId ? 'apikey' : 'compatible',
         name,
@@ -75,6 +75,12 @@
           providerSpecificData: { assignedModel: chosenModel },
         } : {}),
       })
+
+      // Experimental gateways are configured but quarantined (inactive) until
+      // the owner explicitly validates them. Do not send private code automatically.
+      if (preset.tier === 'experimental' && created.id) {
+        await api.updateConnection(created.id, { isActive: 0 })
+      }
 
       // Compatible endpoints need an initial model in the custom model list.
       let modelError = ''
@@ -91,7 +97,9 @@
       }
       apiKey = ''
       onRefresh()
-      result = modelError || 'Clave guardada. Falta validar la inferencia y el coste del modelo.'
+      result = modelError || (preset.tier === 'experimental'
+        ? 'Clave guardada en cuarentena (inactiva). Validá el proveedor antes de activarlo.'
+        : 'Clave guardada. Falta validar la inferencia y el coste del modelo.')
       onSelectProvider(providerId)
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause)
