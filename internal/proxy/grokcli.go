@@ -34,21 +34,40 @@ func streamHeaders(headers map[string]string, isStream bool) {
 	}
 }
 
-// ForwardGrokCLI forwards to grok-cli using OpenAI Responses API format.
-// Body transformation (Chat→Responses API) is done by the caller.
-func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
-	headers := map[string]string{
-		"User-Agent":               "grok-shell/0.2.99 (linux; x86_64)",
-		"x-grok-client-identifier": "grok-shell",
-		"x-grok-client-version":    "0.2.99",
+func grokCLIModelOverride(body []byte) string {
+	var payload struct {
+		Model string `json:"model"`
 	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if model := strings.TrimSpace(payload.Model); model != "" {
+			return model
+		}
+	}
+	return "grok-build"
+}
+
+// ForwardGrokCLI forwards to the official Grok CLI chat proxy using the
+// Responses API shape produced by the caller. xAI version-gates this surface,
+// so keep the compatibility version current and allow an emergency environment
+// override without requiring a new binary release.
+func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
+	headers := map[string]string{}
 	setAuth(headers, cfg, apiKey)
+
+	for k, v := range providers.GrokCLIProxyHeaders("") {
+		headers[k] = v
+	}
+	headers["x-grok-model-override"] = grokCLIModelOverride(body)
 	streamHeaders(headers, isStream)
-	targetURL := cfg.BaseURL
-	if targetURL == "" {
+
+	targetURL := strings.TrimRight(cfg.BaseURL, "/")
+	switch targetURL {
+	case "":
 		targetURL = "https://cli-chat-proxy.grok.com/v1/responses"
-	} else if strings.TrimRight(targetURL, "/") == "https://cli-chat-proxy.grok.com" {
-		targetURL = "https://cli-chat-proxy.grok.com/v1/responses"
+	case "https://cli-chat-proxy.grok.com":
+		targetURL += "/v1/responses"
+	case "https://cli-chat-proxy.grok.com/v1":
+		targetURL += "/responses"
 	}
 	return DoRequest(ctx, client, "POST", targetURL, headers, body)
 }

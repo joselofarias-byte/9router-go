@@ -205,13 +205,15 @@ func TestSetupServerRouter_SPARoutes(t *testing.T) {
 		t.Errorf("expected GET /providers/anthropic.png to return 200, got %d", wAsset.Code)
 	}
 
-	// PWA shell files referenced by index.html must be served at root
+	// PWA installability is deliberately retired: 9router is the already-running
+	// localhost gateway, so these old shell files must stay absent instead of
+	// making browsers offer to "install 9router-go" from inside 9router-go.
 	for _, p := range []string{"/sw.js", "/manifest.webmanifest", "/manifest.json"} {
 		req := httptest.NewRequest("GET", p, nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("expected GET %s to return 200, got %d", p, w.Code)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected retired PWA route GET %s to return 404, got %d", p, w.Code)
 		}
 	}
 
