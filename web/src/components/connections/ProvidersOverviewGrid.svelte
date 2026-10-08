@@ -4,6 +4,7 @@
   import Button from '../../lib/ui/Button.svelte'
   import { PROVIDER_CATALOG, isChatProvider } from '../../lib/providers'
   import ProviderCard from './ProviderCard.svelte'
+  import QuickApiConnect from './QuickApiConnect.svelte'
   import { getProviderStats, matchesFilter, matchesSearch } from './types'
 
   interface Props {
@@ -13,6 +14,7 @@
     onToggleAll: (id: string, active: boolean) => void
     onAddAnthropic: () => void
     onAddOpenAI: () => void
+    onRefresh: () => void
   }
 
   let {
@@ -22,6 +24,7 @@
     onToggleAll,
     onAddAnthropic,
     onAddOpenAI,
+    onRefresh,
   }: Props = $props()
 
   let searchQuery = $state('')
@@ -92,6 +95,8 @@
       <option value="not_connected">Not Connected</option>
     </select>
   </div>
+
+  <QuickApiConnect {connections} {providerNodes} {onRefresh} {onSelectProvider} />
 
   <!-- 1. Custom Providers -->
   <div class="flex flex-col gap-4">

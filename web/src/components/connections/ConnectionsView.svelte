@@ -79,6 +79,7 @@
       onSelectProvider?.(id)
     }}
     onToggleAll={handleToggleAll}
+    {onRefresh}
     onAddAnthropic={() => (showAddAnthropicModal = true)}
     onAddOpenAI={() => (showAddOpenAIModal = true)}
   />
