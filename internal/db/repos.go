@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	json "encoding/json/v2"
 	"fmt"
 	"strings"
@@ -454,12 +455,59 @@ func (r *Repo) UpdateProviderNode(id, name, data string) (*models.ProviderNode, 
 	return &node, nil
 }
 
-// DeleteProviderNode deletes a provider node and its associated connections.
+var (
+	// ErrProviderNodeNotFound means no custom provider node exists for the
+	// supplied id. This is not permission to delete matching built-in accounts.
+	ErrProviderNodeNotFound = errors.New("provider node not found")
+	ErrProviderNodeNotDeletable = errors.New("cannot delete a built-in provider as a node")
+)
+
+// DeleteProviderNode removes an existing CUSTOM node and its attached accounts
+// atomically. Previously this unconditionally deleted providerConnections by
+// id even when DELETE providerNodes affected zero rows: deleting the
+// nonexistent "grok-cli" node could wipe all of the built-in Grok connections.
 func (r *Repo) DeleteProviderNode(id string) error {
-	if _, err := r.db.Exec("DELETE FROM providerNodes WHERE id = ?", id); err != nil {
-		return fmt.Errorf("delete provider node %s: %w", id, err)
+	expectedType := ""
+	switch {
+	case strings.HasPrefix(id, "openai-compatible-"):
+		expectedType = "openai-compatible"
+	case strings.HasPrefix(id, "anthropic-compatible-"):
+		expectedType = "anthropic-compatible"
+	default:
+		return ErrProviderNodeNotDeletable
 	}
-	_, _ = r.db.Exec("DELETE FROM providerConnections WHERE provider = ?", id)
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete provider node %s: begin transaction: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var nodeType sql.NullString
+	err = tx.QueryRow("SELECT type FROM providerNodes WHERE id = ? LIMIT 1", id).Scan(&nodeType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrProviderNodeNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("delete provider node %s: read node: %w", id, err)
+	}
+	if !nodeType.Valid || nodeType.String != expectedType {
+		return ErrProviderNodeNotDeletable
+	}
+
+	if _, err = tx.Exec("DELETE FROM providerConnections WHERE provider = ?", id); err != nil {
+		return fmt.Errorf("delete provider node %s: delete connections: %w", id, err)
+	}
+	result, err := tx.Exec("DELETE FROM providerNodes WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete provider node %s: delete node: %w", id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("delete provider node %s: node vanished during deletion", id)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("delete provider node %s: commit: %w", id, err)
+	}
 	return nil
 }
 
