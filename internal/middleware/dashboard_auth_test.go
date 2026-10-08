@@ -97,6 +97,9 @@ func TestRequireDashboardAuth(t *testing.T) {
 	if rec := serve(httptest.NewRequest(http.MethodGet, "/api/connections", nil)); rec.Code != http.StatusOK {
 		t.Errorf("expected open dashboard when requireLogin=false, got %d", rec.Code)
 	}
+	if rec := serve(inferenceReq); rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected inference-only key to be denied even with dashboard login disabled, got %d", rec.Code)
+	}
 	// Always-protected routes reject client API key even if key is valid.
 	apiDbReq := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	apiDbReq.Header.Set("Authorization", "Bearer valid-token")
