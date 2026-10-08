@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/db"
 )
 
@@ -288,6 +289,47 @@ func TestExtractApiKey(t *testing.T) {
 			got := ExtractApiKey(tt.req)
 			if got != tt.expected {
 				t.Errorf("ExtractApiKey() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestInferenceOnlyKeyMethodAndPathScope(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	key := auth.InferenceOnlyKeyPrefix + "middleware-test"
+	if err := repo.CreateApiKey("scoped-test", key, "Chatbox client", ""); err != nil {
+		t.Fatalf("create scoped key: %v", err)
+	}
+	gate := RequireApiKey(repo)(okHandler())
+
+	tests := []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/v1/models?scope=connected", http.StatusOK},
+		{http.MethodPost, "/v1/chat/completions", http.StatusOK},
+		{http.MethodPost, "/chat/completions", http.StatusOK},
+		{http.MethodPost, "/v1/responses", http.StatusOK},
+		{http.MethodPost, "/v1/images/generations", http.StatusOK},
+		{http.MethodGet, "/api/models", http.StatusOK},
+		{http.MethodGet, "/api/usage/stream", http.StatusForbidden},
+		{http.MethodPost, "/api/keys", http.StatusForbidden},
+		{http.MethodPost, "/api/oauth/antigravity/exchange", http.StatusForbidden},
+		{http.MethodPost, "/api/headroom/start", http.StatusForbidden},
+		{http.MethodGet, "/debug/traces", http.StatusForbidden},
+		{http.MethodDelete, "/v1/models", http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.Header.Set("Authorization", "Bearer "+key)
+			rec := httptest.NewRecorder()
+			gate.ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status=%d, want=%d: %s", rec.Code, tt.want, rec.Body.String())
 			}
 		})
 	}
