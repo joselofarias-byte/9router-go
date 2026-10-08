@@ -123,6 +123,13 @@
     <ChevronDown class="h-4 w-4 text-text-muted transition-transform {expanded ? 'rotate-180' : ''}" />
   </button>
   {#if expanded}
+    <div class="border-t border-border px-4 py-3 bg-surface-2/40 text-xs text-text-muted">
+      <p class="mb-1 font-medium text-text-main">Conectar Chatbox usando solo una clave</p>
+      <p>Primero guardá acá las claves de tus proveedores. Después creá una clave de cliente para Chatbox en Endpoint; así Chatbox no necesita conocer todas las otras API keys.</p>
+      <a href="/dashboard/endpoint" class="inline-block mt-2 text-brand-500 underline">
+        Ir a Endpoint → claves de cliente para Chatbox
+      </a>
+    </div>
     <form onsubmit={saveConnection} class="border-t border-border px-4 py-4 flex flex-col gap-3">
       <p class="text-xs text-text-muted">
         Elegí un proveedor, pegá la API key y guardá. El endpoint se configura solo; no se realiza ninguna consulta
