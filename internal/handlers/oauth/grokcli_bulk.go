@@ -26,6 +26,8 @@ type GrokCliImportItem struct {
 	ExpiresInCamel       float64        `json:"expiresIn"`
 	ExpiresAt            string         `json:"expires_at"`
 	ExpiresAtCamel       string         `json:"expiresAt"`
+	Expired               string         `json:"expired"`
+	LastRefresh           string         `json:"last_refresh"`
 	DisplayName          string         `json:"displayName"`
 	Name                 string         `json:"name"`
 	ProviderSpecificData map[string]any `json:"providerSpecificData"`
@@ -59,11 +61,23 @@ func (item *GrokCliImportItem) GetExpiresAt() string {
 	if item.ExpiresAtCamel != "" {
 		return item.ExpiresAtCamel
 	}
+	// CPA xAI exports provide the absolute expiry as "expired", not "expires_at".
+	// It must not be shifted forward if the file is imported later.
+	if item.Expired != "" {
+		return item.Expired
+	}
 	expIn := item.ExpiresIn
 	if expIn <= 0 {
 		expIn = item.ExpiresInCamel
 	}
 	if expIn > 0 {
+		// When available, anchor relative expiry to the source refresh time.
+		// Using import time would artificially extend stale credentials.
+		if item.LastRefresh != "" {
+			if refreshedAt, err := time.Parse(time.RFC3339, item.LastRefresh); err == nil {
+				return refreshedAt.Add(time.Duration(expIn) * time.Second).UTC().Format(time.RFC3339)
+			}
+		}
 		return time.Now().Add(time.Duration(expIn) * time.Second).UTC().Format(time.RFC3339)
 	}
 	return ""
