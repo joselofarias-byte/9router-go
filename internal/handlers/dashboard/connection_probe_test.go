@@ -520,3 +520,27 @@ func TestHandleTestConnectionReadsRequestBody(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+
+func TestGrokCLIProbeHeadersUseCurrentIdentity(t *testing.T) {
+	t.Setenv("GROK_CLI_CLIENT_VERSION", "1.2.3-test")
+	h := grokCLIProbeHeaders()
+	if h["x-grok-client-version"] != "1.2.3-test" {
+		t.Fatalf("client version = %q", h["x-grok-client-version"])
+	}
+	if h["x-grok-client-identifier"] != "grok-shell" {
+		t.Fatalf("client identifier = %q", h["x-grok-client-identifier"])
+	}
+	if h["X-XAI-Token-Auth"] != "xai-grok-cli" {
+		t.Fatalf("token auth = %q", h["X-XAI-Token-Auth"])
+	}
+	if h["x-authenticateresponse"] != "authenticate-response" {
+		t.Fatalf("authenticate response = %q", h["x-authenticateresponse"])
+	}
+	if h["x-grok-client-mode"] != "headless" {
+		t.Fatalf("client mode = %q", h["x-grok-client-mode"])
+	}
+	if h["Accept"] != "application/json" {
+		t.Fatalf("accept = %q", h["Accept"])
+	}
+}
