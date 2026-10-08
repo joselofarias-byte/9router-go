@@ -5,6 +5,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"net/http"
+	"strings"
 )
 
 // RequireDashboardAuth gates the dashboard REST API behind the login session
@@ -66,6 +67,14 @@ func RequireAdminAuth() func(http.Handler) http.Handler {
 func RequireDashboardAuth(repo *db.Repo) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// This key authenticates inference only, never dashboard management.
+			// Test BEFORE the requireLogin=false fast path so explicitly presenting
+			// a restricted key cannot be misinterpreted as management access.
+			if strings.HasPrefix(ExtractApiKey(r), auth.InferenceOnlyKeyPrefix) &&
+				!auth.SessionValid(r) && !auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) {
+				handlerutil.WriteJSONError(w, http.StatusUnauthorized, "Unauthorized: inference-only API key")
+				return
+			}
 			// Always-protected routes strictly require valid session cookie or CLI token (upstream parity).
 			// API keys and requireLogin=false are forbidden here.
 			if IsAlwaysProtectedPath(r.URL.Path) {
@@ -86,6 +95,8 @@ func RequireDashboardAuth(repo *db.Repo) func(http.Handler) http.Handler {
 				return
 			}
 			if key := ExtractApiKey(r); key != "" {
+				// A client key generated for Chatbox must not manage accounts,
+				// view dashboard data, or mint additional client keys.
 				if obj, err := repo.GetApiKeyByKey(key); err == nil && obj != nil && obj.IsActive == 1 {
 					next.ServeHTTP(w, r)
 					return

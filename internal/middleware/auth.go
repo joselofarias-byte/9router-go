@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
@@ -46,10 +47,46 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Inference-only Chatbox keys must be restricted to model-serving routes.
+			if strings.HasPrefix(apiKeyObj.Key, auth.InferenceOnlyKeyPrefix) && !IsInferenceOnlyRequest(r.Method, r.URL.Path) {
+				handlerutil.WriteJSONError(w, http.StatusForbidden, "Inference-only key cannot access this API route")
+				return
+			}
+
 			// Inject API Key info into the request context for downstream handlers/logging
 			ctx := context.WithValue(r.Context(), ApiKeyContextKey, apiKeyObj)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
+	}
+}
+
+// IsInferenceOnlyRequest is a method+path allowlist for inference-only keys.
+// New management routes do not accidentally become accessible to Chatbox.
+func IsInferenceOnlyRequest(method, requestPath string) bool {
+	path := requestPath
+	for _, prefix := range []string{"/api/v1/", "/v1/", "/api/"} {
+		if strings.HasPrefix(path, prefix) {
+			path = "/" + strings.TrimPrefix(path, prefix)
+			break
+		}
+	}
+	if method == http.MethodGet {
+		return path == "/models" || strings.HasPrefix(path, "/models/") ||
+			path == "/audio/voices" || strings.HasPrefix(path, "/videos/")
+	}
+	if method != http.MethodPost {
+		return false
+	}
+	switch path {
+	case "/chat/completions", "/messages", "/messages/count_tokens",
+		"/responses", "/responses/compact",
+		"/embeddings", "/images/generations",
+		"/audio/speech", "/audio/transcriptions",
+		"/videos/generations", "/videos/edits", "/videos/extensions",
+		"/search", "/scrape", "/systemone":
+		return true
+	default:
+		return false
 	}
 }
 
