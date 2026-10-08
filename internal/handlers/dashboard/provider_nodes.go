@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/db"
 )
 
 // ProviderNodeResponse is the JSON representation of a provider node with unpacked data fields.
@@ -310,7 +311,14 @@ func (h *DashboardHandler) HandleDeleteProviderNode(w http.ResponseWriter, r *ht
 	}
 
 	if err := h.Repo.DeleteProviderNode(id); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		switch {
+		case errors.Is(err, db.ErrProviderNodeNotFound):
+			handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, db.ErrProviderNodeNotDeletable):
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
