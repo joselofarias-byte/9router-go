@@ -24,6 +24,7 @@ func IsAlwaysProtectedPath(path string) bool {
 		"/api/version/update",
 		"/admin/health/reset",
 		"/api/oauth/cursor/auto-import",
+		"/api/oauth/grok-cli/bulk-import",
 		"/api/oauth/kiro/auto-import":
 		return true
 	default:
