@@ -14,10 +14,10 @@ describe('personal quick API keys', () => {
 
   it('reuses only matching compatible nodes, never another URL with same prefix', () => {
     const preset = getQuickApiPreset('unorouter')!
-    assert.deepEqual(matchingQuickNode(preset, [
+    assert.equal(matchingQuickNode(preset, [
       { id: 'bad', type: 'openai-compatible', prefix: 'unorouter-personal', name: 'Wrong', baseUrl: 'https://evil.example/v1' },
       { id: 'good', type: 'openai-compatible', prefix: 'unorouter-personal', name: 'UnoRouter', baseUrl: 'https://api.unorouter.com/v1/' },
-    ]), { id: 'good' })
+    ])?.id, 'good')
     assert.equal(matchingQuickNode(preset, []), null)
   })
 
