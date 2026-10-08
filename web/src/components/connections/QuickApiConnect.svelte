@@ -18,6 +18,11 @@
   let submitting = $state(false)
   let error = $state('')
   let result = $state('')
+  let newChatboxKey = $state('')
+  let showChatboxKey = $state(false)
+  let generatingChatboxKey = $state(false)
+  let chatboxKeyError = $state('')
+  let chatboxKeyNotice = $state('')
 
   let selected = $derived(QUICK_API_PRESETS.find((p) => p.id === presetId) ?? QUICK_API_PRESETS[0])
   let modelId = $derived(customModelId.trim() || selected.defaultModel || '')
@@ -25,6 +30,45 @@
     selected.providerId ? c.provider === selected.providerId
       : providerNodes.some((n) => n.id === c.provider && n.prefix === selected.prefix && n.baseUrl?.replace(/\/+$/, '') === selected.baseUrl)
   ).length)
+
+  async function generateChatboxClientKey() {
+    if (generatingChatboxKey || newChatboxKey) return
+    generatingChatboxKey = true
+    chatboxKeyError = ''
+    try {
+      const response = await api.createApiKey({
+        name: 'Chatbox personal (solo inferencia)',
+        scope: 'inference',
+      })
+      if (!response.key) throw new Error('El servidor no devolvió una clave.')
+      newChatboxKey = response.key
+      chatboxKeyNotice = 'Nueva clave generada. Copiala a Chatbox → Conexión rápida → 9router local.'
+    } catch (cause) {
+      chatboxKeyError = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      generatingChatboxKey = false
+    }
+  }
+
+  async function copyChatboxClientKey() {
+    if (!newChatboxKey) return
+    try {
+      await navigator.clipboard.writeText(newChatboxKey)
+      chatboxKeyNotice = 'Copiada al portapapeles. Pegala en Chatbox.'
+    } catch {
+      showChatboxKey = true
+      chatboxKeyNotice = 'Usá el campo para copiar la clave manualmente.'
+    }
+  }
+
+  function toggleExpanded() {
+    expanded = !expanded
+    if (!expanded) {
+      newChatboxKey = ''
+      showChatboxKey = false
+      chatboxKeyNotice = ''
+    }
+  }
 
   function selectPreset(id: string) {
     presetId = id
@@ -113,7 +157,7 @@
   <button
     type="button"
     aria-expanded={expanded}
-    onclick={() => (expanded = !expanded)}
+    onclick={toggleExpanded}
     class="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-surface-2 transition-colors"
   >
     <span class="flex items-center gap-2">
@@ -126,9 +170,26 @@
     <div class="border-t border-border px-4 py-3 bg-surface-2/40 text-xs text-text-muted">
       <p class="mb-1 font-medium text-text-main">Conectar Chatbox usando solo una clave</p>
       <p>Primero guardá acá las claves de tus proveedores. Después creá una clave de cliente para Chatbox en Endpoint; así Chatbox no necesita conocer todas las otras API keys.</p>
-      <a href="/dashboard/endpoint" class="inline-block mt-2 text-brand-500 underline">
-        Ir a Endpoint → claves de cliente para Chatbox
-      </a>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <button type="button" onclick={generateChatboxClientKey} disabled={generatingChatboxKey || !!newChatboxKey}
+          class="rounded-lg bg-brand-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
+          {generatingChatboxKey ? 'Creando...' : 'Crear clave para Chatbox (solo inferencia)'}
+        </button>
+        <a href="/dashboard/endpoint" class="text-brand-500 underline">Administrar claves en Endpoint</a>
+      </div>
+      {#if newChatboxKey}
+        <div class="mt-2 flex gap-2 items-center">
+          <input aria-label="Clave nueva para Chatbox" class="min-w-0 flex-1 rounded-lg bg-surface border border-border px-2 py-2 font-mono"
+            readonly value={newChatboxKey} type={showChatboxKey ? 'text' : 'password'} />
+          <button type="button" class="rounded-lg border border-border px-2 py-2" onclick={() => (showChatboxKey = !showChatboxKey)}>
+            {showChatboxKey ? 'Ocultar' : 'Mostrar'}
+          </button>
+          <button type="button" class="rounded-lg border border-border px-2 py-2" onclick={copyChatboxClientKey}>Copiar</button>
+        </div>
+      {/if}
+      {#if chatboxKeyNotice}<p class="mt-2 text-text-muted" role="status">{chatboxKeyNotice}</p>{/if}
+      {#if chatboxKeyError}<p class="mt-2 text-red-500" role="alert">{chatboxKeyError}</p>{/if}
+      <p class="mt-2">La clave especial solo permite usar modelos; no gestiona proveedores ni API keys. Guardá la clave en Chatbox: al cerrar este panel se oculta.</p>
     </div>
     <form onsubmit={saveConnection} class="border-t border-border px-4 py-4 flex flex-col gap-3">
       <p class="text-xs text-text-muted">

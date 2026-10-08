@@ -22,6 +22,9 @@ func TestRequireDashboardAuth(t *testing.T) {
 	repo := db.NewRepo(database)
 
 	gate := RequireDashboardAuth(repo)(okHandler())
+	if err := repo.CreateApiKey("chatbox-client", auth.InferenceOnlyKeyPrefix+"test-client", "Chatbox inference", ""); err != nil {
+		t.Fatalf("seed inference-only key: %v", err)
+	}
 
 	serve := func(req *http.Request) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -39,6 +42,22 @@ func TestRequireDashboardAuth(t *testing.T) {
 	apiKeyReq.Header.Set("Authorization", "Bearer valid-token")
 	if rec := serve(apiKeyReq); rec.Code != http.StatusOK {
 		t.Errorf("expected valid API key to pass, got %d", rec.Code)
+	}
+
+	// Inference-scoped client keys cannot access dashboard CRUD even when
+	// a valid key would otherwise be accepted for legacy CLI compatibility.
+	inferenceReq := httptest.NewRequest(http.MethodPost, "/api/connections", nil)
+	inferenceReq.Header.Set("Authorization", "Bearer "+auth.InferenceOnlyKeyPrefix+"test-client")
+	if rec := serve(inferenceReq); rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for inference-only key accessing dashboard, got %d", rec.Code)
+	}
+	modelGate := RequireApiKey(repo)(okHandler())
+	modelReq := httptest.NewRequest(http.MethodGet, "/v1/models?scope=connected", nil)
+	modelReq.Header.Set("Authorization", "Bearer "+auth.InferenceOnlyKeyPrefix+"test-client")
+	modelRec := httptest.NewRecorder()
+	modelGate.ServeHTTP(modelRec, modelReq)
+	if modelRec.Code != http.StatusOK {
+		t.Errorf("expected inference-only key to access models, got %d", modelRec.Code)
 	}
 
 	// The derived CLI token bypasses the gate; an arbitrary value must not.

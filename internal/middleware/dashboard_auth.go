@@ -5,6 +5,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"net/http"
+	"strings"
 )
 
 // RequireDashboardAuth gates the dashboard REST API behind the login session
@@ -85,6 +86,12 @@ func RequireDashboardAuth(repo *db.Repo) func(http.Handler) http.Handler {
 				return
 			}
 			if key := ExtractApiKey(r); key != "" {
+				// A client key generated for Chatbox must not manage accounts,
+				// view dashboard data, or mint additional client keys.
+				if strings.HasPrefix(key, auth.InferenceOnlyKeyPrefix) {
+					handlerutil.WriteJSONError(w, http.StatusUnauthorized, "Unauthorized: inference-only API key")
+					return
+				}
 				if obj, err := repo.GetApiKeyByKey(key); err == nil && obj != nil && obj.IsActive == 1 {
 					next.ServeHTTP(w, r)
 					return
