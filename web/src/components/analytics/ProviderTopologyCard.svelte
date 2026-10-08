@@ -234,7 +234,7 @@
   bind:this={containerEl}
   role="region"
   aria-label="Provider topology map"
-  class="h-[320px] w-full min-w-0 rounded-lg border border-border bg-bg-subtle/30 sm:h-[480px] relative overflow-hidden select-none cursor-grab active:cursor-grabbing"
+  class="h-[240px] w-full min-w-0 rounded-lg border border-border bg-bg-subtle/30 sm:h-[360px] lg:h-[480px] relative overflow-hidden select-none cursor-grab active:cursor-grabbing"
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}

@@ -21,27 +21,19 @@ type Config struct {
 	Port            int
 	DatabasePath    string
 	JWTSecret       string
-	InitialPassword string
-	APIKeySecret    string
-	MachineIDSalt   string
-	RTKEnabled      bool
+	InitialPassword               string
+	APIKeySecret                  string
+	MachineIDSalt                  string
+	GoogleDriveBackupClientID     string
+	GoogleDriveBackupClientSecret string
+	RTKEnabled                    bool
 	CavemanEnabled  bool
 	PonytailEnabled bool
 }
 
-// NewViper creates and configures a new Viper instance reading from .env with standard defaults.
-func NewViper() *viper.Viper {
-	return NewViperWithFile(".env")
-}
-
-// NewViperWithFile creates and configures a new Viper instance with the specified env file path.
-func NewViperWithFile(configFile string) *viper.Viper {
+// newBaseViper configures environment/default precedence without loading a file.
+func newBaseViper() *viper.Viper {
 	v := viper.New()
-	if configFile != "" {
-		v.SetConfigFile(configFile)
-		v.SetConfigType("env")
-	}
-
 	v.AutomaticEnv()
 
 	v.SetDefault("PORT", 20130)
@@ -50,16 +42,75 @@ func NewViperWithFile(configFile string) *viper.Viper {
 	v.SetDefault("RTK_ENABLED", true)
 	v.SetDefault("CAVEMAN_ENABLED", false)
 	v.SetDefault("PONYTAIL_ENABLED", false)
+	return v
+}
 
-	if configFile != "" {
-		if err := v.ReadInConfig(); err != nil {
-			var configFileNotFoundError viper.ConfigFileNotFoundError
-			if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) && !errors.As(err, &configFileNotFoundError) {
-				log.Warn("config", "read config file failed", "file", configFile, "error", err)
-			}
+// mergeEnvFiles loads lower-priority files first and higher-priority files
+// afterwards. OS environment variables still win because AutomaticEnv has
+// higher precedence than config files.
+func mergeEnvFiles(v *viper.Viper, candidates []string) {
+	if v == nil {
+		return
+	}
+	seen := map[string]struct{}{}
+	loaded := false
+
+	for i := len(candidates) - 1; i >= 0; i-- {
+		path := strings.TrimSpace(candidates[i])
+		if path == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+
+		v.SetConfigFile(path)
+		v.SetConfigType("env")
+		var err error
+		if loaded {
+			err = v.MergeInConfig()
+		} else {
+			err = v.ReadInConfig()
+		}
+		if err != nil {
+			log.Warn("config", "read config file failed", "file", path, "error", err)
+			continue
+		}
+		loaded = true
+	}
+}
+
+// NewViper creates a configured Viper instance. A .env in the working
+// directory has highest file precedence for development/compose setups; the
+// .env next to the executable is the stable fallback for installed daemons.
+func NewViper() *viper.Viper {
+	v := newBaseViper()
+	mergeEnvFiles(v, envFileCandidates())
+	return v
+}
+
+// NewViperWithFile creates and configures a new Viper instance with one
+// explicit env file path. Tests and callers that need a fixed source use this.
+func NewViperWithFile(configFile string) *viper.Viper {
+	v := newBaseViper()
+	if configFile == "" {
+		return v
+	}
+	v.SetConfigFile(configFile)
+	v.SetConfigType("env")
+	if err := v.ReadInConfig(); err != nil {
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) && !errors.As(err, &configFileNotFoundError) {
+			log.Warn("config", "read config file failed", "file", configFile, "error", err)
 		}
 	}
-
 	return v
 }
 
@@ -197,6 +248,9 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 		machineIDSalt = "endpoint-proxy-salt"
 	}
 
+	googleDriveBackupClientID := strings.TrimSpace(v.GetString("GOOGLE_DRIVE_BACKUP_CLIENT_ID"))
+	googleDriveBackupClientSecret := strings.TrimSpace(v.GetString("GOOGLE_DRIVE_BACKUP_CLIENT_SECRET"))
+
 	rtkEnabled := v.GetBool("RTK_ENABLED")
 	cavemanEnabled := v.GetBool("CAVEMAN_ENABLED")
 	ponytailEnabled := v.GetBool("PONYTAIL_ENABLED")
@@ -206,10 +260,12 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 		Port:            port,
 		DatabasePath:    dbPath,
 		JWTSecret:       loadJWTSecret(v, dataDir),
-		InitialPassword: initialPassword,
-		APIKeySecret:    apiKeySecret,
-		MachineIDSalt:   machineIDSalt,
-		RTKEnabled:      rtkEnabled,
+		InitialPassword:               initialPassword,
+		APIKeySecret:                  apiKeySecret,
+		MachineIDSalt:                  machineIDSalt,
+		GoogleDriveBackupClientID:     googleDriveBackupClientID,
+		GoogleDriveBackupClientSecret: googleDriveBackupClientSecret,
+		RTKEnabled:                    rtkEnabled,
 		CavemanEnabled:  cavemanEnabled,
 		PonytailEnabled: ponytailEnabled,
 	}

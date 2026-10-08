@@ -35,7 +35,7 @@ const (
 
 // protectedSettingKeys may never be written by the dashboard client — matches
 // Next's PROTECTED_SETTING_KEYS (the hashed password lives in settings too).
-var protectedSettingKeys = []string{"password", "mitmSudoEncrypted"}
+var protectedSettingKeys = []string{"password", "mitmSudoEncrypted", "googleDriveBackupRefreshToken"}
 
 // writePlainError answers with Next's flat { error: "message" } shape instead of
 // the OpenAI-style envelope, because the dashboard UI reads data.error as text.
@@ -45,7 +45,7 @@ func writePlainError(w http.ResponseWriter, status int, message string) {
 
 // secretSettingKeys are stripped from responses so credentials never leave the
 // server (Next strips password + oidcClientSecret from GET /api/settings).
-var secretSettingKeys = []string{"password", "oidcClientSecret"}
+var secretSettingKeys = []string{"password", "oidcClientSecret", "googleDriveBackupRefreshToken"}
 
 // HandleGetSettings handles GET /api/settings.
 // Reads raw settings data map minus secret keys, mirroring the Next dashboard.

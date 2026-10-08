@@ -37,6 +37,7 @@
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
   import { getIconPath } from './components/connections/types'
+  import { setRuntimeLocale } from './lib/i18n'
 
   let activeTab = $state<ActiveTab>(
     typeof window !== 'undefined' ? pathToTab(window.location.pathname) : 'endpoint'
@@ -121,6 +122,9 @@
       combos = combosRes
       apiKeys = keysRes
       settings = settingsRes
+      if (typeof settingsRes.language === 'string') {
+        void setRuntimeLocale(settingsRes.language)
+      }
     } finally {
       isLoading = false
     }
@@ -337,7 +341,7 @@
         }}
       />
 
-      <main class="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10">
+      <main class="flex-1 overflow-y-auto custom-scrollbar p-3 sm:p-6 lg:p-10">
         <div class="max-w-7xl mx-auto">
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">

@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,8 +24,9 @@ import (
 const (
 	googleDriveBackupScope      = "https://www.googleapis.com/auth/drive.file"
 	googleDriveBackupFolderName = "9router Backups"
-	googleDriveBackupKeep       = 5
-	googleDriveBackupKind       = "9router-encrypted-backup"
+	googleDriveBackupKeep                = 5
+	googleDriveBackupKind                = "9router-encrypted-backup"
+	googleDriveBackupRefreshTokenSetting = "googleDriveBackupRefreshToken"
 )
 
 var (
@@ -44,9 +44,10 @@ type googleBackupState struct {
 }
 
 type googleDriveTokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
 }
 
 type googleDriveFile struct {
@@ -58,13 +59,28 @@ type googleDriveFile struct {
 }
 
 func googleDriveBackupCredentials() (clientID, clientSecret string) {
-	return strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_BACKUP_CLIENT_ID")),
-		strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_BACKUP_CLIENT_SECRET"))
+	cfg := config.LoadConfig()
+	return strings.TrimSpace(cfg.GoogleDriveBackupClientID),
+		strings.TrimSpace(cfg.GoogleDriveBackupClientSecret)
 }
 
 func googleDriveBackupConfigured() bool {
 	id, secret := googleDriveBackupCredentials()
 	return id != "" && secret != ""
+}
+
+func (h *DashboardHandler) googleDriveBackupRefreshToken() string {
+	raw, err := h.Repo.GetSettingsRaw()
+	if err != nil || raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(handlerutil.GetString(raw, googleDriveBackupRefreshTokenSetting))
+}
+
+func (h *DashboardHandler) setGoogleDriveBackupRefreshToken(token string) error {
+	return h.Repo.UpdateSettingsRaw(map[string]any{
+		googleDriveBackupRefreshTokenSetting: strings.TrimSpace(token),
+	})
 }
 
 func googleDriveDefaultRedirectURI() string {
@@ -119,6 +135,21 @@ func consumeGoogleBackupState(state, redirectURI string) bool {
 	return ok && time.Now().Before(expected.ExpiresAt) && expected.RedirectURI == strings.TrimSpace(redirectURI)
 }
 
+
+// HandleGoogleBackupStatus reports whether direct Google Drive backup can be
+// used on this runtime. It never returns OAuth client credentials.
+func (h *DashboardHandler) HandleGoogleBackupStatus(w http.ResponseWriter, r *http.Request) {
+	configured := googleDriveBackupConfigured()
+	connected := configured && h.googleDriveBackupRefreshToken() != ""
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"configured": configured,
+		"connected":  connected,
+		"folder":     googleDriveBackupFolderName,
+		"retention":  googleDriveBackupKeep,
+		"encrypted":  true,
+	})
+}
+
 // HandleGoogleBackupAuthorize starts a one-shot Google Drive authorization.
 // The narrow drive.file scope can only access files the app creates/uses; it
 // does not grant blanket read access to the user's Drive.
@@ -152,9 +183,9 @@ func (h *DashboardHandler) HandleGoogleBackupAuthorize(w http.ResponseWriter, r 
 		"redirect_uri":           {redirectURI},
 		"response_type":          {"code"},
 		"scope":                  {googleDriveBackupScope},
-		"access_type":            {"online"},
+		"access_type":            {"offline"},
 		"include_granted_scopes": {"true"},
-		"prompt":                 {"select_account"},
+		"prompt":                 {"consent select_account"},
 		"state":                  {state},
 	}
 	authURL := googleDriveBackupAuthURL + "?" + q.Encode()
@@ -164,7 +195,7 @@ func (h *DashboardHandler) HandleGoogleBackupAuthorize(w http.ResponseWriter, r 
 		"state":       state,
 		"redirectUri": redirectURI,
 		"scope":       googleDriveBackupScope,
-		"persistent":  false,
+		"persistent":  true,
 	})
 }
 
@@ -187,31 +218,57 @@ func (h *DashboardHandler) HandleGoogleBackupUpload(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// New clients use the persisted refresh token and send an empty body.
+	// The authorization-code path remains accepted for compatibility with
+	// older dashboard builds and also upgrades them to a persistent connection.
 	var body struct {
 		Code        string `json:"code"`
 		RedirectURI string `json:"redirectUri"`
 		State       string `json:"state"`
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil || json.Unmarshal(raw, &body) != nil {
+	if err != nil {
 		writePlainError(w, http.StatusBadRequest, "Invalid Google Drive backup request")
 		return
 	}
-	body.Code = cleanGoogleBackupAuthCode(body.Code)
-	body.RedirectURI = strings.TrimSpace(body.RedirectURI)
-	if body.Code == "" || validateGoogleBackupRedirectURI(body.RedirectURI) != nil {
-		writePlainError(w, http.StatusBadRequest, "Missing authorization code or invalid redirectUri")
-		return
-	}
-	if !consumeGoogleBackupState(body.State, body.RedirectURI) {
-		writePlainError(w, http.StatusBadRequest, "Invalid or expired OAuth state")
-		return
-	}
 
-	accessToken, err := exchangeGoogleBackupCode(r.Context(), body.Code, body.RedirectURI)
-	if err != nil {
-		writePlainError(w, http.StatusBadGateway, err.Error())
-		return
+	accessToken := ""
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writePlainError(w, http.StatusBadRequest, "Invalid Google Drive backup request")
+			return
+		}
+		body.Code = cleanGoogleBackupAuthCode(body.Code)
+		body.RedirectURI = strings.TrimSpace(body.RedirectURI)
+		if body.Code != "" {
+			if validateGoogleBackupRedirectURI(body.RedirectURI) != nil {
+				writePlainError(w, http.StatusBadRequest, "Invalid redirectUri")
+				return
+			}
+			if !consumeGoogleBackupState(body.State, body.RedirectURI) {
+				writePlainError(w, http.StatusBadRequest, "Invalid or expired OAuth state")
+				return
+			}
+			token, exchangeErr := exchangeGoogleBackupCodeTokens(r.Context(), body.Code, body.RedirectURI)
+			if exchangeErr != nil {
+				writePlainError(w, http.StatusBadGateway, exchangeErr.Error())
+				return
+			}
+			accessToken = token.AccessToken
+			if token.RefreshToken != "" {
+				if err := h.setGoogleDriveBackupRefreshToken(token.RefreshToken); err != nil {
+					writePlainError(w, http.StatusInternalServerError, "Failed to save Google Drive connection")
+					return
+				}
+			}
+		}
+	}
+	if accessToken == "" {
+		accessToken, err = h.googleDriveBackupAccessToken(r.Context())
+		if err != nil {
+			writePlainError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
 	}
 
 	payload, err := h.exportDatabase()
@@ -252,7 +309,7 @@ func (h *DashboardHandler) HandleGoogleBackupUpload(w http.ResponseWriter, r *ht
 		"encrypted":      true,
 		"retention":      googleDriveBackupKeep,
 		"rotatedDeleted": deleted,
-		"oauthPersisted": false,
+		"oauthPersisted": true,
 	}
 	if rotateErr != nil {
 		response["rotationWarning"] = "Backup uploaded, but old-backup rotation was incomplete"
@@ -279,6 +336,14 @@ func cleanGoogleBackupAuthCode(raw string) string {
 }
 
 func exchangeGoogleBackupCode(ctx context.Context, code, redirectURI string) (string, error) {
+	token, err := exchangeGoogleBackupCodeTokens(ctx, code, redirectURI)
+	if err != nil {
+		return "", err
+	}
+	return token.AccessToken, nil
+}
+
+func exchangeGoogleBackupCodeTokens(ctx context.Context, code, redirectURI string) (*googleDriveTokenResponse, error) {
 	clientID, clientSecret := googleDriveBackupCredentials()
 	form := url.Values{
 		"code":          {code},
@@ -289,24 +354,135 @@ func exchangeGoogleBackupCode(ctx context.Context, code, redirectURI string) (st
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleDriveBackupTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", errors.New("Failed to create Google token request")
+		return nil, errors.New("Failed to create Google token request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := googleDriveBackupClient.Do(req)
 	if err != nil {
-		return "", errors.New("Google token exchange failed")
+		return nil, errors.New("Google token exchange failed")
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Google token exchange returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("Google token exchange returned status %d", resp.StatusCode)
 	}
 	var token googleDriveTokenResponse
 	if err := json.Unmarshal(data, &token); err != nil || token.AccessToken == "" {
-		return "", errors.New("Google token response did not contain an access token")
+		return nil, errors.New("Google token response did not contain an access token")
+	}
+	return &token, nil
+}
+
+func refreshGoogleBackupAccessToken(ctx context.Context, refreshToken string) (string, error) {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return "", errors.New("Google Drive is not connected")
+	}
+	clientID, clientSecret := googleDriveBackupCredentials()
+	form := url.Values{
+		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"grant_type":    {"refresh_token"},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleDriveBackupTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", errors.New("Failed to create Google refresh request")
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := googleDriveBackupClient.Do(req)
+	if err != nil {
+		return "", errors.New("Google token refresh failed")
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Google token refresh returned status %d", resp.StatusCode)
+	}
+	var token googleDriveTokenResponse
+	if err := json.Unmarshal(data, &token); err != nil || token.AccessToken == "" {
+		return "", errors.New("Google token refresh did not contain an access token")
 	}
 	return token.AccessToken, nil
+}
+
+func (h *DashboardHandler) googleDriveBackupAccessToken(ctx context.Context) (string, error) {
+	if !googleDriveBackupConfigured() {
+		return "", errors.New("Google Drive backup OAuth is not configured")
+	}
+	return refreshGoogleBackupAccessToken(ctx, h.googleDriveBackupRefreshToken())
+}
+
+// HandleGoogleBackupConnect completes the OAuth handshake and persists only
+// the refresh token. Access tokens remain short-lived and are refreshed on
+// demand for backup/list/restore operations.
+func (h *DashboardHandler) HandleGoogleBackupConnect(w http.ResponseWriter, r *http.Request) {
+	if !trustedRequest(r) && !h.verifyDashboardPassword(r.Header.Get(passwordHeader)) {
+		writePlainError(w, http.StatusUnauthorized, "Invalid password")
+		return
+	}
+	if !googleDriveBackupConfigured() {
+		writePlainError(w, http.StatusServiceUnavailable, "Google Drive backup OAuth is not configured")
+		return
+	}
+
+	var body struct {
+		Code        string `json:"code"`
+		RedirectURI string `json:"redirectUri"`
+		State       string `json:"state"`
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil || json.Unmarshal(raw, &body) != nil {
+		writePlainError(w, http.StatusBadRequest, "Invalid Google Drive connection request")
+		return
+	}
+	body.Code = cleanGoogleBackupAuthCode(body.Code)
+	body.RedirectURI = strings.TrimSpace(body.RedirectURI)
+	if body.Code == "" || validateGoogleBackupRedirectURI(body.RedirectURI) != nil {
+		writePlainError(w, http.StatusBadRequest, "Missing authorization code or invalid redirectUri")
+		return
+	}
+	if !consumeGoogleBackupState(body.State, body.RedirectURI) {
+		writePlainError(w, http.StatusBadRequest, "Invalid or expired OAuth state")
+		return
+	}
+
+	token, err := exchangeGoogleBackupCodeTokens(r.Context(), body.Code, body.RedirectURI)
+	if err != nil {
+		writePlainError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if strings.TrimSpace(token.RefreshToken) == "" {
+		writePlainError(w, http.StatusBadGateway, "Google did not return a refresh token; reconnect and grant Drive access")
+		return
+	}
+	if err := h.setGoogleDriveBackupRefreshToken(token.RefreshToken); err != nil {
+		writePlainError(w, http.StatusInternalServerError, "Failed to save Google Drive connection")
+		return
+	}
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"connected": true,
+		"folder":    googleDriveBackupFolderName,
+	})
+}
+
+// HandleGoogleBackupDisconnect forgets the locally stored refresh token.
+// Revoking the Google-side grant remains available from the user's Google
+// account security page; this endpoint only disconnects 9router-go.
+func (h *DashboardHandler) HandleGoogleBackupDisconnect(w http.ResponseWriter, r *http.Request) {
+	if !trustedRequest(r) && !h.verifyDashboardPassword(r.Header.Get(passwordHeader)) {
+		writePlainError(w, http.StatusUnauthorized, "Invalid password")
+		return
+	}
+	if err := h.setGoogleDriveBackupRefreshToken(""); err != nil {
+		writePlainError(w, http.StatusInternalServerError, "Failed to disconnect Google Drive")
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "connected": false})
 }
 
 func ensureGoogleBackupFolder(ctx context.Context, accessToken string) (string, error) {
