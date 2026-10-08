@@ -6,6 +6,8 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"slices"
@@ -39,6 +41,10 @@ func (h *ChatHandler) handleAccountFallback(
 	translateResponse bool,
 	endpoint string,
 ) error {
+	// A canceled caller must not spend another provider request.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
@@ -98,9 +104,17 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 	}
 
+	// Never replay a request once any headers or stream bytes reached the client.
+	// The writer is local to the multi-account fallback path: pinned requests
+	// and no-auth providers retain their existing behavior.
+	cw := newCommittedResponseWriter(w)
+	w = cw
 	var excludeIDs []string
 	var lastErr error
 	for _, c := range allConns {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
@@ -126,6 +140,12 @@ func (h *ChatHandler) handleAccountFallback(
 			return nil
 		} else {
 			lastErr = err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if cw.IsCommitted() {
+			return lastErr
 		}
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
@@ -157,6 +177,13 @@ func (h *ChatHandler) handleAccountFallback(
 				"lockKey", lockKey, "status", ue.StatusCode, "cooldown_s", cooldownSec,
 			}, connIdentityKV(connObj)...)...)
 			excludeIDs = append(excludeIDs, c.ID)
+			continue
+		}
+		if accountTransientFailure(lastErr) {
+			// A transient 500 or transport failure is not a quota error.
+			// Do not persist a rate-limit lock; try a different account once.
+			log.Warn("fallback", "transient failure; trying next eligible account",
+				"conn", c.ID, "provider", provider, "model", model)
 			continue
 		}
 		return lastErr
@@ -833,4 +860,22 @@ func claudeSessionIDFromBody(body []byte) string {
 	}
 	userID, _ := meta["user_id"].(string)
 	return extractClaudeSessionIdFromUserId(userID)
+}
+
+
+// accountTransientFailure admits one new account only for errors plausibly
+// tied to an unhealthy upstream account or its transport. It MUST be checked
+// after verifying the response was not committed and the caller is still live.
+// Business/API request errors (400, 401 etc.) do not enter this path.
+func accountTransientFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var ue *upstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode == http.StatusInternalServerError
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
