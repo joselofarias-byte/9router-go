@@ -19,10 +19,8 @@ func deleteNodeRequest(t *testing.T, repo *db.Repo, id string) *httptest.Respons
 
 func createNodeDeleteFixture(t *testing.T, repo *db.Repo, id, provider string) {
 	t.Helper()
-	if err := repo.CreateProviderConnection(id, provider, "oauth", "synthetic-"+id, map[string]string{
-		"accessToken": "test-access-never-real",
-		"refreshToken": "test-refresh-never-real",
-	}); err != nil {
+	if err := repo.CreateProviderConnection(id, provider, "oauth", "synthetic-"+id,
+		"{\"accessToken\":\"test-access-never-real\",\"refreshToken\":\"test-refresh-never-real\"}"); err != nil {
 		t.Fatal(err)
 	}
 }
