@@ -36,6 +36,9 @@ func (cw *committedResponseWriter) IsCommitted() bool {
 // Flush implements http.Flusher if the underlying writer supports it.
 func (cw *committedResponseWriter) Flush() {
 	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+		// Flushing sends at least HTTP headers even when no body was written.
+		// Retrying a different account from this point would duplicate a stream.
+		atomic.StoreInt32(&cw.committed, 1)
 		f.Flush()
 	}
 }
