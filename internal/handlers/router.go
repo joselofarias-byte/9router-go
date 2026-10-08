@@ -286,7 +286,6 @@ func mountOAuthRoutes(r interface {
 	r.Post("/api/oauth/codex/cli-login/start", oauthH.HandleCodexCLIStart)
 	r.Get("/api/oauth/codex/cli-login/status", oauthH.HandleCodexCLIStatus)
 	r.Post("/api/oauth/codex/cli-login/cancel", oauthH.HandleCodexCLICancel)
-	r.Post("/api/oauth/grok-cli/bulk-import", oauthH.HandleOAuthGrokCliBulkImport)
 	r.Post("/api/oauth/freebuff/initiate", oauthH.HandleFreebuffInitiate)
 	r.Post("/api/oauth/freebuff/poll", oauthH.HandleFreebuffPoll)
 	r.Get("/api/oauth/freebuff/session", oauthH.HandleFreebuffSessionStatus)
@@ -404,6 +403,10 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// Standard client API keys are rejected, matching upstream ALWAYS_PROTECTED.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireAdminAuth())
+
+		// Grok credential import changes the global provider account pool.
+		// Engine API keys must never authorize administrative credential writes.
+		r.Post("/api/oauth/grok-cli/bulk-import", oauthH.HandleOAuthGrokCliBulkImport)
 
 		// Health reset endpoint — dashboard calls this via headroom proxy
 		r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
