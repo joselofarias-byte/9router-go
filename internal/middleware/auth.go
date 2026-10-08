@@ -64,7 +64,7 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 // New management routes do not accidentally become accessible to Chatbox.
 func IsInferenceOnlyRequest(method, requestPath string) bool {
 	path := requestPath
-	for _, prefix := range []string{"/api/v1/", "/v1/"} {
+	for _, prefix := range []string{"/api/v1/", "/v1/", "/api/"} {
 		if strings.HasPrefix(path, prefix) {
 			path = "/" + strings.TrimPrefix(path, prefix)
 			break
