@@ -45,7 +45,7 @@ jobs:
           mkdir -p /tmp/9router-qa
           go test -c -o /tmp/9router-qa/9router-failover-test-android-arm64 ./internal/handlers/chat
           test -s /tmp/9router-qa/9router-failover-test-android-arm64
-          sha256sum /tmp/9router-qa/9router-failover-test-android-arm64 > /tmp/9router-qa/SHA256SUMS
+          (cd /tmp/9router-qa && sha256sum 9router-failover-test-android-arm64 > SHA256SUMS)
           echo "PASS: Android ARM64 test binary compiled; tests use only temporary SQLite and httptest"
       - uses: actions/upload-artifact@v4
         with:
