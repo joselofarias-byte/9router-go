@@ -1,0 +1,56 @@
+name: Android ARM64 account failover test binary
+on:
+  push:
+    branches:
+      - fix/main-account-transient-failover-20261008
+    paths:
+      - "internal/handlers/chat/fallback.go"
+      - "internal/handlers/chat/response_writer.go"
+      - "internal/handlers/chat/account_transient_fallback_test.go"
+      - ".github/workflows/android-failover-tests.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android-test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Build frontend embed assets
+        run: |
+          cd web
+          bun install --frozen-lockfile
+          bun run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      - name: Run deterministic failover tests on Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./internal/handlers/chat -count=1 -timeout 4m -run '^(TestAccountFallbackTransientUsesHealthyAccount|TestAccountFallbackCanceledDoesNotCallUpstream|TestCommittedWriterFlushMarksResponseStarted|TestAccountFallbackDoesNotReplayPartialStream|TestAccountTransientFailureClassification|TestAccountFallbackPinnedNeverRotatesOn500)$'
+      - name: Cross-compile same deterministic tests for Android ARM64
+        shell: bash
+        env:
+          GOOS: android
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/9router-qa
+          go test -c -o /tmp/9router-qa/9router-failover-test-android-arm64 ./internal/handlers/chat
+          test -s /tmp/9router-qa/9router-failover-test-android-arm64
+          (cd /tmp/9router-qa && sha256sum 9router-failover-test-android-arm64 > SHA256SUMS)
+          echo "PASS: Android ARM64 test binary compiled; tests use only temporary SQLite and httptest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr124-android-failover-tests
+          path: |
+            /tmp/9router-qa/9router-failover-test-android-arm64
+            /tmp/9router-qa/SHA256SUMS
+          retention-days: 7
