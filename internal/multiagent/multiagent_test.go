@@ -37,3 +37,25 @@ func TestHostInvoker(t *testing.T){
  output,err:=inv(context.Background(),"test","hello")
  if err!=nil||output!="ok"{t.Fatalf("output %q err %v",output,err)}
 }
+
+func TestCancellationAndTimeout(t *testing.T) {
+ invoke:=func(ctx context.Context,model,prompt string)(string,error) {
+  <-ctx.Done()
+  return "",ctx.Err()
+ }
+ start:=time.Now()
+ results:=Run(context.Background(),"x",[]string{"slow"},1,20*time.Millisecond,invoke)
+ if len(results)!=1 || results[0].Error=="" {t.Fatalf("expected timeout: %+v",results)}
+ if time.Since(start)>time.Second {t.Fatal("timeout ignored")}
+ ctx,cancel:=context.WithCancel(context.Background())
+ cancel()
+ results=Run(ctx,"x",[]string{"a","b"},1,time.Second,invoke)
+ for _,r:=range results {if r.Error=="" {t.Fatalf("expected cancellation: %+v",results)}}
+}
+func TestHTTPRejectsTooManyModels(t *testing.T) {
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked invalid request");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["1","2","3","4","5","6","7","8","9"],"allow_external":true}`))
+ h(w,r)
+ if w.Code!=http.StatusBadRequest {t.Fatalf("status %d",w.Code)}
+}
