@@ -59,3 +59,20 @@ func TestHTTPRejectsTooManyModels(t *testing.T) {
  h(w,r)
  if w.Code!=http.StatusBadRequest {t.Fatalf("status %d",w.Code)}
 }
+
+func TestExternalDispatchDisabledByDefault(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","")
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked with external dispatch disabled");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"hello","models":["a"],"allow_external":true}`))
+ h(w,r)
+ if w.Code!=http.StatusForbidden {t.Fatalf("status %d",w.Code)}
+}
+func TestRejectTrailingJSON(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","1")
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked invalid request");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["a"],"allow_external":true}{}`))
+ h(w,r)
+ if w.Code!=http.StatusBadRequest {t.Fatalf("status %d",w.Code)}
+}
