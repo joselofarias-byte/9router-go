@@ -103,3 +103,13 @@ func TestBatchCapacity(t *testing.T) {
  h(w,r)
  if w.Code!=http.StatusTooManyRequests {t.Fatalf("status %d",w.Code)}
 }
+
+func TestRejectDuplicateModels(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","1")
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","approved/model")
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked duplicate model");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["approved/model","approved/model"],"allow_external":true}`))
+ h(w,r)
+ if w.Code!=http.StatusBadRequest {t.Fatalf("status %d",w.Code)}
+}
