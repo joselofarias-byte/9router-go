@@ -6,6 +6,8 @@ import (
  "errors"
  "net/http"
  "net/http/httptest"
+ "os"
+ "io"
  "strings"
  "sync"
  "time"
@@ -84,8 +86,12 @@ func Handler(invoke Invoker) http.HandlerFunc {
   dec:=json.NewDecoder(r.Body)
   dec.DisallowUnknownFields()
   if dec.Decode(&req)!=nil {http.Error(w,"invalid JSON",400);return}
+  var trailing any
+  if err:=dec.Decode(&trailing);err!=io.EOF {http.Error(w,"trailing JSON not allowed",400);return}
   if !req.AllowExternal {http.Error(w,"explicit external dispatch authorization required",403);return}
-  if strings.TrimSpace(req.Prompt)=="" || len(req.Models)==0 || len(req.Models)>8 || req.Concurrency<0 || req.Concurrency>8 || req.TimeoutMS<0 || req.TimeoutMS>120000 {http.Error(w,"invalid request",400);return}
+  // Closed by default: a dashboard session is not permission to spend provider credits.
+  if os.Getenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL")!="1" {http.Error(w,"external multiagent dispatch disabled by server policy",403);return}
+  if strings.TrimSpace(req.Prompt)=="" || len(req.Prompt)>20000 || len(req.Models)==0 || len(req.Models)>8 || req.Concurrency<0 || req.Concurrency>8 || req.TimeoutMS<0 || req.TimeoutMS>120000 {http.Error(w,"invalid request",400);return}
   for _,model:=range req.Models {if strings.TrimSpace(model)=="" {http.Error(w,"invalid model",400);return}}
   concurrency:=req.Concurrency
   if concurrency==0 {concurrency=3}
