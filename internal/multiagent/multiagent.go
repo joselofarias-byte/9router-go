@@ -30,6 +30,10 @@ type Response struct { Results []Result `json:"results"` }
 
 type Invoker func(context.Context,string,string)(string,error)
 
+// Global admission control prevents simultaneous dashboard requests from multiplying
+// the per-request concurrency limit without bound.
+var batchSlots = make(chan struct{}, 2)
+
 // Run isolates each model invocation, preserves request order and respects cancellation.
 func Run(ctx context.Context, prompt string, models []string, concurrency int, timeout time.Duration, invoke Invoker) []Result {
  results:=make([]Result,len(models))
@@ -91,8 +95,15 @@ func Handler(invoke Invoker) http.HandlerFunc {
   if !req.AllowExternal {http.Error(w,"explicit external dispatch authorization required",403);return}
   if strings.TrimSpace(req.Prompt)=="" || len(req.Prompt)>20000 || len(req.Models)==0 || len(req.Models)>8 || req.Concurrency<0 || req.Concurrency>8 || req.TimeoutMS<0 || req.TimeoutMS>120000 {http.Error(w,"invalid request",400);return}
   for _,model:=range req.Models {if strings.TrimSpace(model)=="" {http.Error(w,"invalid model",400);return}}
+  // Every selectable model must be explicitly approved by the server operator.
+  // A model identifier is not evidence that the upstream is free.
+  allowed := make(map[string]bool)
+  for _,m:=range strings.Split(os.Getenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS"),",") {if s:=strings.TrimSpace(m);s!="" {allowed[s]=true}}
+  for _,m:=range req.Models {if !allowed[m] {http.Error(w,"model not allowed by server policy",403);return}}
   // Closed by default: a dashboard session is not permission to spend provider credits.
   if os.Getenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL")!="1" {http.Error(w,"external multiagent dispatch disabled by server policy",403);return}
+  select {case batchSlots<-struct{}{}: defer func(){<-batchSlots}()
+  default: http.Error(w,"multiagent capacity reached",http.StatusTooManyRequests);return}
   concurrency:=req.Concurrency
   if concurrency==0 {concurrency=3}
   timeout:=time.Duration(req.TimeoutMS)*time.Millisecond
