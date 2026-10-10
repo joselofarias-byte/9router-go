@@ -3,6 +3,7 @@ export type ActiveTab =
   | 'endpoint'
   | 'connections'
   | 'combos'
+  | 'multiagent'
   | 'analytics'
   | 'quota'
   | 'token-saver'
@@ -26,6 +27,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   endpoint: '/dashboard/endpoint',
   connections: '/dashboard/providers',
   combos: '/dashboard/combos',
+  multiagent: '/dashboard/multiagent',
   analytics: '/dashboard/usage',
   quota: '/dashboard/quota',
   'token-saver': '/dashboard/token-saver',
@@ -64,6 +66,9 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // combos
   '/dashboard/combos': 'combos',
   '/combos': 'combos',
+
+  '/dashboard/multiagent': 'multiagent',
+  '/multiagent': 'multiagent',
 
   // usage / analytics
   '/dashboard/usage': 'analytics',
@@ -165,6 +170,7 @@ export function pathToTab(pathname: string): ActiveTab {
   }
   if (normalized.includes('quota')) return 'quota'
   if (normalized.includes('usage') || normalized.includes('analytics')) return 'analytics'
+  if (normalized.includes('multiagent')) return 'multiagent'
   if (normalized.includes('combos')) return 'combos'
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'

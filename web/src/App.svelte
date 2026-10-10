@@ -18,6 +18,7 @@
   import ConnectionsView from './components/connections/ConnectionsView.svelte'
   import OAuthCallbackView from './components/connections/OAuthCallbackView.svelte'
   import EndpointView from './components/EndpointView.svelte'
+  import MultiagentView from './components/MultiagentView.svelte'
   import LoginView from './components/LoginView.svelte'
   import MediaKindView from './components/media/MediaKindView.svelte'
   import MediaProviderDetail from './components/media/MediaProviderDetail.svelte'
@@ -231,6 +232,7 @@
     endpoint: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
     connections: { title: 'Providers & Endpoints', description: 'Manage your AI provider connections' },
     combos: { title: 'Combo & Routing', description: 'Model combos and failover strategies' },
+    multiagent: { title: 'Multiagente', description: 'Enviar una tarea a varios modelos y comparar resultados' },
     analytics: { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
     quota: { title: 'Quota Tracker', description: 'Track and manage your API quota limits' },
     'token-saver': { title: 'Token Saver', description: 'Compress prompts and outputs to save tokens' },
@@ -358,6 +360,8 @@
               />
             {:else if activeTab === 'combos'}
               <CombosView {combos} {connections} {providerNodes} onRefresh={loadData} bind:isCreatingOpen={isCreateComboOpen} />
+            {:else if activeTab === 'multiagent'}
+              <MultiagentView />
             {:else if activeTab === 'analytics'}
               <AnalyticsView {connections} {providerNodes} />
             {:else if activeTab === 'quota'}
