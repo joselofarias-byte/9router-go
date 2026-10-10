@@ -127,3 +127,24 @@ func TestHTTPAuthorizedSuccessAndOrderedResults(t *testing.T) {
  if err:=json.Unmarshal(w.Body.Bytes(),&response);err!=nil {t.Fatal(err)}
  if len(response.Results)!=2 || response.Results[0].Output!="model/b:hello" || response.Results[1].Output!="model/a:hello" {t.Fatalf("unexpected response %+v",response)}
 }
+
+func TestDryRunNoExternalCalls(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","")
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","model/a,model/b")
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("dry-run must not invoke provider");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest(http.MethodPost,"/api/multiagent/run",strings.NewReader(`{"prompt":"hello","models":["model/b","model/a"],"dry_run":true}`))
+ h(w,r)
+ if w.Code!=http.StatusOK {t.Fatalf("status %d: %s",w.Code,w.Body.String())}
+ var response Response
+ if err:=json.Unmarshal(w.Body.Bytes(),&response);err!=nil {t.Fatal(err)}
+ if !response.DryRun || len(response.Results)!=2 || response.Results[0].Model!="model/b" || response.Results[1].Model!="model/a" {t.Fatalf("unexpected dry-run response %+v",response)}
+}
+func TestDryRunStillEnforcesAllowlist(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","model/a")
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("unexpected call");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest(http.MethodPost,"/api/multiagent/run",strings.NewReader(`{"prompt":"hello","models":["unapproved"],"dry_run":true}`))
+ h(w,r)
+ if w.Code!=http.StatusForbidden {t.Fatalf("status %d",w.Code)}
+}
