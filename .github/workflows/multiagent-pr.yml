@@ -1,6 +1,7 @@
 name: Capimux Multiagent PR Validation
 
 on:
+  workflow_dispatch:
   push:
     branches: [feat/capimux-multiagent-v04]
   pull_request:
