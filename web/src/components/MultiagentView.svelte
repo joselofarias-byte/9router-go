@@ -30,7 +30,16 @@
         }),
         signal: controller.signal
       })
-      if (!response.ok) throw new Error(`Error HTTP ${response.status}`)
+      if (!response.ok) {
+        const detail = (await response.text()).trim().slice(0, 300)
+        const descriptions: Record<number, string> = {
+          400: 'Solicitud inválida: revisá los modelos y el prompt.',
+          401: 'Iniciá sesión para usar el comparador.',
+          403: 'El servidor no autorizó esta ejecución o alguno de los modelos.',
+          429: 'Hay demasiadas ejecuciones simultáneas. Intentá nuevamente más tarde.'
+        }
+        throw new Error(descriptions[response.status] || `Error HTTP ${response.status}${detail ? ': ' + detail : ''}`)
+      }
       const data = await response.json() as { results: ModelResult[] }
       results = data.results || []
     } catch (e) {
