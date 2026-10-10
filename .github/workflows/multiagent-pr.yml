@@ -1,6 +1,8 @@
 name: Capimux Multiagent PR Validation
 
 on:
+  push:
+    branches: [feat/capimux-multiagent-v04]
   pull_request:
     branches: [main]
     paths:
