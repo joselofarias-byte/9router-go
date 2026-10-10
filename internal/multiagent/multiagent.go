@@ -19,6 +19,7 @@ type Request struct {
  Concurrency int `json:"concurrency"`
  TimeoutMS int `json:"timeout_ms"`
  AllowExternal bool `json:"allow_external"`
+ DryRun bool `json:"dry_run"`
 }
 type Result struct {
  Model string `json:"model"`
@@ -26,7 +27,7 @@ type Result struct {
  Error string `json:"error,omitempty"`
  DurationMS int64 `json:"duration_ms"`
 }
-type Response struct { Results []Result `json:"results"` }
+type Response struct { Results []Result `json:"results"`; DryRun bool `json:"dry_run,omitempty"` }
 
 type Invoker func(context.Context,string,string)(string,error)
 
@@ -92,7 +93,6 @@ func Handler(invoke Invoker) http.HandlerFunc {
   if dec.Decode(&req)!=nil {http.Error(w,"invalid JSON",400);return}
   var trailing any
   if err:=dec.Decode(&trailing);err!=io.EOF {http.Error(w,"trailing JSON not allowed",400);return}
-  if !req.AllowExternal {http.Error(w,"explicit external dispatch authorization required",403);return}
   if strings.TrimSpace(req.Prompt)=="" || len(req.Prompt)>20000 || len(req.Models)==0 || len(req.Models)>8 || req.Concurrency<0 || req.Concurrency>8 || req.TimeoutMS<0 || req.TimeoutMS>120000 {http.Error(w,"invalid request",400);return}
   seenModels:=make(map[string]bool,len(req.Models))
   for _,model:=range req.Models {if strings.TrimSpace(model)=="" || model!=strings.TrimSpace(model) || seenModels[model] {http.Error(w,"invalid or duplicate model",400);return};seenModels[model]=true}
@@ -101,6 +101,13 @@ func Handler(invoke Invoker) http.HandlerFunc {
   allowed := make(map[string]bool)
   for _,m:=range strings.Split(os.Getenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS"),",") {if s:=strings.TrimSpace(m);s!="" {allowed[s]=true}}
   for _,m:=range req.Models {if !allowed[m] {http.Error(w,"model not allowed by server policy",403);return}}
+  if req.DryRun {
+   planned:=make([]Result,len(req.Models))
+   for i,m:=range req.Models {planned[i]=Result{Model:m}}
+   _=json.NewEncoder(w).Encode(Response{Results:planned,DryRun:true})
+   return
+  }
+  if !req.AllowExternal {http.Error(w,"explicit external dispatch authorization required",403);return}
   // Closed by default: a dashboard session is not permission to spend provider credits.
   if os.Getenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL")!="1" {http.Error(w,"external multiagent dispatch disabled by server policy",403);return}
   select {case batchSlots<-struct{}{}: defer func(){<-batchSlots}()
