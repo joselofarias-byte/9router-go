@@ -76,3 +76,30 @@ func TestRejectTrailingJSON(t *testing.T) {
  h(w,r)
  if w.Code!=http.StatusBadRequest {t.Fatalf("status %d",w.Code)}
 }
+
+func TestModelAllowlistRequired(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","1")
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","approved/model")
+ invoked:=false
+ h:=Handler(func(context.Context,string,string)(string,error){invoked=true;return "ok",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["unapproved/model"],"allow_external":true}`))
+ h(w,r)
+ if w.Code!=http.StatusForbidden || invoked {t.Fatalf("unexpected status %d invoked=%v",w.Code,invoked)}
+ w=httptest.NewRecorder()
+ r=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["approved/model"],"allow_external":true}`))
+ h(w,r)
+ if w.Code!=http.StatusOK || !invoked {t.Fatalf("approved model status %d invoked=%v",w.Code,invoked)}
+}
+func TestBatchCapacity(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","1")
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","approved/model")
+ batchSlots<-struct{}{}
+ batchSlots<-struct{}{}
+ defer func(){<-batchSlots;<-batchSlots}()
+ h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked despite capacity");return "",nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["approved/model"],"allow_external":true}`))
+ h(w,r)
+ if w.Code!=http.StatusTooManyRequests {t.Fatalf("status %d",w.Code)}
+}
