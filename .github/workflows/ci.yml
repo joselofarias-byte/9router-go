@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, feat/capimux-multiagent-v04]
   pull_request:
