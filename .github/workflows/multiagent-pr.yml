@@ -1,4 +1,5 @@
 name: Capimux Multiagent PR Validation
+# Re-enabled fork Actions: retrigger validation on the feature branch.
 
 on:
   workflow_dispatch:
