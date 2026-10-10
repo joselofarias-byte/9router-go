@@ -94,7 +94,8 @@ func Handler(invoke Invoker) http.HandlerFunc {
   if err:=dec.Decode(&trailing);err!=io.EOF {http.Error(w,"trailing JSON not allowed",400);return}
   if !req.AllowExternal {http.Error(w,"explicit external dispatch authorization required",403);return}
   if strings.TrimSpace(req.Prompt)=="" || len(req.Prompt)>20000 || len(req.Models)==0 || len(req.Models)>8 || req.Concurrency<0 || req.Concurrency>8 || req.TimeoutMS<0 || req.TimeoutMS>120000 {http.Error(w,"invalid request",400);return}
-  for _,model:=range req.Models {if strings.TrimSpace(model)=="" {http.Error(w,"invalid model",400);return}}
+  seenModels:=make(map[string]bool,len(req.Models))
+  for _,model:=range req.Models {if strings.TrimSpace(model)=="" || model!=strings.TrimSpace(model) || seenModels[model] {http.Error(w,"invalid or duplicate model",400);return};seenModels[model]=true}
   // Every selectable model must be explicitly approved by the server operator.
   // A model identifier is not evidence that the upstream is free.
   allowed := make(map[string]bool)
