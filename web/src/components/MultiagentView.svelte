@@ -2,6 +2,11 @@
   type ModelResult = { model: string; output?: string; error?: string; duration_ms: number }
   let prompt = $state('')
   let modelsText = $state('')
+  const apinexCandidate = 'free/qwen-3.8-max'
+  function addApinexCandidate() {
+    const existing = modelsText.split(/[\n,]+/).map(m => m.trim()).filter(Boolean)
+    if (!existing.includes(apinexCandidate)) modelsText = [...existing, apinexCandidate].join('\n')
+  }
   let allowExternal = $state(false)
   let dryRun = $state(true)
   let preview = $state(false)
@@ -70,6 +75,10 @@
     <label class="block text-sm font-medium text-text-main" for="multiagent-models">Modelos (uno por línea o separados por coma)</label>
     <textarea id="multiagent-models" bind:value={modelsText} rows="4" placeholder="provider/model-a&#10;provider/model-b" class="w-full rounded-lg border border-border-subtle bg-bg p-3 font-mono text-sm text-text-main" required></textarea>
     <p class="text-xs text-text-muted">{allModels.length} modelos seleccionados. Usá identificadores disponibles en Capimux.</p>
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="button" onclick={addApinexCandidate} class="rounded-lg border border-border-subtle px-3 py-2 text-sm text-text-main">Agregar APINex · Qwen 3.8 MAX</button>
+      <span class="text-xs text-text-muted">Candidato anunciado gratuito; ID y disponibilidad real pendientes de verificación en la cuenta. Requiere configurar el proveedor y autorizar el modelo en el servidor.</span>
+    </div>
     {#if allModels.length > 8}<p role="alert" class="text-sm text-red-500">El máximo es 8 modelos. Quitá {allModels.length - 8} para continuar.</p>{/if}
     <p class="text-xs text-text-muted">La ejecución requiere habilitación del servidor y una lista de modelos autorizados. No hay presupuesto monetario automático.</p>
     <label class="flex items-start gap-3 text-sm text-text-main">
