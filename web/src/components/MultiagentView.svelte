@@ -3,6 +3,8 @@
   let prompt = $state('')
   let modelsText = $state('')
   let allowExternal = $state(false)
+  let dryRun = $state(true)
+  let preview = $state(false)
   let loading = $state(false)
   let error = $state('')
   let results = $state<ModelResult[]>([])
@@ -11,9 +13,10 @@
   const models = $derived(allModels.slice(0, 8))
 
   async function run() {
-    if (!prompt.trim() || models.length === 0 || allModels.length > 8 || !allowExternal || loading) return
+    if (!prompt.trim() || models.length === 0 || allModels.length > 8 || (!dryRun && !allowExternal) || loading) return
     error = ''
     results = []
+    preview = false
     loading = true
     controller = new AbortController()
     try {
@@ -26,7 +29,8 @@
           models,
           concurrency: 3,
           timeout_ms: 60000,
-          allow_external: true
+          allow_external: !dryRun && allowExternal,
+          dry_run: dryRun
         }),
         signal: controller.signal
       })
@@ -42,6 +46,7 @@
       }
       const data = await response.json() as { results: ModelResult[] }
       results = data.results || []
+      preview = dryRun
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') error = 'Solicitud cancelada. La cancelación no garantiza que el proveedor detenga el cobro.'
       else error = e instanceof Error ? e.message : 'No se pudo completar la solicitud'
@@ -68,16 +73,21 @@
     {#if allModels.length > 8}<p role="alert" class="text-sm text-red-500">El máximo es 8 modelos. Quitá {allModels.length - 8} para continuar.</p>{/if}
     <p class="text-xs text-text-muted">La ejecución requiere habilitación del servidor y una lista de modelos autorizados. No hay presupuesto monetario automático.</p>
     <label class="flex items-start gap-3 text-sm text-text-main">
-      <input type="checkbox" bind:checked={allowExternal} class="mt-1" />
+      <input type="checkbox" bind:checked={dryRun} />
+      <span>Simulación sin llamadas a proveedores ni consumo de créditos (comprueba formato y lista permitida).</span>
+    </label>
+    <label class="flex items-start gap-3 text-sm text-text-main">
+      <input type="checkbox" bind:checked={allowExternal} disabled={dryRun} class="mt-1" />
       <span>Autorizo el envío de este prompt a los proveedores seleccionados. Pueden aplicarse cargos o cuotas de cada proveedor.</span>
     </label>
     <div class="flex gap-3">
-      <button type="submit" disabled={loading || !allowExternal || !prompt.trim() || models.length === 0 || allModels.length > 8} class="rounded-lg bg-primary px-5 py-2 text-white disabled:opacity-40">Ejecutar en paralelo</button>
+      <button type="submit" disabled={loading || (!dryRun && !allowExternal) || !prompt.trim() || models.length === 0 || allModels.length > 8} class="rounded-lg bg-primary px-5 py-2 text-white disabled:opacity-40">{dryRun ? "Validar sin enviar" : "Ejecutar en paralelo"}</button>
       {#if loading}<button type="button" onclick={cancel} class="rounded-lg border border-border-subtle px-4 py-2">Cancelar</button>{/if}
     </div>
   </form>
   {#if error}<p role="alert" class="text-sm text-red-500">{error}</p>{/if}
   {#if loading}<p role="status" class="text-sm text-text-muted">Consultando modelos…</p>{/if}
+  {#if preview}<p role="status" class="text-sm text-text-muted">Simulación aprobada: no se enviaron solicitudes a proveedores.</p>{/if}
   {#if results.length > 0}
     <div class="grid gap-4 md:grid-cols-2">
       {#each results as result, i (i)}
@@ -86,7 +96,8 @@
             <h3 class="font-semibold text-text-main break-all">{result.model}</h3>
             <span class="text-xs text-text-muted">{result.duration_ms} ms</span>
           </div>
-          {#if result.error}<p class="text-sm text-red-500">{result.error}</p>
+          {#if preview}<p class="text-sm text-text-muted">Modelo autorizado para simulación.</p>
+          {:else if result.error}<p class="text-sm text-red-500">{result.error}</p>
           {:else}<pre class="whitespace-pre-wrap break-words text-sm text-text-main font-sans">{result.output || '(sin contenido)'}</pre>{/if}
         </article>
       {/each}
