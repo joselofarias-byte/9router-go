@@ -2,6 +2,7 @@ package multiagent
 
 import (
  "context"
+ "encoding/json"
  "errors"
  "net/http"
  "net/http/httptest"
@@ -112,4 +113,17 @@ func TestRejectDuplicateModels(t *testing.T) {
  r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"x","models":["approved/model","approved/model"],"allow_external":true}`))
  h(w,r)
  if w.Code!=http.StatusBadRequest {t.Fatalf("status %d",w.Code)}
+}
+
+func TestHTTPAuthorizedSuccessAndOrderedResults(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","1")
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","model/a,model/b")
+ h:=Handler(func(_ context.Context,m,p string)(string,error){return m+":"+p,nil})
+ w:=httptest.NewRecorder()
+ r:=httptest.NewRequest(http.MethodPost,"/api/multiagent/run",strings.NewReader(`{"prompt":"hello","models":["model/b","model/a"],"allow_external":true,"concurrency":2}`))
+ h(w,r)
+ if w.Code!=http.StatusOK {t.Fatalf("status %d body %s",w.Code,w.Body.String())}
+ var response Response
+ if err:=json.Unmarshal(w.Body.Bytes(),&response);err!=nil {t.Fatal(err)}
+ if len(response.Results)!=2 || response.Results[0].Output!="model/b:hello" || response.Results[1].Output!="model/a:hello" {t.Fatalf("unexpected response %+v",response)}
 }
