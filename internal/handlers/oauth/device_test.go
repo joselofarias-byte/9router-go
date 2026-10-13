@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
 )
 
 func TestHandleDeviceStart_qoderLocal(t *testing.T) {
@@ -96,3 +97,27 @@ func TestHandleDevicePoll_PendingDoesNotInsert(t *testing.T) {
 type devicePollFixture func(*http.Request) (*http.Response, error)
 
 func (f devicePollFixture) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+
+func TestGrokCLIProxyHeadersCurrentAndOverride(t *testing.T) {
+	t.Setenv("GROK_CLI_CLIENT_VERSION", "1.2.3-test")
+	h := providers.GrokCLIProxyHeaders("token-value")
+	if h["x-grok-client-version"] != "1.2.3-test" {
+		t.Fatalf("client version = %q", h["x-grok-client-version"])
+	}
+	if h["X-XAI-Token-Auth"] != "xai-grok-cli" {
+		t.Fatalf("token auth header = %q", h["X-XAI-Token-Auth"])
+	}
+	if h["x-authenticateresponse"] != "authenticate-response" {
+		t.Fatalf("authenticate response header = %q", h["x-authenticateresponse"])
+	}
+	if h["x-grok-client-mode"] != "headless" {
+		t.Fatalf("client mode = %q", h["x-grok-client-mode"])
+	}
+	if h["Authorization"] != "Bearer token-value" {
+		t.Fatalf("authorization = %q", h["Authorization"])
+	}
+	if !strings.HasPrefix(h["User-Agent"], "grok-shell/1.2.3-test (") {
+		t.Fatalf("user agent = %q", h["User-Agent"])
+	}
+}
