@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"os"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestRunMigrations_EmptyDB(t *testing.T) {
@@ -130,3 +128,4 @@ func TestRunMigrations(t *testing.T) {
 		t.Fatalf("failed to run migrations again: %v", err)
 	}
 }
+

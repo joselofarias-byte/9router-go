@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 var (
@@ -86,3 +84,4 @@ func GetConnection() (*sql.DB, error) {
 	}
 	return dbInstance, nil
 }
+

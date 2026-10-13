@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
-
-	_ "modernc.org/sqlite"
 )
 
 // ---------- cursor: import + auto-import from local state.vscdb ----------
@@ -440,3 +438,4 @@ func (h *OAuthHandler) saveSpecialConnection(w http.ResponseWriter, provider, co
 		"connection": map[string]any{"id": connID, "provider": provider, "email": email},
 	})
 }
+
