@@ -41,7 +41,8 @@ public final class MainActivity extends Activity {
     private boolean restarting;
     private final Runnable refreshStatus = new Runnable() {
         @Override public void run() {
-            status.setText(EngineService.status());
+            String current = EngineService.status();
+            if (!current.contentEquals(status.getText())) status.setText(current);
             if (EngineService.ready() && !panelLoaded) {
                 panelLoaded = true;
                 panel.loadUrl(NavigationPolicy.ORIGIN + "/dashboard");

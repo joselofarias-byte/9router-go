@@ -4,13 +4,38 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 PACKAGE = "com.jolufasoft.capimux"
 ORIGIN = "http://127.0.0.1:20131"
 
 def adb(*args):
-    return subprocess.check_output(["adb", *args], text=True).strip()
+    return subprocess.check_output(["adb", *args], text=True, timeout=30).strip()
+
+def tap_button(label):
+    # Native startup may finish before WebView's first frame is accessible.
+    deadline = time.monotonic() + 75
+    while time.monotonic() < deadline:
+        try:
+            adb("shell", "input", "keyevent", "224")
+            adb("shell", "wm", "dismiss-keyguard")
+            adb("shell", "rm", "-f", "/sdcard/window.xml")
+            adb("shell", "uiautomator", "dump", "--compressed", "/sdcard/window.xml")
+            root = ET.fromstring(adb("shell", "cat", "/sdcard/window.xml"))
+            for node in root.iter("node"):
+                if node.get("text") != label:
+                    continue
+                match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
+                if match:
+                    x1, y1, x2, y2 = map(int, match.groups())
+                    adb("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
+                    return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ET.ParseError):
+            pass
+        time.sleep(2)
+    raise RuntimeError("Native button did not become accessible: " + label)
 
 def request(path, token=None, payload=None, method=None):
     headers = {"Content-Type": "application/json"}
@@ -63,21 +88,10 @@ assert request("/api/multiagent/policy", credential).get("max_models") == 8
 adb("shell", "run-as", PACKAGE, "test", "-s", "files/engine/db/data.sqlite")
 print("APK_NATIVE_ENGINE_START_PASS")
 # Exercise the stop button through UIAutomator without exporting the service.
-adb("shell", "uiautomator", "dump", "/sdcard/window.xml")
-xml = adb("shell", "cat", "/sdcard/window.xml")
-import re
-match = re.search(r'text="Detener"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)
-assert match, "Stop button absent"
-x1, y1, x2, y2 = map(int, match.groups())
-adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+tap_button("Detener")
 wait_health(False)
 print("APK_NATIVE_ENGINE_STOP_PASS")
-adb("shell", "uiautomator", "dump", "/sdcard/window.xml")
-xml = adb("shell", "cat", "/sdcard/window.xml")
-match = re.search(r'text="Iniciar"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)
-assert match, "Start button absent"
-x1, y1, x2, y2 = map(int, match.groups())
-adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+tap_button("Iniciar")
 wait_health(True)
 assert token() == credential
 assert request("/api/settings", credential).get("language") == "es"
