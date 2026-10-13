@@ -1,10 +1,10 @@
-# Capimux para Android — beta 0.1.0
+# Capimux para Android — beta 0.1.1
 
 App Android independiente con el motor Go y su dashboard Svelte incluidos. No requiere Termux, PRoot, root ni una descarga posterior del motor.
 
 ## Uso
 
-Al abrir la app inicia el motor y carga el panel local. Iniciar, Detener y Recargar controlan el servicio. Modelos configura los identificadores permitidos para el comparador y su habilitación; al guardar, el motor se reinicia conservando la base de datos. Registro muestra las últimas líneas y Batería abre los ajustes del teléfono.
+Al abrir la app inicia el motor y carga el panel local. Iniciar, Detener y Recargar controlan el servicio. Modelos carga el catálogo de proveedores activos y modelos sin clave, agrupado por proveedor, con búsqueda y casillas para elegir hasta ocho. La selección se recuerda y se aplica al guardar sin reiniciar el motor; después abre el comparador. Proveedores permite conectar cuentas desde el mismo diálogo. Registro muestra las últimas líneas y Batería abre los ajustes del teléfono.
 
 En una instalación nueva, la clave inicial del panel es 123456, siguiendo el contrato del motor. Puede cambiarse desde el panel.
 

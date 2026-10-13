@@ -7,7 +7,6 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -87,9 +86,10 @@ public final class EngineService extends Service {
             env.put("AUTO_UPDATE", "false");
             env.put("RTK_ENABLED", "false");
             env.remove("LOG_FILE");
-            SharedPreferences prefs = getSharedPreferences("engine", MODE_PRIVATE);
-            env.put("CAPIMUX_MULTIAGENT_ALLOWED_MODELS", prefs.getString("models", ""));
-            env.put("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL", prefs.getBoolean("external", false) ? "1" : "0");
+            new ModelStore(this).migrate(this);
+            env.put("CAPIMUX_MULTIAGENT_POLICY_FILE", ModelStore.path(this).getAbsolutePath());
+            env.remove("CAPIMUX_MULTIAGENT_ALLOWED_MODELS");
+            env.remove("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL");
             process = builder.start();
             synchronized (LOCK) {
                 if (token != epoch) {

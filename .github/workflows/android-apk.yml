@@ -65,6 +65,7 @@ jobs:
           name: Capimux-Android-debug
           path: |
             android/app/build/outputs/apk/honor/debug/*.apk
+            android/model-picker.png
             android/app/build/reports/tests/
             android/app/build/reports/lint-results-honorDebug.html
           retention-days: 14

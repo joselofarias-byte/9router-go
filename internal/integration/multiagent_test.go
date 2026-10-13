@@ -4,6 +4,7 @@ package integration
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,11 @@ func TestMultiagentRequiresAdminEvenWithOpenDashboard(t *testing.T) {
 		if res.Status != http.StatusUnauthorized {
 			t.Fatalf("policy with engine key: %d", res.Status)
 		}
+		res = env.Get(t, "/api/multiagent/models", WithAPIKey(key))
+		if res.Status != http.StatusUnauthorized {
+			t.Fatalf("picker with engine key: %d", res.Status)
+		}
+
 	}
 	if upstream.Count() != 0 {
 		t.Fatal("rejected requests reached the provider")
@@ -47,6 +53,29 @@ func TestMultiagentRouterDispatchAndDryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin := WithHeader("Cookie", auth.CookieName+"="+session)
+	candidates := env.Get(t, "/api/multiagent/models", WithoutAPIKey(), admin)
+	if candidates.Status != http.StatusOK {
+		t.Fatalf("picker: %d %s", candidates.Status, truncate(candidates.Body))
+	}
+	var catalog struct {
+		Mode string `json:"mode"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	candidates.Decode(t, &catalog)
+	found := false
+	for _, model := range catalog.Data {
+		if strings.HasSuffix(model.ID, "/deepseek-chat") {
+			found = true
+		}
+		if model.ID == "free-best" || strings.HasPrefix(model.ID, "gemini/") {
+			t.Fatalf("picker offered disconnected/synthetic model %q", model.ID)
+		}
+	}
+	if catalog.Mode != "connected" || !found {
+		t.Fatalf("missing connected provider: %+v", catalog)
+	}
 	res := env.Get(t, "/api/multiagent/policy", WithoutAPIKey(), admin)
 	if res.Status != http.StatusOK {
 		t.Fatalf("policy: %d %s", res.Status, truncate(res.Body))

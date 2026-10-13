@@ -22,8 +22,9 @@
     error = ''
     try {
       const loaded = await api.getMultiagentPolicy(policyController.signal)
+      const firstLoad = policy === null
       policy = loaded
-      models = models.filter(model => loaded.models.includes(model))
+      models = firstLoad ? loaded.models.slice(0, loaded.max_models) : models.filter(model => loaded.models.includes(model))
     } catch (e) {
       if (!(e instanceof Error && e.name === 'AbortError')) {
         error = e instanceof Error ? e.message : 'No se pudieron cargar los modelos.'

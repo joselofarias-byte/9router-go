@@ -6,7 +6,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
@@ -24,8 +23,6 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -154,38 +151,13 @@ public final class MainActivity extends Activity {
     }
 
     private void configureModels() {
-        SharedPreferences prefs = getSharedPreferences("engine", MODE_PRIVATE);
-        LinearLayout form = new LinearLayout(this);
-        form.setPadding(24, 12, 24, 12);
-        form.setOrientation(LinearLayout.VERTICAL);
-        TextView help = new TextView(this);
-        help.setText("Modelos del comparador: usá los identificadores exactos de tus conexiones, uno por línea. La app guarda sus cuentas por separado de Termux.");
-        form.addView(help);
-        EditText models = new EditText(this);
-        models.setMinLines(3);
-        models.setMaxLines(8);
-        models.setHint("proveedor/modelo");
-        models.setText(prefs.getString("models", "").replace(",", "\n"));
-        form.addView(models);
-        CheckBox external = new CheckBox(this);
-        external.setText("Habilitar envíos del comparador a mis proveedores");
-        external.setChecked(prefs.getBoolean("external", false));
-        form.addView(external);
-        new AlertDialog.Builder(this).setTitle("Comparador").setView(form)
-            .setNegativeButton("Cancelar", null)
-            .setPositiveButton("Guardar y reiniciar", (dialog, which) -> {
-                String allowed = models.getText().toString().replace("\n", ",");
-                prefs.edit().putString("models", allowed).putBoolean("external", external.isChecked()).apply();
-                restartEngine();
-            }).show();
-    }
-
-    private void restartEngine() {
-        if (restarting) return;
-        restarting = true;
-        stopService(new Intent(this, EngineService.class));
-        panelLoaded = false;
-        awaitStopped(50);
+        if (!EngineService.ready()) {
+            Toast.makeText(this, "Iniciá el motor para cargar los modelos.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new ModelPicker(this,
+            () -> panel.loadUrl(NavigationPolicy.ORIGIN + "/dashboard/providers"),
+            () -> panel.loadUrl(NavigationPolicy.ORIGIN + "/dashboard/multiagent")).show();
     }
 
     private void awaitStopped(int attempts) {
