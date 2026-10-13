@@ -27,6 +27,8 @@ func TestParallelAndOrder(t *testing.T) {
  if max.Load()<2 {t.Fatalf("not parallel: %d",max.Load())}
 }
 func TestHTTPRejectsWithoutOptIn(t *testing.T){
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","a")
+ t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","1")
  h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked without opt-in");return "",nil})
  w:=httptest.NewRecorder()
  r:=httptest.NewRequest("POST","/api/multiagent/run",strings.NewReader(`{"prompt":"hello","models":["a"]}`))
@@ -62,6 +64,7 @@ func TestHTTPRejectsTooManyModels(t *testing.T) {
 }
 
 func TestExternalDispatchDisabledByDefault(t *testing.T) {
+ t.Setenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS","a")
  t.Setenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL","")
  h:=Handler(func(context.Context,string,string)(string,error){t.Fatal("invoked with external dispatch disabled");return "",nil})
  w:=httptest.NewRecorder()
@@ -148,3 +151,4 @@ func TestDryRunStillEnforcesAllowlist(t *testing.T) {
  h(w,r)
  if w.Code!=http.StatusForbidden {t.Fatalf("status %d",w.Code)}
 }
+
