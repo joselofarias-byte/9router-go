@@ -5,6 +5,7 @@ import time
 import urllib.error
 import urllib.request
 import re
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -14,7 +15,7 @@ ORIGIN = "http://127.0.0.1:20131"
 def adb(*args):
     return subprocess.check_output(["adb", *args], text=True, timeout=30).strip()
 
-def tap_button(label, attribute="text", tap=True):
+def tap_button(label, attribute="text", tap=True, checked=None):
     # Native startup may finish before WebView's first frame is accessible.
     deadline = time.monotonic() + 75
     while time.monotonic() < deadline:
@@ -27,6 +28,8 @@ def tap_button(label, attribute="text", tap=True):
             for node in root.iter("node"):
                 # Android themes may expose dialog action labels in uppercase.
                 if node.get(attribute, "").casefold() != label.casefold():
+                    continue
+                if checked is not None and node.get("checked") != checked:
                     continue
                 match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
                 if match:
@@ -78,6 +81,22 @@ def token():
     secret = adb("shell", "run-as", PACKAGE, "cat", "files/engine/auth/cli-secret")
     return hashlib.sha256((machine + "9r-cli-auth" + secret).encode()).hexdigest()[:16]
 
+def failure_details(exc_type, exc, tb):
+    # Only selection/UI state: never print local auth secrets or tokens.
+    try:
+        print("Saved native selection:", adb("shell", "run-as", PACKAGE, "cat", "files/multiagent-policy.json"), flush=True)
+        if "credential" in globals():
+            print("Engine selection:", request("/api/multiagent/policy", credential), flush=True)
+        with open("android/model-picker-failure.png", "wb") as output:
+            subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=output, check=True, timeout=30)
+        adb("shell", "uiautomator", "dump", "--compressed", "/sdcard/failure.xml")
+        print("Native UI:", adb("shell", "cat", "/sdcard/failure.xml"), flush=True)
+    except Exception as diagnostic:
+        print("UI diagnostic unavailable:", type(diagnostic).__name__, flush=True)
+    sys.__excepthook__(exc_type, exc, tb)
+
+sys.excepthook = failure_details
+
 adb("install", "-r", "android/app/build/outputs/apk/emulator/debug/app-emulator-debug.apk")
 adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
 adb("forward", "tcp:20131", "tcp:20131")
@@ -100,10 +119,17 @@ label = first["provider"] + " · " + first["id"].split("/", 1)[-1]
 pid = adb("shell", "pidof", "libcapimux.so")
 tap_button("Modelos")
 tap_button(label, "content-desc")
+tap_button(label, "content-desc", tap=False, checked="true")
 tap_button("Habilitar envíos a los modelos seleccionados")
 tap_button("Guardar")
-policy = request("/api/multiagent/policy", credential)
-assert policy["models"] == [first["id"]]
+deadline = time.monotonic() + 20
+while True:
+    policy = request("/api/multiagent/policy", credential)
+    if policy["models"] == [first["id"]] and policy["external_enabled"]:
+        break
+    if time.monotonic() >= deadline:
+        raise AssertionError("Native selection was not saved: " + repr(policy))
+    time.sleep(0.25)
 assert policy["external_enabled"] is True
 assert adb("shell", "pidof", "libcapimux.so") == pid
 preview = request("/api/multiagent/run", credential, {
