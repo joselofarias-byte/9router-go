@@ -40,7 +40,6 @@ const (
 	connectionAnthropicProbeModel = "claude-3-haiku-20240307"
 	codexCLIVersion               = "0.154.0"
 	grokCLIProbeURL               = "https://cli-chat-proxy.grok.com/v1/user"
-	grokCLIProbeUA                = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)"
 	kimchiProbeURL                = "https://api.cast.ai/v1/llm/openai/supported-providers"
 	kilocodeProbeURL              = "https://api.kilo.ai/api/profile"
 	clineProbeURL                 = "https://api.cline.bot/api/v1/users/me"
@@ -151,6 +150,12 @@ type oauthProbeConfig struct {
 	noAuth          bool
 }
 
+func grokCLIProbeHeaders() map[string]string {
+	headers := providers.GrokCLIProxyHeaders("")
+	headers["Accept"] = "application/json"
+	return headers
+}
+
 // oauthProbeConfigs is the per-provider OAuth probe matrix.
 var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"claude": {checkExpiry: true, refreshable: true},
@@ -221,33 +226,21 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"grok-cli": {
 		url: grokCLIProbeURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ",
-		extraHeaders: map[string]string{
-			"Accept":                   "application/json",
-			"User-Agent":               grokCLIProbeUA,
-			"x-xai-token-auth":         "xai-grok-cli",
-			"x-grok-client-identifier": "grok-pager",
-			"x-grok-client-version":    "0.2.93",
-		},
+		extraHeaders: grokCLIProbeHeaders(),
 		refreshable:    true,
 		acceptStatuses: []int{http.StatusPaymentRequired},
 		softFailMessage: map[int]string{
-			http.StatusPaymentRequired: "Connected, but Grok Build credits are exhausted (spending limit). Add credits or upgrade SuperGrok.",
+			http.StatusPaymentRequired: "Connected, but Grok Build credits are exhausted (spending limit). Add credits or use the official free-tier allowance when available.",
 		},
 	},
 	"xai": {
 		url: grokCLIProbeURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ",
-		extraHeaders: map[string]string{
-			"Accept":                   "application/json",
-			"User-Agent":               grokCLIProbeUA,
-			"x-xai-token-auth":         "xai-grok-cli",
-			"x-grok-client-identifier": "grok-pager",
-			"x-grok-client-version":    "0.2.93",
-		},
+		extraHeaders: grokCLIProbeHeaders(),
 		refreshable:    true,
 		acceptStatuses: []int{http.StatusPaymentRequired},
 		softFailMessage: map[int]string{
-			http.StatusPaymentRequired: "Connected, but Grok Build credits are exhausted (spending limit). Add credits or upgrade SuperGrok.",
+			http.StatusPaymentRequired: "Connected, but Grok Build credits are exhausted (spending limit). Add credits or use the official free-tier allowance when available.",
 		},
 	},
 }
