@@ -138,7 +138,7 @@ preview = request("/api/multiagent/run", credential, {
 assert preview["dry_run"] is True
 print("APK_MODEL_PICKER_LIVE_SAVE_PASS")
 tap_button("Modelos")
-assert tap_button(label, "content-desc", tap=False)["checked"] == "true"
+tap_button(label, "content-desc", tap=False, checked="true")
 subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=open("android/model-picker.png", "wb"), check=True, timeout=30)
 tap_button("Cancelar")
 print("APK_MODEL_PICKER_REMEMBERS_SELECTION_PASS")
