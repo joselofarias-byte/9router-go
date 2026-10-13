@@ -10,24 +10,24 @@ import (
 )
 
 type Request struct {
-	Prompt string `json:"prompt"`
-	Models []string `json:"models"`
-	Concurrency int `json:"concurrency"`
-	TimeoutMS int `json:"timeout_ms"`
-	AllowExternal bool `json:"allow_external"`
-	DryRun bool `json:"dry_run"`
+	Prompt        string   `json:"prompt"`
+	Models        []string `json:"models"`
+	Concurrency   int      `json:"concurrency"`
+	TimeoutMS     int      `json:"timeout_ms"`
+	AllowExternal bool     `json:"allow_external"`
+	DryRun        bool     `json:"dry_run"`
 }
 
 type Result struct {
-	Model string `json:"model"`
-	Output string `json:"output,omitempty"`
-	Error string `json:"error,omitempty"`
-	DurationMS int64 `json:"duration_ms"`
+	Model      string `json:"model"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
 }
 
 type Response struct {
 	Results []Result `json:"results"`
-	DryRun bool `json:"dry_run,omitempty"`
+	DryRun  bool     `json:"dry_run,omitempty"`
 }
 
 type Invoker func(context.Context, string, string) (string, error)
@@ -38,7 +38,9 @@ var batchSlots = make(chan struct{}, 2)
 // Run preserves selection order and cancels queued work before invoking providers.
 func Run(ctx context.Context, prompt string, models []string, concurrency int, timeout time.Duration, invoke Invoker) []Result {
 	concurrency = max(1, min(concurrency, 8))
-	if timeout <= 0 { timeout = 60 * time.Second }
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	results := make([]Result, len(models))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -64,7 +66,9 @@ func Run(ctx context.Context, prompt string, models []string, concurrency int, t
 			output, err := invoke(taskCtx, model, prompt)
 			results[i].DurationMS = time.Since(start).Milliseconds()
 			results[i].Error = resultError(taskCtx, err)
-			if results[i].Error == "" { results[i].Output = output }
+			if results[i].Error == "" {
+				results[i].Output = output
+			}
 		}(i, model)
 	}
 	wg.Wait()
@@ -92,14 +96,22 @@ func resultError(ctx context.Context, err error) string {
 func Handler(invoke Invoker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := decodeRequest(w, r)
-		if err != nil { writeError(w, http.StatusBadRequest, "invalid request"); return }
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
 		policy := currentPolicy()
 		for _, model := range req.Models {
-			if !policy.allows(model) { writeError(w, http.StatusForbidden, "model not allowed by server policy"); return }
+			if !policy.allows(model) {
+				writeError(w, http.StatusForbidden, "model not allowed by server policy")
+				return
+			}
 		}
 		if req.DryRun {
 			results := make([]Result, len(req.Models))
-			for i, model := range req.Models { results[i] = Result{Model: model} }
+			for i, model := range req.Models {
+				results[i] = Result{Model: model}
+			}
 			writeResponse(w, Response{Results: results, DryRun: true})
 			return
 		}
@@ -115,7 +127,9 @@ func Handler(invoke Invoker) http.HandlerFunc {
 			return
 		}
 		concurrency := req.Concurrency
-		if concurrency == 0 { concurrency = 3 }
+		if concurrency == 0 {
+			concurrency = 3
+		}
 		timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 		writeResponse(w, Response{Results: Run(r.Context(), req.Prompt, req.Models, concurrency, timeout, invoke)})
 	}
@@ -124,7 +138,9 @@ func Handler(invoke Invoker) http.HandlerFunc {
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(struct { Error string `json:"error"` }{message})
+	_ = json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+	}{message})
 }
 
 func writeResponse(w http.ResponseWriter, response Response) {

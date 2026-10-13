@@ -8,10 +8,10 @@ import (
 )
 
 type Policy struct {
-	Models []string `json:"models"`
-	ExternalEnabled bool `json:"external_enabled"`
-	MaxModels int `json:"max_models"`
-	MaxOutputTokens int `json:"max_output_tokens"`
+	Models          []string `json:"models"`
+	ExternalEnabled bool     `json:"external_enabled"`
+	MaxModels       int      `json:"max_models"`
+	MaxOutputTokens int      `json:"max_output_tokens"`
 }
 
 func currentPolicy() Policy {
@@ -19,13 +19,20 @@ func currentPolicy() Policy {
 	seen := make(map[string]bool)
 	for _, raw := range strings.Split(os.Getenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS"), ",") {
 		model := strings.TrimSpace(raw)
-		if model != "" && !seen[model] { p.Models = append(p.Models, model); seen[model] = true }
+		if model != "" && !seen[model] {
+			p.Models = append(p.Models, model)
+			seen[model] = true
+		}
 	}
 	return p
 }
 
 func (p Policy) allows(model string) bool {
-	for _, allowed := range p.Models { if allowed == model { return true } }
+	for _, allowed := range p.Models {
+		if allowed == model {
+			return true
+		}
+	}
 	return false
 }
 
