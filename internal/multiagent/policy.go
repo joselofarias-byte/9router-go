@@ -2,6 +2,7 @@ package multiagent
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +17,9 @@ type Policy struct {
 
 func currentPolicy() Policy {
 	p := Policy{Models: []string{}, ExternalEnabled: os.Getenv("CAPIMUX_MULTIAGENT_ENABLE_EXTERNAL") == "1", MaxModels: 8, MaxOutputTokens: 4096}
+	if path := os.Getenv("CAPIMUX_MULTIAGENT_POLICY_FILE"); path != "" {
+		return filePolicy(path)
+	}
 	seen := make(map[string]bool)
 	for _, raw := range strings.Split(os.Getenv("CAPIMUX_MULTIAGENT_ALLOWED_MODELS"), ",") {
 		model := strings.TrimSpace(raw)
@@ -24,6 +28,42 @@ func currentPolicy() Policy {
 			seen[model] = true
 		}
 	}
+	return p
+}
+
+// The Android owner writes this private file atomically. Each request observes
+// the latest selection without restarting the engine. Unreadable/invalid files
+// disable external dispatch; HTTP clients cannot configure the file path.
+func filePolicy(path string) Policy {
+	p := Policy{Models: []string{}, MaxModels: 8, MaxOutputTokens: 4096}
+	f, err := os.Open(path)
+	if err != nil {
+		return p
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 65537))
+	if err != nil || len(b) > 65536 {
+		return p
+	}
+	var saved struct {
+		Models          []string `json:"models"`
+		ExternalEnabled bool     `json:"external_enabled"`
+	}
+	if json.Unmarshal(b, &saved) != nil || len(saved.Models) > 2048 {
+		return p
+	}
+	seen := make(map[string]bool)
+	for _, model := range saved.Models {
+		model = strings.TrimSpace(model)
+		if model == "" || len(model) > 512 {
+			return Policy{Models: []string{}, MaxModels: 8, MaxOutputTokens: 4096}
+		}
+		if !seen[model] {
+			p.Models = append(p.Models, model)
+			seen[model] = true
+		}
+	}
+	p.ExternalEnabled = saved.ExternalEnabled
 	return p
 }
 

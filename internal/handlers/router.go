@@ -150,6 +150,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	// Multiagent calls share the dashboard authentication guard.
 	r.Get("/api/multiagent/policy", multiagent.PolicyHandler)
+	r.Get("/api/multiagent/models", chatH.HandleConnectedModels)
 	r.Post("/api/multiagent/run", multiagent.Handler(multiagent.HostInvoker(chatH.HandleChatCompletions)))
 	r.Get("/api/connections", dashH.HandleGetConnections)
 	r.Get("/api/providers", dashH.HandleGetProvidersClient)
