@@ -1,0 +1,45 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.jolufasoft.capimux'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.jolufasoft.capimux'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+    signingConfigs {
+        privateBeta {
+            if (System.getenv('CAPIMUX_SIGNING_STORE')) {
+                storeFile file(System.getenv('CAPIMUX_SIGNING_STORE'))
+                storeType 'PKCS12'
+                storePassword System.getenv('CAPIMUX_SIGNING_PASSWORD')
+                keyAlias 'capimux'
+                keyPassword System.getenv('CAPIMUX_SIGNING_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (System.getenv('CAPIMUX_SIGNING_STORE')) signingConfig signingConfigs.privateBeta
+        }
+        release {
+            minifyEnabled false
+            if (System.getenv('CAPIMUX_SIGNING_STORE')) signingConfig signingConfigs.privateBeta
+        }
+    }
+    flavorDimensions 'device'
+    productFlavors {
+        honor { dimension 'device'; ndk { abiFilters 'arm64-v8a' } }
+        emulator { dimension 'device'; ndk { abiFilters 'x86_64' } }
+    }
+    packaging { jniLibs { useLegacyPackaging = true; keepDebugSymbols += ['**/libcapimux.so'] } }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint { abortOnError true }
+}
+dependencies { testImplementation 'junit:junit:4.13.2' }
