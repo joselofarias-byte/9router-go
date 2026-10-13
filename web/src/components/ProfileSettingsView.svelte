@@ -3,6 +3,7 @@
   import {
     AlertCircle,
     Check,
+    Cloud,
     Database,
     Download,
     Eye,
@@ -24,8 +25,9 @@
   import Toggle from '../lib/ui/Toggle.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import Input from '../lib/ui/Input.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type Settings } from '../api/client'
+  import { assessBackupPassphrase, backupPassphrasesMatch, BACKUP_PASSPHRASE_MIN_LENGTH } from '../lib/backup-passphrase'
+  import { setRuntimeLocale } from '../lib/i18n'
 
   interface Props {
     settings?: Settings
@@ -41,6 +43,7 @@
   let requireLogin = $state(false)
   let sessionTimeout = $state('24h')
   let selectedLanguage = $state('en')
+  let isApplyingLanguage = $state(false)
   let enableObservability = $state(false)
 
   // Routing Strategy State
@@ -76,10 +79,19 @@
   // Database Backup / Import
   let isDownloadingBackup = $state(false)
   let isImportingBackup = $state(false)
+  let isSharingBackup = $state(false)
   let fileInput: HTMLInputElement | null = $state(null)
   let dbPassword = $state('')
+  let backupPassphrase = $state('')
+  let backupPassphraseConfirmation = $state('')
+  let showDbPassword = $state(false)
+  let showBackupPassphrase = $state(false)
+  let showBackupPassphraseConfirmation = $state(false)
+  let backupPassphraseInfo = $derived(assessBackupPassphrase(backupPassphrase))
+  let backupPassphrasesMatchState = $derived(backupPassphrasesMatch(backupPassphrase, backupPassphraseConfirmation))
   let dbAuthOpen = $state(false)
   let pendingImportFile: File | null = $state(null)
+  let backupAction = $state<'download' | 'drive-share' | 'import' | null>(null)
 
   $effect(() => {
     if (settings) {
@@ -136,6 +148,27 @@
   onMount(() => {
     loadSettings()
   })
+
+  async function handleLanguageSelection(event: Event) {
+    const next = (event.currentTarget as HTMLSelectElement).value
+    const previous = selectedLanguage
+    if (next === previous || isApplyingLanguage) return
+
+    selectedLanguage = next
+    isApplyingLanguage = true
+    try {
+      // Apply first so the choice feels immediate; persist right after.
+      await setRuntimeLocale(next)
+      await api.updateSettings({ language: next })
+      onRefresh?.()
+    } catch (err) {
+      selectedLanguage = previous
+      try { await setRuntimeLocale(previous) } catch {}
+      alert(`Failed to change language: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isApplyingLanguage = false
+    }
+  }
 
   async function handleSaveAll() {
     isSavingSettings = true
@@ -202,57 +235,169 @@
     }
   }
 
-  // closeDbAuth is the single dismissal path for the password modal. Modal
-  // wires Escape, the overlay and both ✕ buttons to onClose, and an import
-  // already in flight is a destructive operation the user must not be able to
-  // abandon by pressing a key — dismissing the dialog would leave the POST
-  // running and then wipe the database on completion.
-  function closeDbAuth() {
-    if (isImportingBackup || isDownloadingBackup) return
-    dbAuthOpen = false
+  // closeDbAuth is the single dismissal path for the backup modal.
+  function backupBusy() {
+    return isImportingBackup || isDownloadingBackup || isSharingBackup
+  }
+
+  function resetBackupAuthState() {
     dbPassword = ''
+    backupPassphrase = ''
+    backupPassphraseConfirmation = ''
+    showDbPassword = false
+    showBackupPassphrase = false
+    showBackupPassphraseConfirmation = false
     pendingImportFile = null
+    backupAction = null
+  }
+
+  function closeDbAuth() {
+    if (backupBusy()) return
+    dbAuthOpen = false
+    resetBackupAuthState()
+  }
+
+  function openBackupAuth(action: 'download' | 'drive-share') {
+    if (backupBusy()) return
+    resetBackupAuthState()
+    backupAction = action
+    dbAuthOpen = true
   }
 
   function handleDownloadBackup() {
-    if (isImportingBackup || isDownloadingBackup) return
-    dbPassword = ''
-    pendingImportFile = null
-    dbAuthOpen = true
+    openBackupAuth('download')
+  }
+
+  function handleDriveBackup() {
+    openBackupAuth('drive-share')
+  }
+
+  function handleDriveRestore() {
+    if (backupBusy()) return
+    fileInput?.click()
+  }
+
+  function encryptedRestoreSelected() {
+    const file = pendingImportFile
+    if (!file) return false
+    const lowerName = file.name.toLowerCase()
+    return lowerName.endsWith('.9rbak') || file.type === 'application/vnd.9router.backup'
+  }
+
+  function backupPassphraseRequired() {
+    return backupAction !== 'import' || encryptedRestoreSelected()
+  }
+
+  function creatingEncryptedBackup() {
+    return backupAction === 'download' || backupAction === 'drive-share'
+  }
+
+  function backupPassphraseValid() {
+    if (!backupPassphraseRequired()) return true
+    if (!backupPassphraseInfo.valid) return false
+    if (backupAction === 'import') return true
+    return backupPassphrasesMatchState
+  }
+
+  function pendingBackupActionValid() {
+    return dbPassword.trim() !== '' && backupPassphraseValid()
+  }
+
+  function backupFileName() {
+    const stamp = new Date().toISOString().replace(/[.:]/g, '-')
+    return `9router-backup-${stamp}.9rbak`
+  }
+
+  async function fetchEncryptedBackup(password: string, passphrase: string): Promise<{ blob: Blob; name: string }> {
+    const res = await fetch('/api/settings/database', {
+      headers: {
+        ...getAuthHeaders(),
+        'x-9r-password': password,
+        'x-9r-backup-passphrase': passphrase,
+        'Accept': 'application/vnd.9router.backup',
+      },
+    })
+    if (!res.ok) {
+      throw new Error(await responseErrorMessage(res, 'Failed to export database'))
+    }
+    return { blob: await res.blob(), name: backupFileName() }
+  }
+
+  function downloadBackupBlob(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => {
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    }, 1000)
   }
 
   async function runDownloadBackup() {
     isDownloadingBackup = true
     const password = dbPassword
+    const passphrase = backupPassphrase
+    if (!backupPassphraseValid()) {
+      isDownloadingBackup = false
+      return
+    }
     try {
-      const res = await fetch('/api/settings/database', {
-        headers: {
-          ...getAuthHeaders(),
-          'x-9r-password': password,
-          'Accept': 'application/vnd.9router.backup',
-        },
-      })
-      if (!res.ok) {
-        throw new Error(await responseErrorMessage(res, 'Failed to export database'))
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      const stamp = new Date().toISOString().replace(/[.:]/g, '-')
-      a.href = url
-      a.download = `9router-backup-${stamp}.9rbak`
-      document.body.appendChild(a)
-      a.click()
-      setTimeout(() => {
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-      }, 1000)
+      const { blob, name } = await fetchEncryptedBackup(password, passphrase)
+      downloadBackupBlob(blob, name)
     } catch (err) {
-      alert(`Failed to download backup: ${err instanceof Error ? err.message : String(err)}`)
+      alert(`Failed to export backup: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       isDownloadingBackup = false
       dbAuthOpen = false
-      dbPassword = ''
+      resetBackupAuthState()
+    }
+  }
+
+  async function runShareBackup() {
+    isSharingBackup = true
+    const password = dbPassword
+    const passphrase = backupPassphrase
+    if (!backupPassphraseValid()) {
+      isSharingBackup = false
+      return
+    }
+
+    try {
+      const { blob, name } = await fetchEncryptedBackup(password, passphrase)
+      const file = new File([blob], name, { type: 'application/vnd.9router.backup' })
+      const shareData: ShareData = {
+        files: [file],
+        title: '9router backup',
+        text: 'Encrypted 9router backup',
+      }
+
+      if (typeof navigator.share === 'function' &&
+          (typeof navigator.canShare !== 'function' || navigator.canShare(shareData))) {
+        await navigator.share(shareData)
+      } else {
+        downloadBackupBlob(blob, name)
+        alert('This browser cannot open the Android share sheet, so the encrypted backup was downloaded instead.')
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      alert(`Failed to share backup: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isSharingBackup = false
+      dbAuthOpen = false
+      resetBackupAuthState()
+    }
+  }
+
+  function runPendingBackupAction() {
+    if (backupAction === 'drive-share') {
+      void runShareBackup()
+    } else if (backupAction === 'import') {
+      void runImportBackup()
+    } else {
+      void runDownloadBackup()
     }
   }
 
@@ -264,7 +409,13 @@
 
     target.value = ''
     pendingImportFile = file
+    backupAction = 'import'
     dbPassword = ''
+    backupPassphrase = ''
+    backupPassphraseConfirmation = ''
+    showDbPassword = false
+    showBackupPassphrase = false
+    showBackupPassphraseConfirmation = false
     dbAuthOpen = true
   }
 
@@ -275,6 +426,9 @@
     // JSON.parse() can both yield, and reading live state afterwards would let a
     // concurrent dismissal blank the credential the request is authorized with.
     const password = dbPassword
+    const passphrase = backupPassphrase
+    const lowerNameForPassphrase = file.name.toLowerCase()
+    if (lowerNameForPassphrase.endsWith('.9rbak') && !backupPassphraseInfo.valid) return
     isImportingBackup = true
     try {
       let res: Response
@@ -288,6 +442,7 @@
           headers: {
             ...getAuthHeaders(),
             'x-9r-password': password,
+            'x-9r-backup-passphrase': passphrase,
             'Content-Type': isEncrypted ? 'application/vnd.9router.backup' : 'application/zip',
           },
           body: buffer,
@@ -297,7 +452,7 @@
         const payload = JSON.parse(raw)
         res = await fetch('/api/settings/database', {
           method: 'POST',
-          headers: { ...getAuthHeaders(), 'x-9r-password': password, 'Content-Type': 'application/json' },
+          headers: { ...getAuthHeaders(), 'x-9r-password': password, 'x-9r-backup-passphrase': passphrase, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
       }
@@ -313,6 +468,9 @@
       pendingImportFile = null
       dbAuthOpen = false
       dbPassword = ''
+      backupPassphrase = ''
+      backupPassphraseConfirmation = ''
+      backupAction = null
     }
   }
 </script>
@@ -356,66 +514,76 @@
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <!-- SECTION 1: Runtime Storage -->
+    <!-- SECTION 1: Backup & Recovery -->
     <Card padding="md" class="space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <div class="flex items-center gap-2">
-          <Laptop class="w-4 h-4 text-brand-500" />
-          <h2 class="text-sm font-bold text-text-main">Runtime Storage</h2>
-        </div>
-        <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-success/10 text-success border border-success/20">
-          Server managed
-        </span>
+      <div class="flex items-center gap-2 pb-2 border-b border-border">
+        <Cloud class="w-4 h-4 text-brand-500" />
+        <h2 class="text-sm font-bold text-text-main">Backup & Recovery</h2>
       </div>
 
-      <div class="space-y-2 text-xs">
-        <div class="p-3 rounded-xl bg-bg border border-border space-y-1">
-          <div class="text-[10px] text-text-subtle uppercase font-mono tracking-wider font-semibold">
-            Default Database Location
-          </div>
-          <div class="font-mono text-xs text-text-main font-semibold">
-            ~/.9router/db/data.sqlite
-          </div>
-          <div class="text-[11px] text-text-muted pt-1">
-            The Go server opens the configured SQLite database in WAL mode. DB_PATH or DATA_DIR may select a different location.
-          </div>
-          <div class="text-[11px] text-text-subtle pt-1">
-            The native server does not run upstream's versioned schema migration. A new empty database must be initialized with a compatible upstream schema before use.
-          </div>
-          <div class="text-[11px] text-text-subtle pt-1">
-            Backups are encrypted .9rbak dashboard-data payloads, not a byte-for-byte copy of the live SQLite file.
-          </div>
-        </div>
+      <div class="space-y-3 text-xs">
+        <p class="text-[11px] text-text-muted leading-relaxed">
+          Backups are encrypted before leaving 9router-go. No Google OAuth setup is required for manual Drive backups on Android.
+        </p>
 
-        <div class="flex items-center gap-2 pt-1">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <button
             type="button"
-            onclick={handleDownloadBackup}
-            disabled={isDownloadingBackup || isImportingBackup}
-            class="flex-1 py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5"
+            onclick={handleDriveBackup}
+            disabled={backupBusy()}
+            class="py-2.5 px-3 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <Download class="w-3.5 h-3.5 text-brand-500" />
-            <span>Download Backup</span>
+            <Cloud class="w-3.5 h-3.5" />
+            <span>Save to Google Drive</span>
           </button>
-
-          <input
-            type="file"
-            accept=".9rbak,.zip,.json,application/vnd.9router.backup,application/zip,application/json"
-            bind:this={fileInput}
-            onchange={handleFileSelected}
-            class="hidden"
-          />
 
           <button
             type="button"
-            onclick={() => fileInput?.click()}
-            disabled={isImportingBackup || isDownloadingBackup}
-            class="flex-1 py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5"
+            onclick={handleDriveRestore}
+            disabled={backupBusy()}
+            class="py-2.5 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <Upload class="w-3.5 h-3.5 text-text-muted" />
-            <span>Import Backup</span>
+            <RefreshCw class="w-3.5 h-3.5 text-info" />
+            <span>Restore from Google Drive</span>
           </button>
         </div>
+
+        <p class="text-[10px] text-text-subtle text-center">
+          Android opens its system chooser. Pick Google Drive to save, or choose a .9rbak file from Drive to restore.
+        </p>
+
+        <input
+          type="file"
+          accept=".9rbak,.zip,.json,application/vnd.9router.backup,application/zip,application/json"
+          bind:this={fileInput}
+          onchange={handleFileSelected}
+          class="hidden"
+        />
+
+        <details class="pt-2 border-t border-border/60">
+          <summary class="cursor-pointer text-[11px] font-semibold text-text-muted hover:text-text-main">Advanced: local file export/import</summary>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-3">
+            <button
+              type="button"
+              onclick={handleDownloadBackup}
+              disabled={backupBusy()}
+              class="py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              <Download class="w-3.5 h-3.5 text-brand-500" />
+              <span>Export encrypted file</span>
+            </button>
+
+            <button
+              type="button"
+              onclick={() => fileInput?.click()}
+              disabled={backupBusy()}
+              class="py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              <Upload class="w-3.5 h-3.5 text-text-muted" />
+              <span>Import backup file</span>
+            </button>
+          </div>
+        </details>
       </div>
     </Card>
 
@@ -431,8 +599,11 @@
           <label for="lang-select" class="block font-semibold text-text-main">Dashboard Language</label>
           <select
             id="lang-select"
-            bind:value={selectedLanguage}
-            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500"
+            value={selectedLanguage}
+            onchange={handleLanguageSelection}
+            disabled={isApplyingLanguage}
+            data-i18n-skip="true"
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500 disabled:opacity-60"
           >
             <option value="en">English (US)</option>
             <option value="zh-CN">简体中文 (Simplified Chinese)</option>
@@ -442,8 +613,9 @@
             <option value="es">Español</option>
             <option value="de">Deutsch</option>
           </select>
-          <p class="text-[11px] text-text-subtle">
-            Select the primary interface language for the 9router-go web dashboard.
+          <p class="text-[11px] text-text-subtle flex items-center gap-1.5">
+            <span>Applies immediately and is saved automatically.</span>
+            {#if isApplyingLanguage}<Loader2 class="w-3 h-3 animate-spin" />{/if}
           </p>
         </div>
       </div>
@@ -733,32 +905,175 @@
     <Modal
       isOpen={dbAuthOpen}
       onClose={closeDbAuth}
-      title={pendingImportFile ? 'Confirm Import' : 'Confirm Download'}
+      title={backupAction === 'import'
+        ? 'Restore backup file'
+        : backupAction === 'drive-share'
+          ? 'Save encrypted backup'
+          : 'Export encrypted backup'}
       size="sm"
     >
       <div class="space-y-3">
         <p class="text-text-muted">
-          {pendingImportFile
-            ? `Import "${pendingImportFile.name}"? This will overwrite existing server data.`
-            : 'Download an encrypted dashboard backup (.9rbak)?'}
+          {backupAction === 'import'
+            ? `Restore "${pendingImportFile?.name || 'backup'}"? This will overwrite existing server data.`
+            : backupAction === 'drive-share'
+              ? 'Create an encrypted backup and open Android sharing. Choose Google Drive in the system sheet.'
+              : 'Export an encrypted recovery backup (.9rbak) to this device?' }
         </p>
-        <Input
-          type="password"
-          label="Dashboard password"
-          placeholder="Enter password to authorize"
-          bind:value={dbPassword}
-        />
+        <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2">
+          <div>
+            <p class="text-xs font-bold text-text-main">1. Dashboard authorization</p>
+            <p class="text-[10px] text-text-subtle">This is your current dashboard password. It only authorizes the backup operation.</p>
+          </div>
+          <div class="space-y-1.5">
+            <label for="backup-dashboard-password" class="text-sm font-medium text-text-main">Dashboard password</label>
+            <div class="relative">
+              <input
+                id="backup-dashboard-password"
+                type={showDbPassword ? 'text' : 'password'}
+                placeholder="Current dashboard password"
+                bind:value={dbPassword}
+                autocomplete="current-password"
+                class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40"
+              />
+              <button
+                type="button"
+                onclick={() => (showDbPassword = !showDbPassword)}
+                class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                aria-label={showDbPassword ? 'Hide password' : 'Show password'}
+              >
+                {#if showDbPassword}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {#if backupPassphraseRequired()}
+          <div class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-3">
+            <div>
+              <p class="text-xs font-bold text-text-main">{backupAction === 'import' ? '3. Backup decryption' : '2. Backup encryption'}</p>
+              <p class="text-[10px] text-text-subtle">
+                {backupAction === 'import'
+                  ? 'Enter the recovery passphrase that was used when this encrypted backup was created.'
+                  : 'Create a separate recovery passphrase for this .9rbak file. You will need it to restore the backup later.'}
+              </p>
+            </div>
+
+            <div class="space-y-1.5">
+              <label for="backup-recovery-passphrase" class="text-sm font-medium text-text-main">Recovery passphrase</label>
+              <div class="relative">
+                <input
+                  id="backup-recovery-passphrase"
+                  type={showBackupPassphrase ? 'text' : 'password'}
+                  placeholder={backupAction === 'import' ? 'Passphrase used when this .9rbak was created' : 'Choose 12+ characters and keep it safe'}
+                  bind:value={backupPassphrase}
+                  autocomplete="new-password"
+                  aria-invalid={backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
+                  class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border placeholder-text-muted/70 focus:outline-none focus:ring-2 transition {backupPassphrase.length > 0 && !backupPassphraseInfo.valid ? 'border-danger/60 focus:ring-danger/30' : 'border-transparent focus:ring-brand-500/30 focus:border-brand-500/40'}"
+                />
+                <button
+                  type="button"
+                  onclick={() => (showBackupPassphrase = !showBackupPassphrase)}
+                  class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                  aria-label={showBackupPassphrase ? 'Hide password' : 'Show password'}
+                >
+                  {#if showBackupPassphrase}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+                </button>
+              </div>
+
+              <div class="flex items-center justify-between gap-3 text-[11px]">
+                <span class={backupPassphraseInfo.valid ? 'text-success font-semibold' : 'text-text-muted'}>
+                  {backupPassphraseInfo.length} / {BACKUP_PASSPHRASE_MIN_LENGTH} <span>minimum</span>
+                  {#if backupPassphraseInfo.valid} ✓{/if}
+                </span>
+                {#if creatingEncryptedBackup()}
+                  <span class="text-text-muted">
+                    Password strength:
+                    <strong class={backupPassphraseInfo.score >= 4 ? 'text-success' : backupPassphraseInfo.score >= 3 ? 'text-info' : backupPassphraseInfo.score >= 2 ? 'text-warning' : 'text-danger'}>
+                      {backupPassphraseInfo.label}
+                    </strong>
+                  </span>
+                {/if}
+              </div>
+
+              {#if creatingEncryptedBackup()}
+                <div class="h-1.5 rounded-full bg-surface-3 overflow-hidden" aria-hidden="true">
+                  <div
+                    class="h-full rounded-full transition-all duration-200 {backupPassphraseInfo.score >= 4 ? 'bg-success' : backupPassphraseInfo.score >= 3 ? 'bg-info' : backupPassphraseInfo.score >= 2 ? 'bg-warning' : 'bg-danger'}"
+                    style:width={`${backupPassphraseInfo.percent}%`}
+                  ></div>
+                </div>
+                <p class="text-[10px] text-text-subtle">Use a mix of upper/lowercase, numbers, and symbols.</p>
+              {/if}
+
+              {#if backupPassphrase.length > 0 && !backupPassphraseInfo.valid}
+                <p class="text-[11px] text-danger flex items-center gap-1">
+                  <AlertCircle class="w-3.5 h-3.5" />
+                  <span>At least 12 characters</span>
+                </p>
+              {/if}
+            </div>
+
+            {#if creatingEncryptedBackup()}
+              <div class="space-y-1.5 pt-1">
+                <label for="backup-recovery-passphrase-confirm" class="text-sm font-medium text-text-main">Confirm recovery passphrase</label>
+                <div class="relative">
+                  <input
+                    id="backup-recovery-passphrase-confirm"
+                    type={showBackupPassphraseConfirmation ? 'text' : 'password'}
+                    placeholder="Type the same recovery passphrase again"
+                    bind:value={backupPassphraseConfirmation}
+                    autocomplete="new-password"
+                    aria-invalid={backupPassphraseConfirmation.length > 0 && !backupPassphrasesMatchState}
+                    class="w-full py-2.5 pl-3 pr-11 text-[16px] sm:text-sm text-text-main bg-surface-2 rounded-[10px] border placeholder-text-muted/70 focus:outline-none focus:ring-2 transition {backupPassphraseConfirmation.length > 0 && !backupPassphrasesMatchState ? 'border-danger/60 focus:ring-danger/30' : backupPassphrasesMatchState ? 'border-success/50 focus:ring-success/30' : 'border-transparent focus:ring-brand-500/30 focus:border-brand-500/40'}"
+                  />
+                  <button
+                    type="button"
+                    onclick={() => (showBackupPassphraseConfirmation = !showBackupPassphraseConfirmation)}
+                    class="absolute inset-y-0 right-0 px-3 flex items-center text-text-muted hover:text-text-main"
+                    aria-label={showBackupPassphraseConfirmation ? 'Hide password' : 'Show password'}
+                  >
+                    {#if showBackupPassphraseConfirmation}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+                  </button>
+                </div>
+
+                <div class="flex items-center justify-between gap-3 text-[11px]">
+                  <span class={backupPassphraseConfirmation.length >= BACKUP_PASSPHRASE_MIN_LENGTH ? 'text-success font-semibold' : 'text-text-muted'}>
+                    {backupPassphraseConfirmation.length} / {BACKUP_PASSPHRASE_MIN_LENGTH} <span>minimum</span>
+                    {#if backupPassphraseConfirmation.length >= BACKUP_PASSPHRASE_MIN_LENGTH} ✓{/if}
+                  </span>
+                  {#if backupPassphraseConfirmation.length > 0}
+                    <span class={backupPassphrasesMatchState ? 'text-success font-semibold' : 'text-danger font-semibold'}>
+                      {backupPassphrasesMatchState ? 'Passphrases match ✓' : 'Passphrases do not match'}
+                    </span>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+
+            <p class="text-[10px] text-text-subtle leading-relaxed">
+              {backupAction === 'import'
+                ? 'Required to decrypt this encrypted .9rbak backup.'
+                : 'This passphrase encrypts the provider credentials inside the backup. It is not stored by 9Router or Google Drive.'}
+            </p>
+          </div>
+        {/if}
       </div>
       {#snippet footer()}
-        <Button variant="ghost" onclick={closeDbAuth} disabled={isImportingBackup || isDownloadingBackup}>
+        <Button variant="ghost" onclick={closeDbAuth} disabled={backupBusy()}>
           Cancel
         </Button>
         <Button
           variant="primary"
-          onclick={() => (pendingImportFile ? runImportBackup() : runDownloadBackup())}
-          loading={isImportingBackup || isDownloadingBackup}
+          onclick={runPendingBackupAction}
+          loading={backupBusy()}
+          disabled={backupBusy() || !pendingBackupActionValid()}
         >
-          {pendingImportFile ? 'Import' : 'Download'}
+          {backupAction === 'import'
+            ? 'Restore'
+            : backupAction === 'drive-share'
+              ? 'Open Android sharing'
+              : 'Export file'}
         </Button>
       {/snippet}
     </Modal>

@@ -82,8 +82,14 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Put("/settings", h.HandleUpdateSettings)
 		r.Get("/settings/database", h.HandleExportDatabase)
 		r.Post("/settings/database", h.HandleImportDatabase)
+		r.Get("/settings/backup/google/status", h.HandleGoogleBackupStatus)
 		r.Get("/settings/backup/google/authorize", h.HandleGoogleBackupAuthorize)
+		r.Post("/settings/backup/google/connect", h.HandleGoogleBackupConnect)
+		r.Delete("/settings/backup/google", h.HandleGoogleBackupDisconnect)
+		r.Get("/settings/backup/google/files", h.HandleGoogleBackupList)
+		r.Post("/settings/backup/google/restore", h.HandleGoogleBackupRestore)
 		r.Post("/settings/backup/google", h.HandleGoogleBackupUpload)
+		r.Post("/settings/backup/google/upload", h.HandleGoogleBackupUpload)
 		r.Post("/settings/proxy-test", h.HandleProxyTest)
 
 		// Tunnel & Tailscale

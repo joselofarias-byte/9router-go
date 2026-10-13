@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { api, getAuthHeaders, type ProviderConnection, type ProviderNode } from '../../api/client'
   import { PROVIDER_CATALOG } from '../../lib/providers'
   import Card from '../../lib/ui/Card.svelte'
@@ -32,6 +33,7 @@
   let pulseProvider = $state<string>('')
   let lastProvider = $state<string>('')
   let errorProvider = $state<string>('')
+  let topologyOpen = $state(false)
   let pulseTimer: ReturnType<typeof setTimeout> | null = null
 
   function triggerPulse(provider: string) {
@@ -42,6 +44,15 @@
       pulseProvider = ''
     }, 3000)
   }
+
+  onMount(() => {
+    const syncTopology = () => {
+      if (window.innerWidth >= 1024) topologyOpen = true
+    }
+    syncTopology()
+    window.addEventListener('resize', syncTopology)
+    return () => window.removeEventListener('resize', syncTopology)
+  })
   // mergeRecent unions an incoming SSE list with what is on screen. The SSE
   // stream carries only this process's in-memory ring, so a plain replace
   // collapses the DB-backed list (20 rows after a REST load) down to the few
@@ -355,28 +366,60 @@
     <!-- 5 Overview KPI Cards -->
     <SummaryKpiCards {stats} />
 
-    <!-- Topology + Recent Requests -->
-    <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-      <ProviderTopologyCard
-        providers={topologyProviders}
-        {activeRequests}
-        {pulseProvider}
-        {lastProvider}
-        {errorProvider}
-        onRefresh={() => loadStats(period)}
-      />
-      <!-- Recent Requests Card -->
-      <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-4 flex min-w-0 flex-col overflow-hidden" style="height: 480px">
-        <div class="px-1 py-2 border-b border-border shrink-0">
-          <span class="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+    <!-- Recent requests first on phones; topology is collapsible there. -->
+    <div class="grid min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+      <details
+        bind:open={topologyOpen}
+        class="order-2 min-w-0 rounded-[14px] lg:order-1 lg:rounded-none"
+      >
+        <summary class="flex cursor-pointer items-center justify-between rounded-[14px] border border-border-subtle bg-surface px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-muted lg:hidden">
+          <span>Routing map</span>
+          <span class="material-symbols-outlined text-base">{topologyOpen ? 'expand_less' : 'expand_more'}</span>
+        </summary>
+        <div class="mt-2 lg:mt-0">
+          <ProviderTopologyCard
+            providers={topologyProviders}
+            {activeRequests}
+            {pulseProvider}
+            {lastProvider}
+            {errorProvider}
+            onRefresh={() => loadStats(period)}
+          />
+        </div>
+      </details>
+
+      <div class="order-1 flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-border-subtle bg-surface p-3 shadow-[var(--shadow-soft)] max-h-[360px] lg:order-2 lg:h-[480px] lg:max-h-none lg:p-4">
+        <div class="shrink-0 border-b border-border px-1 py-2">
+          <span class="text-xs font-semibold uppercase tracking-wide text-text-muted">Recent Requests</span>
         </div>
 
         {#if !stats.recentRequests || stats.recentRequests.length === 0}
-          <div class="flex-1 flex items-center justify-center text-text-muted text-xs">
+          <div class="flex flex-1 items-center justify-center text-xs text-text-muted">
             No requests recorded yet.
           </div>
         {:else}
-          <div class="flex-1 overflow-y-auto">
+          <!-- Phone layout: readable cards instead of a squeezed four-column table. -->
+          <div class="flex-1 space-y-2 overflow-y-auto pt-2 sm:hidden">
+            {#each stats.recentRequests as req}
+              <div class="rounded-lg border border-border/70 bg-bg/60 px-3 py-2">
+                <div class="flex min-w-0 items-center gap-2">
+                  <span class="block h-1.5 w-1.5 shrink-0 rounded-full {req.status === 'ok' || req.status === 'success' ? 'bg-success' : 'bg-error'}"></span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-text-main" title={req.model}>{req.model}</span>
+                  <span class="shrink-0 text-[10px] text-text-muted">{timeAgo(req.timestamp)}</span>
+                </div>
+                <div class="mt-1.5 flex items-center justify-between pl-3.5 font-mono text-[10px]">
+                  <span class="truncate text-text-muted">{req.provider || 'unknown'}</span>
+                  <span class="whitespace-nowrap">
+                    <span class="text-primary">{fmt(req.promptTokens)}↑</span>
+                    <span class="ml-2 text-success">{fmt(req.completionTokens)}↓</span>
+                  </span>
+                </div>
+              </div>
+            {/each}
+          </div>
+
+          <!-- Tablet/desktop keeps the dense table. -->
+          <div class="hidden flex-1 overflow-y-auto sm:block">
             <table class="w-full table-fixed min-w-[280px] border-collapse text-xs">
               <colgroup>
                 <col class="w-[20px]" />
@@ -384,7 +427,7 @@
                 <col class="w-[96px]" />
                 <col class="w-[56px]" />
               </colgroup>
-              <thead class="sticky top-0 bg-bg z-10">
+              <thead class="sticky top-0 z-10 bg-bg">
                 <tr class="border-b border-border">
                   <th class="py-1.5 pl-3 text-left font-semibold text-text-muted"></th>
                   <th class="py-1.5 text-left font-semibold text-text-muted">Model</th>

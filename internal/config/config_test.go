@@ -171,6 +171,8 @@ JWT_SECRET=dotenv-jwt-secret
 INITIAL_PASSWORD=dotenv-initial-password
 API_KEY_SECRET=dotenv-api-key-secret
 MACHINE_ID_SALT=dotenv-salt
+GOOGLE_DRIVE_BACKUP_CLIENT_ID=drive-client-id
+GOOGLE_DRIVE_BACKUP_CLIENT_SECRET=drive-client-secret
 RTK_ENABLED=false
 CAVEMAN_ENABLED=true
 PONYTAIL_ENABLED=true
@@ -201,6 +203,12 @@ PONYTAIL_ENABLED=true
 	}
 	if cfg.MachineIDSalt != "dotenv-salt" {
 		t.Errorf("expected machine id salt from .env, got %s", cfg.MachineIDSalt)
+	}
+	if cfg.GoogleDriveBackupClientID != "drive-client-id" {
+		t.Errorf("expected Drive client id from .env, got %s", cfg.GoogleDriveBackupClientID)
+	}
+	if cfg.GoogleDriveBackupClientSecret != "drive-client-secret" {
+		t.Errorf("expected Drive client secret from .env")
 	}
 	if cfg.RTKEnabled != false {
 		t.Errorf("expected rtk false from .env, got %v", cfg.RTKEnabled)
@@ -255,6 +263,38 @@ PONYTAIL_ENABLED=false
 	}
 	if cfg.PonytailEnabled != true {
 		t.Errorf("expected OS env PONYTAIL_ENABLED true to override .env, got %v", cfg.PonytailEnabled)
+	}
+}
+
+func TestMergeEnvFiles_UsesExecutableFallbackThenWorkingDirectoryOverride(t *testing.T) {
+	dir := t.TempDir()
+	low := filepath.Join(dir, "binary.env")
+	high := filepath.Join(dir, "working.env")
+
+	if err := os.WriteFile(low, []byte(
+		"PORT=20131\nGOOGLE_DRIVE_BACKUP_CLIENT_ID=low-id\nGOOGLE_DRIVE_BACKUP_CLIENT_SECRET=low-secret\n",
+	), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(high, []byte(
+		"PORT=20132\nGOOGLE_DRIVE_BACKUP_CLIENT_ID=high-id\n",
+	), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	v := newBaseViper()
+	// envFileCandidates returns [working-dir, executable-dir]. The helper
+	// intentionally loads the latter first and the former on top.
+	mergeEnvFiles(v, []string{high, low})
+
+	if got := v.GetInt("PORT"); got != 20132 {
+		t.Fatalf("PORT=%d want working-dir override 20132", got)
+	}
+	if got := v.GetString("GOOGLE_DRIVE_BACKUP_CLIENT_ID"); got != "high-id" {
+		t.Fatalf("Drive client id=%q want high-id", got)
+	}
+	if got := v.GetString("GOOGLE_DRIVE_BACKUP_CLIENT_SECRET"); got != "low-secret" {
+		t.Fatalf("Drive client secret=%q want fallback value", got)
 	}
 }
 
