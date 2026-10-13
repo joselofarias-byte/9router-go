@@ -25,7 +25,8 @@ def tap_button(label, attribute="text", tap=True):
             adb("shell", "uiautomator", "dump", "--compressed", "/sdcard/window.xml")
             root = ET.fromstring(adb("shell", "cat", "/sdcard/window.xml"))
             for node in root.iter("node"):
-                if node.get(attribute) != label:
+                # Android themes may expose dialog action labels in uppercase.
+                if node.get(attribute, "").casefold() != label.casefold():
                     continue
                 match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
                 if match:
