@@ -6,6 +6,8 @@ App Android independiente con el motor Go y su dashboard Svelte incluidos. No re
 
 Al abrir la app inicia el motor y carga el panel local. Iniciar, Detener y Recargar controlan el servicio. Modelos configura los identificadores permitidos para el comparador y su habilitación; al guardar, el motor se reinicia conservando la base de datos. Registro muestra las últimas líneas y Batería abre los ajustes del teléfono.
 
+En una instalación nueva, la clave inicial del panel es 123456, siguiendo el contrato del motor. Puede cambiarse desde el panel.
+
 El motor escucha exclusivamente en http://127.0.0.1:20131. Otros clientes del teléfono pueden usar ese destino con una clave de inferencia creada en el panel. El puerto es distinto del 20130 de Termux para permitir probar ambas instalaciones por separado.
 
 Las cuentas, claves y base de datos se guardan en el espacio privado de esta app. No importa automáticamente archivos de Termux. Los respaldos automáticos de Android están desactivados. La app no contiene credenciales de proveedores.
@@ -24,7 +26,9 @@ El icono de esta primera beta es un marcador temporal con la letra C; la identid
 
 ## Construcción
 
-Requisitos: Go 1.27, Bun 1.4.2, JDK 17, Gradle 8.11.1 y SDK 35.
+Requisitos: Go 1.27, Bun 1.4.2, JDK 17, Gradle 8.11.1, SDK 35 y NDK 28.0.13004108.
+
+La compilación APK usa el tag capimux_apk y SQLite mediante bionic. Las compilaciones normales conservan el driver pure-Go existente. La alternativa APK evita las llamadas legacy de libc que el sandbox Android bloquea en x86_64; también se prueba ese adaptador con la suite de base de datos en el host.
 
 Construí web/dist, ejecutá bash android/ci/build-engine.sh y luego gradle -p android :app:assembleHonorDebug. La variante honor incluye ARM64; emulator incluye x86_64 para pruebas.
 
