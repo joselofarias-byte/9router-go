@@ -30,6 +30,15 @@ def wait_health(online):
         if available == online:
             return
         time.sleep(1)
+    for command in [
+        ("shell", "run-as", PACKAGE, "cat", "files/engine.log"),
+        ("logcat", "-d", "-s", "AndroidRuntime"),
+        ("shell", "dumpsys", "activity", "services", PACKAGE),
+    ]:
+        try:
+            print(adb(*command))
+        except subprocess.CalledProcessError:
+            print("Diagnostic command unavailable")
     raise RuntimeError("Unexpected native engine health state")
 
 def token():
