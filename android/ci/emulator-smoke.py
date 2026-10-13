@@ -92,10 +92,10 @@ print("APK_NATIVE_ENGINE_START_PASS")
 # restarting the process. No inference or upstream network request is made.
 catalog = request("/api/multiagent/models", credential)
 assert catalog["mode"] == "connected"
-entries = sorted(catalog["data"], key=lambda e: (e["owned_by"], e["id"].split("/", 1)[-1]))
+entries = sorted(catalog["data"], key=lambda e: (e["provider"], e["id"].split("/", 1)[-1]))
 assert entries, "No candidate models from connected/noAuth catalog"
 first = entries[0]
-label = first["owned_by"] + " · " + first["id"].split("/", 1)[-1]
+label = first["provider"] + " · " + first["id"].split("/", 1)[-1]
 pid = adb("shell", "pidof", "libcapimux.so")
 tap_button("Modelos")
 tap_button(label, "content-desc")

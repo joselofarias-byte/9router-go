@@ -45,7 +45,7 @@ final class LocalModels {
             for (int i = 0; i < data.length(); i++) {
                 JSONObject item = data.getJSONObject(i);
                 String id = item.getString("id");
-                entries.put(id, new Entry(id, item.optString("owned_by", "Proveedor")));
+                entries.put(id, new Entry(id, item.optString("provider", item.optString("owned_by", "Proveedor"))));
             }
             List<Entry> result = new ArrayList<>(entries.values());
             result.sort(Comparator.comparing((Entry e) -> e.provider).thenComparing(e -> e.label));
