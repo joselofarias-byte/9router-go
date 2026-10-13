@@ -18,12 +18,17 @@ const (
 // Status is safe to expose to the UI. It contains no private signing material
 // and no provider credentials.
 type Status struct {
-	Mode       string       `json:"mode"`
-	Channel    string       `json:"channel,omitempty"`
-	LicenseID  string       `json:"licenseId,omitempty"`
-	Subject    string       `json:"subject,omitempty"`
-	ExpiresAt  *time.Time   `json:"expiresAt,omitempty"`
-	Features   []Capability `json:"features,omitempty"`
+	Mode               string       `json:"mode"`
+	State              string       `json:"state,omitempty"`
+	Channel            string       `json:"channel,omitempty"`
+	Plan               Plan         `json:"plan,omitempty"`
+	LicenseID          string       `json:"licenseId,omitempty"`
+	InstallationID     string       `json:"installationId,omitempty"`
+	EntitlementVersion int          `json:"entitlementVersion,omitempty"`
+	Subject            string       `json:"subject,omitempty"`
+	ExpiresAt          *time.Time   `json:"expiresAt,omitempty"`
+	GraceUntil         *time.Time   `json:"graceUntil,omitempty"`
+	Features           []Capability `json:"features,omitempty"`
 }
 
 // Provider answers feature-capability questions. Community remains the
