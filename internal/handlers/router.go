@@ -11,6 +11,7 @@ import (
 	"9router/proxy/internal/handlers/sso"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/multiagent"
 	"9router/proxy/web"
 	json "encoding/json/v2"
 	"github.com/go-chi/chi/v5"
@@ -147,6 +148,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	dashH := dashboard.NewDashboardHandler(repo)
 	ssoH := sso.NewHandler(repo)
 
+	// Multiagent calls share the dashboard authentication guard.
+	r.Get("/api/multiagent/policy", multiagent.PolicyHandler)
+	r.Post("/api/multiagent/run", multiagent.Handler(multiagent.HostInvoker(chatH.HandleChatCompletions)))
 	r.Get("/api/connections", dashH.HandleGetConnections)
 	r.Get("/api/providers", dashH.HandleGetProvidersClient)
 	r.Get("/api/providers/client", dashH.HandleGetProvidersClient)
@@ -451,3 +455,4 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 
 	SetupConsoleLogRoutes(r, repo)
 }
+

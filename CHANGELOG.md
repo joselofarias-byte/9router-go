@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Capimux adds a multimodel comparator with a server-backed model picker, independent ordered results, cancellation and bounded non-streaming responses. Both comparator APIs always require an admin session or local CLI token. Provider dispatch remains opt-in with an exact model allowlist; simulated runs never call providers. Deliberate fork extension beyond decolua/9router.
+
 - Codex OAuth can now delegate login end-to-end to the installed Codex CLI (AnyClaw-style): the CLI owns PKCE, the fixed loopback callback and token exchange inside an isolated temporary `CODEX_HOME`; 9router imports the completed account without exposing credentials in dashboard responses or logs. The existing in-process PKCE flow remains as a fallback when Codex CLI is unavailable. This is an intentional fork improvement beyond current decolua/9router parity.
 
 - Reject empty OpenCode chat completions before committing HTTP 200, so fallback can try the next model in JSON and SSE. Preserve streamed text/tool calls and stop retrying once a response starts. Deliberate fork behavior for coding continuity: upstream decolua/9router preserves reasoning-only completions, which do not satisfy a coding turn's final answer/tool contract.

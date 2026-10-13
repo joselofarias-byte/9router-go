@@ -83,6 +83,7 @@
     { tab: 'endpoint' as ActiveTab, label: 'Endpoint & Key', icon: 'api' },
     { tab: 'connections' as ActiveTab, label: 'Providers', icon: 'dns' },
     { tab: 'combos' as ActiveTab, label: 'Combo & Vision Adapter', icon: 'layers' },
+    { tab: 'multiagent' as ActiveTab, label: 'Multiagente', icon: 'hub' },
     { tab: 'analytics' as ActiveTab, label: 'Usage', icon: 'bar_chart' },
     { tab: 'quota' as ActiveTab, label: 'Quota Tracker', icon: 'data_usage' },
     { tab: 'token-saver' as ActiveTab, label: 'Token Saver', icon: 'savings' },

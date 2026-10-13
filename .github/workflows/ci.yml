@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feat/capimux-multiagent-v04]
   pull_request:
     branches: [main, sync/upstream-2026-10-01, agent/criptouy/upstream-reconcile-20261001]
 
