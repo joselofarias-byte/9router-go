@@ -44,7 +44,7 @@ func refreshXAI(ctx context.Context, p *Params) (*TokenResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("xAI read response: %w", err)
 	}
-	if len(respBody) > 1<<20 {
+	if len(body) > 1<<20 {
 		return nil, fmt.Errorf("OAuth response exceeds 1 MiB")
 	}
 	if resp.StatusCode != http.StatusOK {
