@@ -40,7 +40,7 @@ func refreshXAI(ctx context.Context, p *Params) (*TokenResult, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("xAI read response: %w", err)
 	}
