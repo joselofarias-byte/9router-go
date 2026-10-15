@@ -378,6 +378,24 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Advertise the built-in free-best route only when the same resolver used
+	// by chat completions can find eligible free routes with active accounts.
+	// Do not advertise a virtual model that cannot currently be routed.
+	if _, err := h.resolveDynamicFreeBest(); err == nil {
+		seen := false
+		for _, m := range data {
+			if m.ID == "free-best" {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			data = append(data, modelObj{
+				ID: "free-best", Object: "model", Created: now, OwnedBy: "system",
+			})
+		}
+	}
+
 	if data == nil {
 		data = []modelObj{}
 	}
