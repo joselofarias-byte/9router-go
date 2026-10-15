@@ -51,7 +51,7 @@ func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, va
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
