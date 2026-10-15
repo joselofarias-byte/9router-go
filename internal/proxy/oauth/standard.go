@@ -55,6 +55,9 @@ func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, va
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
+	if len(respBody) > 1<<20 {
+		return nil, fmt.Errorf("OAuth response exceeds 1 MiB")
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Truncate the body so a token endpoint that echoes the request
 		// (including refresh_token/client_secret) cannot leak it into logs.
