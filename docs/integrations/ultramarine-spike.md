@@ -33,3 +33,15 @@ Status: design only; no API calls or paid usage.
 
 ## External code
 Feather and Paper Office libraries are separate research items. Verify repository existence and licenses before reuse.
+
+## Verified source inspection (2026-10-15)
+Source: `internal/handlers/chat/chat.go` on `main` (read via GitHub connector).
+
+- `HandleChatCompletions` calls `resolveModel` then `handleSingleModel`.
+- `handleSingleModel` delegates to `handleAccountFallback` with `/v1/chat/completions`.
+- `HandleMessages` uses `translator.TranslateClaudeToOpenAI` for non-Anthropic providers.
+- Both routes call `AugmentModelsWithCapacityAdapter`; policy checks must ensure paid providers are never silently injected into free-only routes.
+- Provider registration and connection storage have NOT yet been inspected. Do not assume their schema.
+
+## Next implementation checkpoint
+Inspect the concrete `internal/providers` files and `handleAccountFallback` implementation before writing the adapter. Prefer reusing existing OpenAI-compatible provider transport and account configuration. Add a local mock transport test before enabling the provider. No live requests or deployment without explicit approval.
