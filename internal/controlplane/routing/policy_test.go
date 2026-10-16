@@ -163,3 +163,26 @@ func TestEngine_NoAuthProviderGetsVirtualCandidateWithoutStoredAccount(t *testin
 		t.Fatalf("candidate did not carry a valid virtual no-auth identity: %+v", got[0])
 	}
 }
+
+// Regression: a configured paid provider must never enter the free-only pool.
+func TestEngine_UltramarineExcludedFromFreeOnly(t *testing.T) {
+	registry.InitRegistry(nil)
+	state := registry.GetActiveState()
+	state.Providers["paper-instruments"] = &registry.Provider{ID: "paper-instruments", IsActive: true}
+	state.ProviderModels["paper-instruments"] = map[string]*registry.ProviderModel{
+		"ultramarine-1-flash": {
+			ProviderID: "paper-instruments", ModelID: "ultramarine-1-flash",
+			UpstreamModel: "ultramarine-1-flash", PricingMode: "paid", IsActive: true,
+		},
+	}
+	state.Accounts["paper-key"] = &registry.Account{ID: "paper-key", ProviderID: "paper-instruments", IsActive: true}
+	engine := &Engine{TrustManager: trust.NewManager()}
+	for _, requested := range []string{"", "ultramarine-1-flash"} {
+		if got := engine.SelectCandidates(requested, PolicyFreeOnly); len(got) != 0 {
+			t.Fatalf("paid Ultramarine entered free-only pool for %q: %+v", requested, got)
+		}
+	}
+	if got := engine.SelectCandidates("ultramarine-1-flash", PolicyBalanced); len(got) != 1 || got[0].ProviderID != "paper-instruments" {
+		t.Fatalf("paid model should remain available under balanced policy with credentials: %+v", got)
+	}
+}
