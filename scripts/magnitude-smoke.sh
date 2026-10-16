@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Read-only smoke test; does not install, download or start a server.
-BASE="${MAGNITUDE_BASE_URL:-http://127.0.0.1:8080}"
+# Magnitude's upstream server release documents port 10100.
+BASE="${MAGNITUDE_BASE_URL:-http://127.0.0.1:10100}"
 BASE="${BASE%/}"
 KEY="${MAGNITUDE_API_KEY:-}"
 AUTH=()
