@@ -25,7 +25,10 @@ func TestMagnitude_ChatCompletionsMockUpstream(t *testing.T) {
             Model string `json:"model"`
             Messages []struct { Role string `json:"role"`; Content string `json:"content"` } `json:"messages"`
         }
-        if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+        body, err := io.ReadAll(r.Body)
+        if err != nil {
+            t.Errorf("read forwarded request: %v", err)
+        } else if err := json.Unmarshal(body, &request); err != nil {
             t.Errorf("invalid forwarded request: %v", err)
         }
         if request.Model != "test-model" {
