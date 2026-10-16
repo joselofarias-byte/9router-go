@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"9router/proxy/internal/controlplane/routing"
+	"9router/proxy/internal/controlplane/trust"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/dbtest"
 	"9router/proxy/internal/handlerutil"
@@ -1096,6 +1098,18 @@ func TestHandleChatCompletions_ComboAllFail(t *testing.T) {
 func TestGetBestConnection_PinnedID(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
+
+	// This test verifies pinning semantics in isolation; trust state is global
+	// across requests and other tests may legitimately quarantine conn-1.
+	oldTM := globalTrustManager
+	oldEngine := globalRoutingEngine
+	tm := trust.NewManager()
+	globalTrustManager = tm
+	globalRoutingEngine = &routing.Engine{TrustManager: tm}
+	defer func() {
+		globalTrustManager = oldTM
+		globalRoutingEngine = oldEngine
+	}()
 
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)

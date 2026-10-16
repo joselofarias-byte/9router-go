@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/controlplane/trust"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -18,6 +19,14 @@ import (
 var CredentialFallbacks = map[string]string{
 	"ollama-search": "ollama",
 	"zai-search":    "glm",
+}
+
+func isAccountTrustSelectable(provider, model, accountID string) bool {
+	if model == "" || accountID == "" {
+		return true
+	}
+	level := globalTrustManager.GetTrustLevel(provider, model, accountID)
+	return level != trust.TrustQuarantined && level != trust.TrustDisabled
 }
 
 // GetBestConnection retrieves the highest-priority active connection for a provider.
@@ -61,6 +70,12 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 					if cand.ProviderID == "antigravity" && IsAntigravityModelBlocked(cpConn.ID, model) {
 						continue
 					}
+					// Trust can change after ranking and before credential fetch.
+					// Re-check at the execution boundary to close that TOCTOU window.
+					if !isAccountTrustSelectable(cand.ProviderID, model, cpConn.ID) {
+						log.Warn("routing", "skip account quarantined after ranking", "provider", cand.ProviderID, "model", model, "account", cpConn.ID)
+						continue
+					}
 
 					log.Info("routing", "control plane route selected", "model", model, "provider", cand.ProviderID, "account", cand.AccountID)
 					var data ConnectionData
@@ -99,6 +114,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			if conn.Provider == "antigravity" && IsAntigravityModelBlocked(conn.ID, model) {
 				return nil, nil, fmt.Errorf("connection %s unavailable for model %s: provider model block active", conn.ID, model)
 			}
+			if !isAccountTrustSelectable(conn.Provider, model, conn.ID) {
+				return nil, nil, fmt.Errorf("connection %s unavailable for model %s: trust quarantine active", conn.ID, model)
+			}
 		}
 	} else {
 		connections, queryErr := h.Repo.GetProviderConnections(provider, true)
@@ -127,9 +145,13 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 						}
 					}
 				}
+				const syntheticID = "noauth"
+				if !isAccountTrustSelectable(provider, model, syntheticID) {
+					return nil, nil, fmt.Errorf("public no-auth route unavailable for model %s: trust quarantine active", model)
+				}
 				publicName := "Public"
 				conn := &models.ProviderConnection{
-					ID:       "noauth",
+					ID:       syntheticID,
 					Provider: provider,
 					Name:     &publicName,
 					IsActive: 1,
@@ -147,6 +169,10 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		conn = nil
 		for _, c := range connections {
 			if excludeSet[c.ID] {
+				continue
+			}
+			if model != "" && !isAccountTrustSelectable(c.Provider, model, c.ID) {
+				log.Warn("routing", "skip quarantined legacy account", "provider", c.Provider, "model", model, "account", c.ID)
 				continue
 			}
 			// Skip connections that have an active per-connection model lock
