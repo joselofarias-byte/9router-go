@@ -14,6 +14,7 @@ var ProviderAliasMap = map[string]string{
 	"b-ai":           "bai",
 	"explabs":        "experiential",
 	"experiential-labs": "experiential",
+	"paper":          "paper-instruments",
 	"agnes-ai":       "agnes",
 	"atria-asi":      "atria",
 	"dahl-inference": "dahl",
