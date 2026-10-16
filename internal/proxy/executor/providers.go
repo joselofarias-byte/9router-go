@@ -274,6 +274,18 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	return handleCommandcodeStream(w, req, resp.Body, oreq.Model)
 }
 
+// opencodeResponsesURL preserves the configured API namespace (for example,
+// /zen/v1 or /inference/v1) when forwarding a Responses API request.
+// Endpoint selection is deliberately controlled by the provider configuration.
+func opencodeResponsesURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(baseURL, "/responses") {
+		return baseURL
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+	return baseURL + "/responses"
+}
+
 // ForwardOpencode handles requests for opencode (free tier).
 func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	apiKey := req.APIKey
@@ -321,13 +333,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 
 		cfg := *req.Config
-		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
-			baseURL := strings.TrimRight(cfg.BaseURL, "/")
-			if strings.HasSuffix(baseURL, "/chat/completions") {
-				baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
-			}
-			cfg.BaseURL = baseURL + "/responses"
-		}
+		cfg.BaseURL = opencodeResponsesURL(cfg.BaseURL)
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, req.SessionID, req.IsStream)
 
 		ctx := req.Ctx
