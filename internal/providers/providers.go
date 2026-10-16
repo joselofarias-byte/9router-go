@@ -541,6 +541,17 @@ var KnownProviders = map[string]ProviderConfig{
 		DefaultAPIKey: "local",
 		LocalOnly:     true,
 	},
+	// Magnitude runs as a separate optional local inference server.
+	// Port 10100 follows upstream server documentation; runtime compatibility
+	// must be validated before production use.
+	"magnitude": {
+		BaseURL:       "http://127.0.0.1:10100/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		NoAuth:        true,
+		DefaultAPIKey: "local",
+		LocalOnly:     true,
+	},
 	"ollama-local": {
 		BaseURL:       "http://127.0.0.1:11434/v1/chat/completions",
 		AuthHeader:    "Authorization",
