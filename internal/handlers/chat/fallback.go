@@ -6,6 +6,8 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -32,6 +34,9 @@ func (h *ChatHandler) handleAccountFallback(
 	translateResponse bool,
 	endpoint string,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
 		if err != nil {
@@ -58,9 +63,15 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
+	cw := newCommittedResponseWriter(w)
+	w = cw
+
 	var excludeIDs []string
 	var lastErr error
 	for _, c := range allConns {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
@@ -83,6 +94,9 @@ func (h *ChatHandler) handleAccountFallback(
 		} else {
 			lastErr = err
 		}
+		if cw.IsCommitted() || ctx.Err() != nil {
+			return lastErr
+		}
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
 			// Extract error text from upstream body for classification
@@ -99,6 +113,10 @@ func (h *ChatHandler) handleAccountFallback(
 			h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
 			log.Warn("fallback", "connection locked", "conn", connObj.ID, "provider", provider, "model", model, "status", ue.StatusCode, "cooldown_s", cooldownSec)
 			excludeIDs = append(excludeIDs, c.ID)
+			continue
+		}
+		if accountTransientFailure(lastErr) {
+			log.Warn("fallback", "trying next account after transient failure", "conn", c.ID, "provider", provider, "model", model, "error", lastErr)
 			continue
 		}
 		return lastErr
@@ -404,4 +422,18 @@ func formatRetryAfter(isoTimestamp string) string {
 		parts = append(parts, fmt.Sprintf("%ds", s))
 	}
 	return "reset after " + strings.Join(parts, " ")
+}
+
+// accountTransientFailure permits another account before any response is sent.
+// Existing quota/auth cooldown handling remains in the fallback loop.
+func accountTransientFailure(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var ue *upstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode == http.StatusInternalServerError
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }

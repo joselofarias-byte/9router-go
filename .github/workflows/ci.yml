@@ -33,7 +33,6 @@ jobs:
         run: make build-termux
 
       - name: Upload Termux Android arm64 artifact
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: 9router-go-termux-arm64-${{ github.sha }}
