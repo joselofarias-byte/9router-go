@@ -193,6 +193,15 @@ func runServer(cCtx *cli.Context) error {
 		adapters = append(adapters, discovery.NewOrcaRouterAdapter(nil, orcaBaseURL, orcaAPIKey))
 	}
 
+	// Local model IDs are opt-in declarations, never proof of free pricing.
+	if raw := os.Getenv("CAPIMUX_LOCAL_MODELS_JSON"); raw != "" {
+		localAdapter, err := discovery.NewLocalModelsAdapter(raw)
+		if err != nil {
+			return fmt.Errorf("local model discovery config: %w", err)
+		}
+		adapters = append(adapters, localAdapter)
+	}
+
 	orchestrator := discovery.NewOrchestrator(conn, adapters)
 	orchestrator.Start(context.Background())
 
