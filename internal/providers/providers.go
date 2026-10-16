@@ -138,6 +138,12 @@ func WithHeader(headers map[string]string, key, value string) map[string]string 
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
 	"orcarouter": {BaseURL: "https://orcarouter.ai/v1/chat/completions", AuthHeader: "Authorization", AuthScheme: "bearer"},
+	// Paper Instruments Ultramarine: opt-in paid OpenAI-compatible API.
+	"paper-instruments": {
+		BaseURL:    "https://api.paperinstruments.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"openai": {
 		BaseURL:    "https://api.openai.com/v1/chat/completions",
 		AuthHeader: "Authorization",

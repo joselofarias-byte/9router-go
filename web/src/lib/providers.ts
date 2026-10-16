@@ -50,6 +50,19 @@ export const PROVIDER_CATEGORIES = [
 
 export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   {
+    "id": "paper-instruments",
+    "name": "Paper Instruments",
+    "category": "apikey",
+    "alias": "paper",
+    "color": "#285C82",
+    "icon": "description",
+    "website": "https://www.paperinstruments.com/ultramarine",
+    "notice": {"text": "Ultramarine is a paid API. Requires your own API key and available credit; do not use in free-only routes.", "apiKeyUrl": "https://www.paperinstruments.com/ultramarine"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": ["llm"]
+  },
+  {
     "id": "agnes",
     "name": "Agnes AI",
     "category": "freeTier",
