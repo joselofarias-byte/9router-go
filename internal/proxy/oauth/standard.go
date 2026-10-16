@@ -51,9 +51,12 @@ func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, va
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("OAuth response exceeds 1 MiB")
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Truncate the body so a token endpoint that echoes the request

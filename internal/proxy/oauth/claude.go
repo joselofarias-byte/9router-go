@@ -43,9 +43,12 @@ func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("claude read response: %w", err)
+	}
+	if len(respBody) > 1<<20 {
+		return nil, fmt.Errorf("OAuth response exceeds 1 MiB")
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("claude refresh returned %d: %s", resp.StatusCode, truncateBody(respBody))
