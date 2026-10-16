@@ -7,7 +7,7 @@ import (
 
 func TestKnownProviders_HasExpectedEntries(t *testing.T) {
 	wantProviders := []string{
-		"openai", "anthropic", "deepseek", "groq", "nvidia", "openrouter",
+		"openai", "anthropic", "deepseek", "groq", "nvidia", "openrouter", "magnitude",
 		"cerebras", "together", "fireworks", "opencode", "gemini", "github",
 		"mistral", "perplexity", "xai", "cohere", "ollama", "siliconflow",
 		"cloudflare-ai", "mimo-free",
