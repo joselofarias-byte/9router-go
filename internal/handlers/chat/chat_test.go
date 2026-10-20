@@ -1424,6 +1424,8 @@ func TestAccountFallback_PinnedConnection_NotFound(t *testing.T) {
 }
 
 func TestLogFailurePersistsSingleSanitizedError(t *testing.T) {
+	// Legacy diagnostic content must now be explicitly enabled.
+	t.Setenv("CAPIMUX_CAPTURE_REQUEST_CONTENT", "true")
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	repo := db.NewRepo(database)
