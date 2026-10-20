@@ -412,6 +412,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 
 		// Historical request content requires administrator authentication.
 		r.Get("/api/usage/request-details", HandleRequestDetails(repo))
+		r.Delete("/api/usage/request-details", HandlePurgeRequestDetails(repo))
 
 		// Health reset endpoint — dashboard calls this via headroom proxy
 		r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
