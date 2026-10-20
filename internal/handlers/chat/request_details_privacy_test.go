@@ -1,7 +1,11 @@
 package chat
 
 import (
+    "errors"
+    "strings"
     "testing"
+
+    "9router/proxy/internal/db"
 )
 
 func TestRequestDetailsCaptureOptIn(t *testing.T) {
@@ -20,5 +24,33 @@ func TestRequestDetailsCaptureOptIn(t *testing.T) {
     t.Setenv("CAPIMUX_CAPTURE_REQUEST_CONTENT", "true")
     if !captureRequestDetailContent() {
         t.Fatal("explicit opt-in must enable content capture")
+    }
+}
+
+func TestLogFailureDefaultDoesNotPersistPromptsOrUpstreamErrors(t *testing.T) {
+    t.Setenv("CAPIMUX_CAPTURE_REQUEST_CONTENT", "")
+    database, cleanup := setupChatTestDB(t)
+    defer cleanup()
+    repo := db.NewRepo(database)
+    handler := NewChatHandler(repo)
+    handler.LogFailure(
+        &UsageLogInfo{Provider: "openai", Model: "grok004", ConnectionID: "test"},
+        nil,
+        errors.New("grok004-sensitive-upstream-error-canary"),
+        12,
+        []byte(`{"model":"grok004","messages":[{"role":"user","content":"grok004-private-prompt-canary"}]}`),
+        nil,
+    )
+    var raw string
+    if err := database.QueryRow(`SELECT data FROM requestDetails WHERE model = 'grok004'`).Scan(&raw); err != nil {
+        t.Fatal(err)
+    }
+    for _, canary := range []string{"grok004-private-prompt-canary", "grok004-sensitive-upstream-error-canary"} {
+        if strings.Contains(raw, canary) {
+            t.Fatalf("sensitive content persisted: %s", canary)
+        }
+    }
+    if !strings.Contains(raw, "request failed") {
+        t.Fatalf("missing safe failure summary: %s", raw)
     }
 }
