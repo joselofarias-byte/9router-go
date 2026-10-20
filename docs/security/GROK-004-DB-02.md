@@ -20,6 +20,23 @@ Protect tokens from passive copies of `9router.db`, WAL and snapshots. Does not 
 
 `internal/db/field_crypto.go` prototypes authenticated **AES-256-GCM** with random per-value nonces, a versioned envelope and associated data binding table / record ID / column. Wrong keys, wrong row identities, modified ciphertext and plaintext inputs all fail closed. It intentionally accepts **only a supplied, high-entropy 32-byte key**; no UI password, passphrase KDF, key file or cloud dependency is implicitly selected.
 
+## Lookup and key separation improvement (GROK-004 continuation)
+
+The prototype now derives distinct 256-bit subkeys from the high-entropy
+master key using domain-separated HMAC-SHA256:
+- `capimux:db02:aes-gcm:v1` for authenticated encryption.
+- `capimux:db02:api-key-lookup:v1` for deterministic API key lookup.
+
+`apiKeyLookupHMAC` computes a fixed-size index that can be stored in a new
+indexed column. It is case-sensitive and does not reveal the bearer key. Tests
+exercise stable lookup, key rotation, purpose separation, invalid keys and
+wrong-purpose rejection.
+
+**Still not integrated**: authenticated requests still use the old plaintext
+`apiKeys.key` lookup in `internal/db/repos.go`. The new column and read/write
+migration are explicitly pending. In a shared deployment, no claims of
+at-rest credential encryption are justified yet.
+
 ## Key custody decision (requires owner sign-off)
 
 Preferred production contract: external key provider interface, with Android Keystore on the autonomous APK, a protected OS secret store or a file owned by the service (0600 in a 0700 directory) in Termux/OCI. Do not keep the master key in SQLite, committed files, downloadable artifacts, logs or exported plaintext backups.
