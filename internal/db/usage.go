@@ -2,6 +2,9 @@ package db
 
 import (
 	"fmt"
+	"os"
+	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +50,39 @@ func (r *Repo) UpsertUsageDaily(dateKey string, data string) error {
 }
 
 // InsertRequestDetail logs a request detail record for the Recent Requests dashboard tab.
+var requestDetailsInsertCounter atomic.Uint64
+
+// requestDetailsRetentionDays bounds diagnostic data lifetime. Bad or unsafe
+// configuration values fail closed to a seven-day default.
+func requestDetailsRetentionDays() int {
+    days, err := strconv.Atoi(os.Getenv("CAPIMUX_REQUEST_DETAILS_RETENTION_DAYS"))
+    if err != nil || days < 1 || days > 365 {
+        return 7
+    }
+    return days
+}
+
+// PurgeRequestDetailsBefore deletes records older than the UTC cutoff.
+func (r *Repo) PurgeRequestDetailsBefore(cutoff time.Time) (int64, error) {
+    result, err := r.db.Exec(`DELETE FROM requestDetails WHERE timestamp < ?`, cutoff.UTC().Format("2006-01-02T15:04:05.000Z"))
+    if err != nil {
+        return 0, fmt.Errorf("purge expired request details: %w", err)
+    }
+    return result.RowsAffected()
+}
+
+// PurgeAllRequestDetails irreversibly removes all diagnostic records.
+// It does not remove aggregate usageHistory or usageDaily metrics.
+func (r *Repo) PurgeAllRequestDetails() (int64, error) {
+    result, err := r.db.Exec(`DELETE FROM requestDetails`)
+    if err != nil {
+        return 0, fmt.Errorf("purge request details: %w", err)
+    }
+    return result.RowsAffected()
+}
+
+// InsertRequestDetail persists usage diagnostics and periodically prunes old
+// records. Cleanup is sampled to avoid doing a DELETE on every LLM request.
 func (r *Repo) InsertRequestDetail(id, provider, model, connectionID, status string, data string) error {
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	_, err := r.db.Exec(
@@ -56,6 +92,12 @@ func (r *Repo) InsertRequestDetail(id, provider, model, connectionID, status str
 	if err != nil {
 		return fmt.Errorf("insert request detail %s: %w", id, err)
 	}
+	if requestDetailsInsertCounter.Add(1)%128 == 1 {
+        cutoff := time.Now().UTC().AddDate(0, 0, -requestDetailsRetentionDays())
+        if _, err := r.PurgeRequestDetailsBefore(cutoff); err != nil {
+            return err
+        }
+    }
 	return nil
 }
 
@@ -241,6 +283,10 @@ func (r *Repo) GetRecentRoutingRequestMetrics(limit int) ([]RoutingRequestMetric
 
 // GetRequestDetailsPaged returns paged raw json strings and total count from requestDetails.
 func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]string, int, error) {
+    cutoff := time.Now().UTC().AddDate(0, 0, -requestDetailsRetentionDays())
+    if _, err := r.PurgeRequestDetailsBefore(cutoff); err != nil {
+        return nil, 0, err
+    }
 	var total int
 	if err := r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails`).Scan(&total); err != nil {
 		total = 0
