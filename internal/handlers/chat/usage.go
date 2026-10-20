@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,12 @@ import (
 var dailyUsageMu sync.Mutex
 
 const maxPersistedErrorLen = 512
+
+// Request bodies and response text are sensitive. Only explicit opt-in stores
+// them in diagnostic records; token accounting is unaffected.
+func captureRequestDetailContent() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("CAPIMUX_CAPTURE_REQUEST_CONTENT")), "true")
+}
 
 // LogFailure persists a bounded, credential-free diagnostic for a failed or
 // aborted request. It intentionally does not touch usageHistory/daily totals.
@@ -64,12 +71,20 @@ func (h *ChatHandler) LogFailure(
 		message = "request failed"
 	}
 	message = sanitizeDetailError(message)
+	captureContent := captureRequestDetailContent()
+	if !captureContent {
+		message = "request failed"
+	}
 	var responseContent string
-	if metrics != nil {
+	if captureContent && metrics != nil {
 		responseContent = metrics.ResponseBuf.String()
 		if len(responseContent) > constants.MaxResponseContentLen {
 			responseContent = responseContent[:constants.MaxResponseContentLen] + "...[truncated]"
 		}
+	}
+	var reqMsgs []map[string]string
+	if captureContent {
+		reqMsgs = extractRequestMessages(requestBody)
 	}
 	reqData, marshalErr := json.Marshal(map[string]any{
 		"id": reqID, "provider": info.Provider, "model": info.Model,
@@ -80,7 +95,7 @@ func (h *ChatHandler) LogFailure(
 			"total": latencyMs,
 		},
 		"tokens":   tokens,
-		"request":  map[string]any{"messages": extractRequestMessages(requestBody)},
+		"request":  map[string]any{"messages": reqMsgs},
 		"response": map[string]any{"error": message, "status": statusCode, "content": responseContent},
 	})
 	if marshalErr != nil {
@@ -173,7 +188,12 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 
 	now := time.Now().UTC()
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
-	reqMsgs := extractRequestMessages(requestBody)
+	var reqMsgs []map[string]string
+	persistedResponse := ""
+	if captureRequestDetailContent() {
+		reqMsgs = extractRequestMessages(requestBody)
+		persistedResponse = respContent
+	}
 
 	reqData, err := json.Marshal(map[string]any{
 		"id": reqID, "provider": info.Provider, "model": info.Model,
@@ -186,7 +206,7 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 			"reasoning_tokens": usage.ReasoningTokens(),
 		},
 		"request":  map[string]any{"messages": reqMsgs},
-		"response": map[string]any{"content": respContent},
+		"response": map[string]any{"content": persistedResponse},
 	})
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
