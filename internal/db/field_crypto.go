@@ -46,7 +46,9 @@ func encryptDBField(masterKey []byte, table, recordID, column string, plaintext 
     if err != nil {
         return "", err
     }
-    block, err := aes.NewCipher(masterKey)
+    encryptionKey, err := deriveDBPurposeKey(masterKey, dbEncryptionKeyContext)
+    if err != nil { return "", err }
+    block, err := aes.NewCipher(encryptionKey)
     if err != nil {
         return "", err
     }
@@ -82,7 +84,9 @@ func decryptDBField(masterKey []byte, table, recordID, column, encoded string) (
     if len(blob) > encryptedDBFieldMaxSize+64 {
         return nil, errors.New("db field: ciphertext exceeds size limit")
     }
-    block, err := aes.NewCipher(masterKey)
+    encryptionKey, err := deriveDBPurposeKey(masterKey, dbEncryptionKeyContext)
+    if err != nil { return nil, err }
+    block, err := aes.NewCipher(encryptionKey)
     if err != nil {
         return nil, err
     }
