@@ -542,3 +542,28 @@ func getMapFloat(m map[string]any, key string) float64 {
 	}
 	return 0
 }
+
+
+// HandlePurgeRequestDetails deletes existing request diagnostics. It must only
+// be mounted inside RequireAdminAuth, never a client API-key router.
+// The required custom confirmation header prevents accidental deletion and
+// cross-origin HTML forms from invoking the endpoint.
+func HandlePurgeRequestDetails(repo *db.Repo) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Cache-Control", "no-store")
+        if r.Header.Get("X-Capimux-Confirm") != "purge-request-details" {
+            handlerutil.WriteJSON(w, http.StatusPreconditionRequired, map[string]string{
+                "error": "X-Capimux-Confirm: purge-request-details required",
+            })
+            return
+        }
+        count, err := repo.PurgeAllRequestDetails()
+        if err != nil {
+            handlerutil.WriteJSON(w, http.StatusInternalServerError, map[string]string{
+                "error": "failed to purge request details",
+            })
+            return
+        }
+        handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"deleted": count})
+    }
+}
