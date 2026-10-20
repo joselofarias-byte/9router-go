@@ -9,6 +9,23 @@
 - Tests exercise checksum validity, corrupted downloads and signed manifest trust/rollback/expiry.
 - Ed25519 verification is **not yet wired into CheckUpdate** and no public/private signing key is configured.
 
+## New: signed HTTPS candidate checks (not activated)
+
+`checkSignedManifestCandidate` is now available for a future, owner-approved
+release integration. It requires an independently supplied and pinned Ed25519
+public-key policy, fetches the signed envelope only over HTTPS, refuses
+cross-host or HTTP redirects, limits the response to 512 KiB, validates the
+payload signature and returns the verified asset URL and digest. Synthetic
+TLS-server tests reject unknown signers, missing keys, insecure URLs, host
+switches and oversized manifests.
+
+**This function is not called by `CheckUpdate` or the background auto-updater.**
+It does not create, rotate, publish or trust any production key; it does not
+install a binary. Automatic update checks still use the legacy unsigned
+manifest and GitHub Releases as informational sources, while the installer
+requires a SHA-256. Do not treat this candidate function as production
+publisher authentication.
+
 ## Critical risk
 
 A checksum distributed over the same compromised channel as its binary provides *integrity*, **not publisher authenticity**. Until a trusted signing key is embedded and the update source is verified, OPS-01 is only partially mitigated.
