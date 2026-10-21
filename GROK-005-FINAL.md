@@ -85,7 +85,7 @@ No se usaron credenciales reales, ni APIs de pago, ni bases de Oracle, Termux o 
 
 ## Ronda 2
 
-Fecha: 2026-10-21. Misma rama `cursor/free-best-engine-f768`, mismo PR #142. No se fusionó y no hubo despliegue. Los PR #139, #140 y #141 no se incorporaron.
+Fecha: 2026-10-21. Commit `9d585e411834877412de8020258bcb2d4fde1cef`. Misma rama `cursor/free-best-engine-f768`, mismo PR #142. No se fusionó y no hubo despliegue. Los PR #139, #140 y #141 no se incorporaron.
 
 ### Diagnóstico
 
