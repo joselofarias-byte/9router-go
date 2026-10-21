@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Free Best diagnosis reports the real `free` or `free_tier` pricing mode and keeps quota, rate-limit, auth, and gateway cooldown on the account that owns them. An unknown balance stays `unknown`; it is not shown as zero or as verified capacity. A 403 is replayed on the direct transport only when the request actually used a proxy and the response is a proxy refusal, so an application `text/plain` 403 is one hop. A canceled caller stops the combo walk before the next account.
+
 - Free Best keeps failover inside eligible free or free-tier routes. 401, 403, 402 and 429 cool down the failed account and try the next eligible account; 500, 408, transport errors and per-hop timeouts move on without a quota lock; a 400/404 stays on the next provider instead of burning sibling accounts; an empty completion is not success; a partial stream is not replayed. Virtual names are listed only when a route exists. `GET /api/admin/free-best` explains the choice without credentials. Base is main `e3a2de8`, not `feat/free-best-dynamic-routing`.
 
 - Capimux adds a multimodel comparator with a server-backed model picker, independent ordered results, cancellation and bounded non-streaming responses. Both comparator APIs always require an admin session or local CLI token. Provider dispatch remains opt-in with an exact model allowlist; simulated runs never call providers. Deliberate fork extension beyond decolua/9router.

@@ -45,7 +45,7 @@ func (t *FallbackTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 
 	resp, err := base.RoundTrip(req)
-	if isProxyFailure(err, resp) {
+	if isProxyFailure(err, resp) && roundTripperUsesProxy(base, req) {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}

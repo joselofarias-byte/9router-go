@@ -83,12 +83,80 @@ Pruebas nuevas que cubren el criterio de éxito:
 
 No se usaron credenciales reales, ni APIs de pago, ni bases de Oracle, Termux o producción.
 
-## Pendiente
+## Ronda 2
 
-- No se fusionó `feat/free-best-dynamic-routing` ni los PR #139, #140 y #141. Siguen abiertos para su propia revisión.
-- La cuota numérica que publican los proveedores (requests restantes, ventana de 5 h) no se consulta en vivo. `known_exhausted` significa cooldown local ya registrado. Si no hay cooldown, la cuota figura como `unknown` aunque el modelo sea elegible.
-- El estimador de usage puede seguir anotando un costo de catálogo distinto de cero en el log de un modelo marcado `free_tier` (se vio `cost≈8e-06` en un salto de prueba local). Eso no dispara una llamada paga. No se cambió la tabla de precios.
-- `go test ./...` falló en `internal/handlers` (`TestSetupServerRouter_SPARoutes`) y `web` (`TestHandler_PWAAssets`): piden `sw.js`, manifest e iconos que no están en el `web/dist` de este entorno. No es una regresión del motor. No se construyó el SPA (no hay `bun` en la máquina; el build de Vite quedó fuera).
-- No se ejecutó la suite `integration` completa, ni `go test -race`, ni pruebas con un binario OpenCode real, ni Android/Termux.
-- El segundo pase del combo, cuando nadie respondió y hay un `Retry-After` acotado, sigue existiendo. No corre si el cliente ya recibió bytes.
-- Un 403 con cuerpo olido como `text/plain` todavía hace un reintento de transporte directo antes de rotar la cuenta.
+Fecha: 2026-10-21. Misma rama `cursor/free-best-engine-f768`, mismo PR #142. No se fusionó y no hubo despliegue. Los PR #139, #140 y #141 no se incorporaron.
+
+### Diagnóstico
+
+`ExplainFreeRoute` ya no elige “la mejor” cuenta del proveedor ni escribe `pricing: "free"` a mano.
+
+- `pricing` es el `PricingMode` del registro (`free` o `free_tier`, o el valor real si la fila no es gratis). Si no hay fila, el campo queda vacío.
+- Cada `providerConnections` sale en `accounts[]` con su propio `accountId`, `state`, `quota` y `quotaKnown`.
+- `quota_exhausted` es solo HTTP 402. `rate_limited` es solo HTTP 429. Los dos ponen `quotaKnown: true` y no inventan un saldo numérico.
+- 401/403 es `auth_failure`. 502/503/504 es `gateway_temporary`. En ambos `quota` sigue siendo `unknown` y `quotaKnown` es false.
+- Un cooldown cuyo `lastError.status` no es uno de esos queda `cooldown_unclassified`, también con cuota `unknown`. No se llama cuota agotada.
+- Sin cooldown, `state` es `eligible` y `quota` es `unknown`. No aparece `0`, `"0"` ni `"available"`.
+- `availability: "recent_success"` significa que hubo un turno reciente con éxito. No es capacidad verificada. Sin esa evidencia, `availability` es `unknown`.
+- Una cuenta inactiva no hereda el estado de una hermana. El descarte de una fila gratis no elegida repite el estado de cada cuenta bloqueada.
+- llama.cpp `NoAuth` sin fila en la base aparece como la cuenta sintética `noauth:<provider>`, cuota `unknown`.
+- El JSON sigue sin API key, token, cookie, email ni texto de `lastError`.
+
+### 403 text/plain y cancelación
+
+`proxy.DoRequest` y `FallbackTransport` reenvían por el transporte directo solo si esa petición iba por un proxy y el 403 es un rechazo de proxy (`X-Proxy-Error`, o cuerpo `text/plain` que nombra proxy, túnel o allowlist). Un 403 `text/plain` de aplicación (`invalid api key`) es un solo salto. El mismo criterio quedó en el cliente de Freebuff. Un `context` ya cancelado corta el combo de OpenAI y el de Anthropic antes de marcar el siguiente proveedor.
+
+### Comandos y resultados
+
+Go 1.27.0, `GOTOOLCHAIN=local`, binario `/tmp/go1.27/go/bin/go`. `go test` reescribió `go.mod`; se revirtió con `git checkout -- go.mod` y no entra en el commit.
+
+| Comando | Resultado |
+| --- | --- |
+| `go test -count=1 -timeout 180s ./internal/handlers/chat/ ./internal/proxy/ ./internal/proxy/executor/` (filtro de los tests nuevos y de failover) | `ok` chat 0.215s, proxy 0.008s. El paquete executor compiló; el filtro no seleccionó tests suyos. |
+| `go test -count=1 -timeout 180s ./internal/handlers/chat/ ./internal/proxy/...` | `ok`. chat 8.437s, proxy 0.231s, executor 0.028s, oauth 0.006s. |
+| `go test -tags=integration -count=1 -timeout 180s -run 'TestFreeBestProductionRouterFailover\|TestChatCompletion\|TestOpencodeEmpty\|TestStreaming\|TestMessages' ./internal/integration/` | `ok` 0.109s. Upstreams locales. El diagnóstico de ese router muestra `free_tier`, `gateway_temporary` tras el 503 y no un saldo cero. |
+| `go test -race -count=1 -timeout 20m ./internal/handlers/chat/ ./internal/handlers/ ./internal/controlplane/... ./internal/proxy/... ./internal/providers/ ./internal/db/` | Ver el párrafo siguiente. No hubo línea `DATA RACE`. |
+| `go test -race -count=3 -timeout 120s -run 'TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter$' ./internal/handlers/chat/` | `ok` 3.666s. |
+| `go test -race -count=1 -timeout 15m ./internal/handlers/chat/` | `ok` 23.364s. |
+| `go build ./...` | exit 0. |
+| `bun install --frozen-lockfile && bun test && bun run build` en `web/` (Bun 1.4.3, instalado en esta máquina) | 117 pass, 0 fail. El build de Vite terminó. Avisos de accesibilidad de Svelte ya existentes; no se tocaron. `web/dist` no se commitea. |
+| `go test -count=1 -run 'TestSetupServerRouter_SPARoutes\|TestHandler_PWAAssets' ./internal/handlers/ ./web/` después de ese build | `ok`. |
+
+En la pasada `-race` que lanzó varios paquetes a la vez, `TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter` falló una vez: esperaba 2 golpes al upstream y vio 1, en 0.04s. El log no contiene `DATA RACE`. La misma prueba, aislada con `-race -count=3`, y después el paquete `chat` entero con `-race`, pasaron. El segundo pase del combo sigue dependiendo de un `Retry-After` de ~1s que quepa en la tolerancia de 2s y de que el lock de la cuenta ya haya vencido. Bajo carga ese margen se pierde y no hay reintento. No es un bucle. No reescribí el contrato de esa prueba.
+
+`internal/handlers` falló en esa misma pasada `-race` solo en `TestSetupServerRouter_SPARoutes` (404 de `sw.js`, manifest e icono) porque `web/dist` era un stub. Tras `bun run build` el mismo test pasa. CI construye el SPA antes de `go test`, así que ese fallo es de este entorno y no del motor.
+
+`go test -race` de controlplane (discovery, registry, routing, scoring, sync, trust, verification), proxy, executor, oauth, providers y db terminó `ok` en esa pasada.
+
+CI del commit anterior del PR (runs `39663442772` y `39663442742`, 2026-10-21T19:38Z): jobs `test`, `Integration tests`, `Build Docker image` y `multiagent` en `success`. Esa CI no incluye los cambios de esta ronda. La CI de este commit se mira después del push; si no hay resultado en el informe, sigue pendiente.
+
+### Protocolo Termux / HONOR 200
+
+No se ejecutó. No se instaló nada en un teléfono, no se abrió Termux y no se apuntó el binario a un proveedor real. CI ya compila `GOOS=android GOARCH=arm64` en el job `test` (`go build -o /tmp/9router-go-termux-arm64`), pero eso no es una prueba en el dispositivo.
+
+Para quien tenga el HONOR 200:
+
+1. Instalar Termux desde F-Droid. No usar el binario de la tienda de Play: es otro entorno.
+2. Dentro de Termux: `pkg install golang git` solo si se va a compilar ahí. Si se usa el artefacto de CI, basta `pkg install curl` y copiar el binario arm64. No hace falta una cuenta de proveedor.
+3. Crear un directorio vacío, por ejemplo `~/capimux-r2`, y exportar `DATA_DIR` a ese directorio. No reutilizar `~/.9router` ni ninguna base que ya tenga claves.
+4. Arrancar con un solo upstream local. En otro puerto de la misma máquina, un proceso compatible con llama.cpp (o `llama-server`) en `127.0.0.1`. Registrar ese proveedor como `llamacpp`, precio `free`, sin API key.
+5. Pedir `free-best` por `POST /v1/chat/completions` contra el gateway local. Comprobar que la petición llega a llama.cpp y que no sale `Authorization`.
+6. Apagar llama.cpp y repetir. La respuesta debe ser `503` `free_route_unavailable`. No debe aparecer un modelo de pago.
+7. `GET /api/admin/free-best` con el token CLI local. El JSON no debe contener la clave ni el cuerpo de error. `quota` de la ruta local debe ser `unknown`, no `0`.
+8. Cortar el cliente a mitad de un stream (Ctrl-C del `curl`). No debe haber un segundo `POST` a llama.cpp.
+9. Borrar `DATA_DIR` al terminar.
+
+Si alguno de esos pasos llama a Groq, OpenAI, DeepSeek u otro host que no sea loopback, la prueba deja de ser válida para este informe.
+
+### Qué falta para aprobar la fusión
+
+1. Revisión humana del diff de #142. Sigue en borrador. Este informe no la sustituye.
+2. CI verde del commit de esta ronda. La CI citada arriba es del commit anterior.
+3. Decisión explícita de dejar #139, #140 y #141 fuera. No están en esta rama y no se probaron junto con este motor.
+4. La cuota numérica remota (requests restantes, ventana de 5 h) no se lee. `quotaKnown: true` solo significa que un 402 o un 429 local dejó cooldown. Un saldo real desconocido sigue en `unknown`.
+5. El protocolo Termux/HONOR 200 de arriba no se corrió.
+6. No se volvió a correr la suite `integration` completa con `-race` sobre este commit. La corrida de esta ronda fue el filtro sin `-race`. La corrida completa con `-race` que está en CI es del commit anterior.
+7. No se corrió `go test -race ./...` de todo el módulo. Los paquetes listados arriba sí.
+8. El segundo pase del combo, con `Retry-After` dentro de 2s y sin bytes entregados, sigue existiendo. La prueba de 1s falló una vez bajo carga y luego pasó. No hay evidencia de bucle ilimitado: 12 cuentas con 401 produjeron como máximo 10 intentos, uno por cuenta.
+9. El estimador de usage puede anotar un costo de catálogo distinto de cero en un modelo `free_tier`. No se cambió la tabla de precios y no se hizo ninguna llamada de pago.
+10. Un 403 de proxy con cuerpo que nombra allowlist o túnel todavía se reintenta una vez por el transporte directo. Es el caso que el transporte directo existe para cubrir. Un 403 de aplicación no.

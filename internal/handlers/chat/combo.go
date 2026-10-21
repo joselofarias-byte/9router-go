@@ -567,6 +567,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 
 		for _, entry := range models {
+			if ctx.Err() != nil {
+				return
+			}
 			if !h.AllowVirtualFreeHop(virtualFree, entry) {
 				continue
 			}
@@ -598,8 +601,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			}
 
 			var entrySuccess bool
-			// Try up to 10 connections for this model entry
+			// Try up to 10 connections for this model entry. A dead caller
+			// stops the walk: another account would repeat a canceled turn.
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				if ctx.Err() != nil {
+					return
+				}
 				cfg, known := providers.KnownProviders[modelInfo.Provider]
 				isNoAuthProvider := known && cfg.NoAuth
 				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
@@ -744,6 +751,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 
 		for _, entry := range models {
+			if ctx.Err() != nil {
+				return
+			}
 			if !h.AllowVirtualFreeHop(virtualFree, entry) {
 				continue
 			}
@@ -769,8 +779,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 
 			var entrySuccess bool
-			// Try up to 10 connections for this model entry
+			// Try up to 10 connections for this model entry. A dead caller
+			// stops the walk: another account would repeat a canceled turn.
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				if ctx.Err() != nil {
+					return
+				}
 				cfg, known := providers.KnownProviders[modelInfo.Provider]
 				isNoAuthProvider := known && cfg.NoAuth
 				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)

@@ -60,17 +60,75 @@ var directProxyClient = &http.Client{
 
 func isProxyFailure(err error, resp *http.Response) bool {
 	if resp != nil && resp.StatusCode == http.StatusForbidden {
-		if resp.Header.Get("X-Proxy-Error") != "" || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/plain") {
+		if resp.Header.Get("X-Proxy-Error") != "" {
+			return true
+		}
+		// A bare text/plain 403 is an application response often enough that
+		// replaying it would send the same prompt twice. Only a body that
+		// names a proxy, tunnel, or allowlist block is a proxy refusal.
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/plain") && proxyRefusalBody(resp) {
 			return true
 		}
 	}
 	if err != nil {
 		errStr := strings.ToLower(err.Error())
-		if strings.Contains(errStr, "proxy") || strings.Contains(errStr, "connect tunnel failed") || strings.Contains(errStr, "blocked-by-allowlist") || strings.Contains(errStr, "forbidden") {
+		if strings.Contains(errStr, "proxy") || strings.Contains(errStr, "connect tunnel failed") || strings.Contains(errStr, "blocked-by-allowlist") {
 			return true
 		}
 	}
 	return false
+}
+
+func proxyRefusalBody(resp *http.Response) bool {
+	if resp == nil || resp.Body == nil {
+		return false
+	}
+	peeked, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), resp.Body))
+	if err != nil && len(peeked) == 0 {
+		return false
+	}
+	return proxyRefusalText(string(peeked))
+}
+
+func proxyRefusalText(body string) bool {
+	lower := strings.ToLower(body)
+	for _, marker := range []string{"proxy", "connect tunnel", "blocked-by-allowlist", "tunnel failed"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestUsesProxy reports whether this client would send req through a proxy.
+// A direct client must not replay a 403: the second attempt is the same request.
+func requestUsesProxy(client *http.Client, req *http.Request) bool {
+	if client == nil || req == nil {
+		return false
+	}
+	return roundTripperUsesProxy(client.Transport, req)
+}
+
+func roundTripperUsesProxy(rt http.RoundTripper, req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	if ft, ok := rt.(*FallbackTransport); ok && ft != nil {
+		rt = ft.Base
+		if rt == nil {
+			rt = http.DefaultTransport
+		}
+	}
+	ht, ok := rt.(*http.Transport)
+	if !ok || ht.Proxy == nil {
+		return false
+	}
+	proxyURL, err := ht.Proxy(req)
+	return err == nil && proxyURL != nil
 }
 
 // DoRequest sends an HTTP POST to url with body and auth, returns the raw response.
@@ -88,7 +146,7 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
-	if isProxyFailure(err, resp) {
+	if isProxyFailure(err, resp) && requestUsesProxy(client, req) {
 		if resp != nil {
 			resp.Body.Close()
 		}

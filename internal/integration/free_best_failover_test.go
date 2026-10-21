@@ -70,8 +70,18 @@ func TestFreeBestProductionRouterFailover(t *testing.T) {
 	if strings.Contains(string(admin.Body), "sk-fake") || strings.Contains(string(admin.Body), "sk-paid") || strings.Contains(string(admin.Body), "gsk-fake") || strings.Contains(string(admin.Body), "apiKey") {
 		t.Fatalf("diagnosis leaked credentials: %s", admin.Body)
 	}
-	if !strings.Contains(string(admin.Body), `"reason":"paid"`) || !strings.Contains(string(admin.Body), `"reason":"unknown_cost"`) {
-		t.Fatalf("diagnosis missing discard reasons: %s", admin.Body)
+	body := string(admin.Body)
+	if !strings.Contains(body, `"reason":"paid"`) || !strings.Contains(body, `"reason":"unknown_cost"`) {
+		t.Fatalf("diagnosis missing discard reasons: %s", body)
+	}
+	if !strings.Contains(body, `"pricing":"free_tier"`) || !strings.Contains(body, `"pricing":"free"`) {
+		t.Fatalf("diagnosis hid the real pricing mode: %s", body)
+	}
+	if !strings.Contains(body, `"state":"gateway_temporary"`) {
+		t.Fatalf("503 cooldown was not kept distinct from quota: %s", body)
+	}
+	if strings.Contains(body, `"quota":0`) || strings.Contains(body, `"quota":"0"`) || strings.Contains(body, `"quota":"available"`) {
+		t.Fatalf("unknown quota presented as a capacity: %s", body)
 	}
 }
 

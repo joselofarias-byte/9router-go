@@ -1,27 +1,36 @@
 package chat
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/controlplane/routing"
-	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 )
 
+// FreeRouteAccount is one provider connection as the free-best selector sees it.
+// Quota is never a number: an unknown remaining balance stays "unknown" and
+// quotaKnown is false. It is not reported as zero and not reported as verified
+// capacity. Auth and gateway cooldowns do not change that.
+type FreeRouteAccount struct {
+	AccountID  string `json:"accountId"`
+	State      string `json:"state"`
+	Quota      string `json:"quota"`
+	QuotaKnown bool   `json:"quotaKnown"`
+}
+
 // FreeRouteHop is one eligible free route, without credentials.
+// Availability is recent delivery evidence only. It is not a quota reading.
 type FreeRouteHop struct {
-	Entry        string `json:"entry"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	AccountID    string `json:"accountId,omitempty"`
-	Pricing      string `json:"pricing"`
-	Availability string `json:"availability"`
-	Quota        string `json:"quota"`
+	Entry        string             `json:"entry"`
+	Provider     string             `json:"provider"`
+	Model        string             `json:"model"`
+	Pricing      string             `json:"pricing"`
+	Availability string             `json:"availability"`
+	Accounts     []FreeRouteAccount `json:"accounts"`
 }
 
 // FreeRouteDiscard explains why a catalog row is outside the free pool.
@@ -34,7 +43,7 @@ type FreeRouteDiscard struct {
 }
 
 // FreeRouteDiagnosis is the admin view of a virtual free route.
-// It must stay free of API keys, tokens, cookies, and upstream error text.
+// It must stay free of API keys, tokens, cookies, emails, and upstream error text.
 type FreeRouteDiagnosis struct {
 	Model     string             `json:"model"`
 	Policy    string             `json:"policy"`
@@ -78,130 +87,82 @@ func (h *ChatHandler) ExplainFreeRoute(modelName string) FreeRouteDiagnosis {
 			selected[hop.Entry] = true
 		}
 	}
-	diag.Discarded = discardUnselected(registry.GetActiveState(), selected, h.connectionSignals())
+	diag.Discarded = discardUnselected(registry.GetActiveState(), selected, h.accountsByProvider())
 	return diag
 }
 
 func (h *ChatHandler) describeSelectedHops(entries []string) []FreeRouteHop {
 	health := h.collectFreeRouteRecentHealth(entries)
-	signals := h.connectionSignals()
+	accounts := h.accountsByProvider()
+	state := registry.GetActiveState()
 	hops := make([]FreeRouteHop, 0, len(entries))
 	for _, entry := range entries {
 		provider, model := splitRouteEntry(entry)
-		signal := signals.forProvider(provider)
-		availability := "unknown"
-		if stat := health[entry]; stat != nil && stat.successes > 0 {
-			availability = "verified"
-		}
 		hops = append(hops, FreeRouteHop{
 			Entry:        entry,
 			Provider:     provider,
 			Model:        model,
-			AccountID:    signal.accountID,
-			Pricing:      "free",
-			Availability: availability,
-			Quota:        signal.quota,
+			Pricing:      pricingModeForEntry(state, provider, model),
+			Availability: hopAvailability(health[entry]),
+			Accounts:     accountsForHop(provider, accounts),
 		})
 	}
 	return hops
 }
 
-type accountSignal struct {
-	accountID string
-	quota     string
-	auth      bool
-	cooling   bool
-	active    bool
+func hopAvailability(stat *freeRouteRecentHealth) string {
+	if stat != nil && stat.successes > 0 {
+		return availabilityRecentSuccess
+	}
+	return availabilityUnknown
 }
 
-type signalIndex struct {
-	byProvider map[string]accountSignal
+func accountsForHop(provider string, accounts accountIndex) []FreeRouteAccount {
+	listed := accounts.forProvider(provider)
+	if len(listed) > 0 {
+		return listed
+	}
+	cfg, known := providers.KnownProviders[provider]
+	if !known || !cfg.NoAuth {
+		return []FreeRouteAccount{}
+	}
+	return []FreeRouteAccount{{
+		AccountID:  routing.VirtualNoAuthAccountID(provider),
+		State:      accountStateEligible,
+		Quota:      quotaUnknown,
+		QuotaKnown: false,
+	}}
 }
 
-func (s signalIndex) forProvider(provider string) accountSignal {
-	if s.byProvider == nil {
-		return accountSignal{quota: "unknown"}
+func pricingModeForEntry(state *registry.RegistryState, provider, model string) string {
+	if state == nil || provider == "" || model == "" {
+		return ""
 	}
-	sig, ok := s.byProvider[provider]
-	if !ok {
-		return accountSignal{quota: "unknown"}
-	}
-	return sig
-}
-
-func (h *ChatHandler) connectionSignals() signalIndex {
-	idx := signalIndex{byProvider: map[string]accountSignal{}}
-	if h == nil || h.Repo == nil {
-		return idx
-	}
-	conns, err := h.Repo.GetProviderConnections("", false)
-	if err != nil {
-		return idx
-	}
-	for _, conn := range conns {
-		if conn == nil {
+	fallback := ""
+	foundFallback := false
+	for _, pm := range state.ProviderModels[provider] {
+		if pm == nil {
 			continue
 		}
-		sig := readAccountSignal(conn.ID, conn.IsActive == 1, conn.Data)
-		prev, seen := idx.byProvider[conn.Provider]
-		if !seen || betterSignal(sig, prev) {
-			idx.byProvider[conn.Provider] = sig
+		upstream := pm.UpstreamModel
+		if upstream == "" {
+			upstream = pm.ModelID
+		}
+		if upstream == model {
+			return pm.PricingMode
+		}
+		if pm.ModelID == model && !foundFallback {
+			fallback = pm.PricingMode
+			foundFallback = true
 		}
 	}
-	return idx
+	if foundFallback {
+		return fallback
+	}
+	return ""
 }
 
-func betterSignal(next, prev accountSignal) bool {
-	if next.active != prev.active {
-		return next.active
-	}
-	return !next.cooling && prev.cooling
-}
-
-func readAccountSignal(id string, active bool, raw string) accountSignal {
-	sig := accountSignal{accountID: id, quota: "unknown", active: active}
-	if !active {
-		sig.quota = "unknown"
-		return sig
-	}
-	until, cooling := db.ConnectionCooldownUntil(raw)
-	if !cooling || !until.After(time.Now()) {
-		return sig
-	}
-	sig.cooling = true
-	status := lastErrorStatus(raw)
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		sig.auth = true
-		sig.quota = "auth_failure"
-	case http.StatusPaymentRequired, http.StatusTooManyRequests:
-		sig.quota = "known_exhausted"
-	default:
-		sig.quota = "known_exhausted"
-	}
-	return sig
-}
-
-func lastErrorStatus(raw string) int {
-	var data map[string]any
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return 0
-	}
-	last, _ := data["lastError"].(map[string]any)
-	if last == nil {
-		return 0
-	}
-	switch status := last["status"].(type) {
-	case float64:
-		return int(status)
-	case int:
-		return status
-	default:
-		return 0
-	}
-}
-
-func discardUnselected(state *registry.RegistryState, selected map[string]bool, signals signalIndex) []FreeRouteDiscard {
+func discardUnselected(state *registry.RegistryState, selected map[string]bool, accounts accountIndex) []FreeRouteDiscard {
 	if state == nil {
 		return []FreeRouteDiscard{}
 	}
@@ -209,55 +170,84 @@ func discardUnselected(state *registry.RegistryState, selected map[string]bool, 
 	for providerID, models := range state.ProviderModels {
 		provider := state.Providers[providerID]
 		for _, pm := range models {
-			if pm == nil {
+			if pm == nil || selected[freeEntryOf(pm)] {
 				continue
 			}
-			entry := freeEntryOf(pm)
-			if selected[entry] {
-				continue
-			}
-			reason, pricing := discardReason(provider, pm, signals.forProvider(providerID))
-			out = append(out, FreeRouteDiscard{
-				Provider: pm.ProviderID,
-				Model:    pm.ModelID,
-				Pricing:  pricing,
-				Reason:   reason,
-			})
+			out = append(out, discardsForModel(provider, pm, accounts)...)
 		}
 	}
 	return out
 }
 
-func discardReason(provider *registry.Provider, pm *registry.ProviderModel, signal accountSignal) (string, string) {
+func discardsForModel(provider *registry.Provider, pm *registry.ProviderModel, accounts accountIndex) []FreeRouteDiscard {
+	if reason, modelLevel := modelDiscardReason(provider, pm); modelLevel {
+		return []FreeRouteDiscard{{
+			Provider: pm.ProviderID,
+			Model:    pm.ModelID,
+			Pricing:  pm.PricingMode,
+			Reason:   reason,
+		}}
+	}
+	return accountDiscards(pm, accounts)
+}
+
+func modelDiscardReason(provider *registry.Provider, pm *registry.ProviderModel) (string, bool) {
 	if provider == nil || !provider.IsActive {
-		return "inactive_provider", pm.PricingMode
+		return "inactive_provider", true
 	}
 	if !pm.IsActive {
-		return "inactive_model", pm.PricingMode
+		return "inactive_model", true
 	}
 	switch pm.PricingMode {
 	case "paid":
-		return "paid", pm.PricingMode
+		return "paid", true
 	case "unknown", "":
-		return "unknown_cost", pm.PricingMode
+		return "unknown_cost", true
 	case "free", "free_tier":
+		return "", false
 	default:
-		return "not_free", pm.PricingMode
+		return "not_free", true
 	}
-	cfgOK := false
-	if cfg, known := providers.KnownProviders[pm.ProviderID]; known && cfg.NoAuth {
-		cfgOK = true
+}
+
+func accountDiscards(pm *registry.ProviderModel, accounts accountIndex) []FreeRouteDiscard {
+	cfg, known := providers.KnownProviders[pm.ProviderID]
+	noAuth := known && cfg.NoAuth
+	out := []FreeRouteDiscard{}
+	anyEligible := false
+	for _, acct := range accounts.forProvider(pm.ProviderID) {
+		switch acct.State {
+		case accountStateEligible:
+			anyEligible = true
+		case accountStateInactive:
+			continue
+		default:
+			out = append(out, FreeRouteDiscard{
+				Provider:  pm.ProviderID,
+				Model:     pm.ModelID,
+				AccountID: acct.AccountID,
+				Pricing:   pm.PricingMode,
+				Reason:    acct.State,
+			})
+		}
 	}
-	if !signal.active && !cfgOK {
-		return "no_account", pm.PricingMode
+	if anyEligible || noAuth {
+		return append(out, FreeRouteDiscard{
+			Provider: pm.ProviderID,
+			Model:    pm.ModelID,
+			Pricing:  pm.PricingMode,
+			Reason:   "not_selected",
+		})
 	}
-	if signal.auth {
-		return "auth_failure", pm.PricingMode
+	if len(out) == 0 {
+		out = append(out, FreeRouteDiscard{
+			Provider: pm.ProviderID,
+			Model:    pm.ModelID,
+			Pricing:  pm.PricingMode,
+			Reason:   "no_account",
+		})
 	}
-	if signal.cooling {
-		return "cooldown", pm.PricingMode
-	}
-	return "not_selected", pm.PricingMode
+	return out
 }
 
 func freeEntryOf(pm *registry.ProviderModel) string {

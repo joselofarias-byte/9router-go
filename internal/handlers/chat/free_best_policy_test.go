@@ -328,14 +328,28 @@ func TestExplainFreeRouteOmitsSecrets(t *testing.T) {
 	if !found["paid deepseek-chat"] || !found["unknown_cost not-classified"] {
 		t.Fatalf("discards = %#v", diag.Discarded)
 	}
-	var groqQuota string
-	for _, hop := range diag.Selected {
-		if hop.Provider == "groq" {
-			groqQuota = hop.Quota
+	var groq, deepseek *FreeRouteHop
+	for i := range diag.Selected {
+		switch diag.Selected[i].Provider {
+		case "groq":
+			groq = &diag.Selected[i]
+		case "deepseek":
+			deepseek = &diag.Selected[i]
 		}
 	}
-	if groqQuota != "auth_failure" {
-		t.Fatalf("groq quota = %q, want auth_failure; selected=%#v", groqQuota, diag.Selected)
+	if groq == nil || deepseek == nil {
+		t.Fatalf("selected = %#v", diag.Selected)
+	}
+	if groq.Pricing != "free" || deepseek.Pricing != "free_tier" {
+		t.Fatalf("pricing groq=%q deepseek=%q", groq.Pricing, deepseek.Pricing)
+	}
+	groqAcct := accountByID(t, groq.Accounts, "conn-2")
+	if groqAcct.State != "auth_failure" || groqAcct.Quota != "unknown" || groqAcct.QuotaKnown {
+		t.Fatalf("groq account = %#v, want auth_failure with unknown quota", groqAcct)
+	}
+	deepseekAcct := accountByID(t, deepseek.Accounts, "conn-1")
+	if deepseekAcct.State != "eligible" || deepseekAcct.Quota != "unknown" || deepseekAcct.QuotaKnown {
+		t.Fatalf("deepseek account = %#v, want eligible with unknown quota", deepseekAcct)
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/free-best?model=gpt-4", nil)
@@ -343,6 +357,17 @@ func TestExplainFreeRouteOmitsSecrets(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("non-virtual diagnosis status=%d", rec.Code)
 	}
+}
+
+func accountByID(t *testing.T, accounts []FreeRouteAccount, id string) FreeRouteAccount {
+	t.Helper()
+	for _, acct := range accounts {
+		if acct.AccountID == id {
+			return acct
+		}
+	}
+	t.Fatalf("account %s missing from %#v", id, accounts)
+	return FreeRouteAccount{}
 }
 
 func mustJSON(t *testing.T, v any) string {
