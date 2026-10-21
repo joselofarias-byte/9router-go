@@ -1,6 +1,6 @@
 # GROK-005 — Informe final del motor Free Best
 
-Fecha de verificación: 2026-10-21. Rama: `cursor/free-best-engine-f768`. No se fusionó a `main` y no hubo despliegue.
+Fecha de verificación: 2026-10-21. Rama: `cursor/free-best-engine-f768`. Commit de la implementación: `a6a95cf0ff92704e00ee0d62344bc47d05568242`. No se fusionó a `main` y no hubo despliegue.
 
 ## Base elegida
 
