@@ -331,6 +331,9 @@ func TestResolveModel_FreeBestDoesNotFallThroughToPaidProvider(t *testing.T) {
 func TestHandleModels_ListsVirtualFreeRoutes(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
 
 	h := NewChatHandler(db.NewRepo(database))
 	rec := httptest.NewRecorder()
@@ -353,8 +356,8 @@ func TestHandleModels_ListsVirtualFreeRoutes(t *testing.T) {
 		found[m.ID] = m.OwnedBy
 	}
 	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "coding-auto", "long-context-free"} {
-		if found[id] != "fabric" {
-			t.Errorf("model %s owned_by=%q, want fabric", id, found[id])
+		if _, ok := found[id]; ok {
+			t.Errorf("virtual model %s was advertised without a usable route", id)
 		}
 	}
 }
@@ -521,6 +524,9 @@ func TestHandleModels_ExplicitFreeNameKeepsVirtualSibling(t *testing.T) {
 		t.Fatalf("seed combo: %v", err)
 	}
 
+	if err := registry.InitRegistry(nil); err != nil {
+		t.Fatalf("init registry: %v", err)
+	}
 	h := NewChatHandler(db.NewRepo(database))
 	rec := httptest.NewRecorder()
 	h.HandleModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
@@ -543,8 +549,8 @@ func TestHandleModels_ExplicitFreeNameKeepsVirtualSibling(t *testing.T) {
 	if _, dup := found["free"]; dup {
 		t.Fatal("virtual free was listed beside the explicit Free combo")
 	}
-	if found["free-best"] != "fabric" {
-		t.Fatalf("free-best owned_by=%q, want fabric", found["free-best"])
+	if _, ok := found["free-best"]; ok {
+		t.Fatal("free-best was advertised without a usable free route")
 	}
 }
 

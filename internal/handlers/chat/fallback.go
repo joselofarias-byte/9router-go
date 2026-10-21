@@ -148,7 +148,20 @@ func (h *ChatHandler) handleAccountFallback(
 			return lastErr
 		}
 		var ue *upstreamError
-		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
+		errors.As(lastErr, &ue)
+		decision, reason, lockAccount := upstreamHopPlan(lastErr)
+		if reason == "empty_completion" && ue != nil {
+			// Empty output is model-scoped. Try another account for this
+			// model without recording a quota cooldown.
+			if lockErr := h.Repo.LockConnectionModel(connObj.ID, model, 30, 0); lockErr != nil {
+				log.Warn("fallback", "empty model lock failed", "conn", connObj.ID, "error", lockErr)
+			}
+			log.Info("fallback", "empty completion; trying next eligible account",
+				"conn", c.ID, "provider", provider, "model", model, "reason", reason)
+			excludeIDs = append(excludeIDs, c.ID)
+			continue
+		}
+		if decision == "next_account" && lockAccount && ue != nil {
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
@@ -156,10 +169,6 @@ func (h *ChatHandler) handleAccountFallback(
 			// Classify error to get dynamic cooldown
 			classification := providers.ClassifyError(ue.StatusCode, errorText, currentBackoffLevel)
 			cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(classification.CooldownMs)*time.Millisecond, ue)
-			errMsg := errorText
-			if errMsg == "" {
-				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
-			}
 			lockKey := canonicalLockModel(provider, model)
 			h.Repo.LockConnectionModel(connObj.ID, lockKey, cooldownSec, classification.NewBackoffLevel)
 			if lockKey != model {
@@ -175,15 +184,15 @@ func (h *ChatHandler) handleAccountFallback(
 			log.Warn("fallback", "connection locked", append([]any{
 				"conn", connObj.ID, "provider", provider, "model", model,
 				"lockKey", lockKey, "status", ue.StatusCode, "cooldown_s", cooldownSec,
+				"reason", reason,
 			}, connIdentityKV(connObj)...)...)
 			excludeIDs = append(excludeIDs, c.ID)
 			continue
 		}
-		if accountTransientFailure(lastErr) {
-			// A transient 500 or transport failure is not a quota error.
-			// Do not persist a rate-limit lock; try a different account once.
+		if decision == "next_account" {
+			// 500, 408, transport and per-hop timeouts are not quota.
 			log.Warn("fallback", "transient failure; trying next eligible account",
-				"conn", c.ID, "provider", provider, "model", model)
+				"conn", c.ID, "provider", provider, "model", model, "reason", reason)
 			continue
 		}
 		return lastErr
@@ -862,18 +871,22 @@ func claudeSessionIDFromBody(body []byte) string {
 	return extractClaudeSessionIdFromUserId(userID)
 }
 
-
 // accountTransientFailure admits one new account only for errors plausibly
 // tied to an unhealthy upstream account or its transport. It MUST be checked
 // after verifying the response was not committed and the caller is still live.
 // Business/API request errors (400, 401 etc.) do not enter this path.
+// A per-hop deadline is transient; the caller context is checked by the
+// fallback loop before this function runs.
 func accountTransientFailure(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	var ue *upstreamError
 	if errors.As(err, &ue) {
-		return ue.StatusCode == http.StatusInternalServerError
+		return ue.StatusCode == http.StatusInternalServerError || ue.StatusCode == http.StatusRequestTimeout
 	}
 	var networkErr net.Error
 	return errors.As(err, &networkErr) ||

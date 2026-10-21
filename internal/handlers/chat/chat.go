@@ -445,10 +445,15 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	for _, m := range result.Models {
 		seen[strings.ToLower(m.ID)] = true
 	}
-	for _, id := range []string{"free", "free-best", "fast-free", "reasoning-free", "coding-best-free", "coding-auto", "long-context-free"} {
-		if !seen[id] {
-			result.Models = append(result.Models, ModelInfoObject{ID: id, Object: "model", OwnedBy: "fabric"})
+	for _, id := range virtualFreeModelIDs() {
+		if seen[id] {
+			continue
 		}
+		info, err := h.resolveModel(id)
+		if err != nil || info == nil || !info.VirtualFree || len(info.ComboModels) == 0 {
+			continue
+		}
+		result.Models = append(result.Models, ModelInfoObject{ID: id, Object: "model", OwnedBy: "fabric"})
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"object":      "list",

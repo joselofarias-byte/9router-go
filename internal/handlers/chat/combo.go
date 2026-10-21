@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -649,50 +648,19 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
-					if cw.IsCommitted() {
-						log.Error("combo", "upstream error after response started", "error", fwdErr)
+					result := h.finishComboAttempt(comboAttempt{
+						Ctx: ctx, CW: cw, Err: fwdErr, VirtualFree: virtualFree,
+						NoAuthProvider: isNoAuthProvider, Entry: entry, ConnID: connID,
+						Provider: modelInfo.Provider, Model: modelInfo.Model, ExcludeIDs: &excludeIDs,
+					})
+					if result.Upstream != nil {
+						retry.note(result.Upstream)
+						lastErr = result.Upstream
+					}
+					if result.StopRequest {
 						return
 					}
-					if ctx.Err() != nil {
-						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
-						break
-					}
-					var ue *upstreamError
-					if errors.As(fwdErr, &ue) {
-						if isEmptyCompletionError(ue) {
-							// Empty output is model-scoped; it must not quarantine
-							// an account that can serve the next model in the pool.
-							if err := h.Repo.LockConnectionModel(connID, modelInfo.Model, 30, 0); err != nil {
-								log.Warn("combo", "empty model lock failed", "error", err)
-							}
-							if virtualFree && isNoAuthProvider {
-								now := time.Now().UTC()
-								virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{quarantinedAt: now, until: now.Add(30 * time.Second)})
-							}
-							lastErr = ue
-							break
-						}
-						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
-							lastErr = ue
-							break
-						}
-						if providers.RetryableStatusCodes[ue.StatusCode] {
-							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
-						}
-						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
-							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
-							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
-						}
-						retry.note(ue)
-						lastErr = ue
-						if isKnownNoAuth {
-							break
-						}
-						continue
-					}
-					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-					log.Warn("fallback", "upstream failed without structured status", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID, "error", fwdErr)
-					if isKnownNoAuth {
+					if result.NextModel || isKnownNoAuth {
 						break
 					}
 					continue
@@ -841,32 +809,19 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				})
 
 				if fwdErr != nil {
-					if ctx.Err() != nil {
-						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
-						break
+					result := h.finishComboAttempt(comboAttempt{
+						Ctx: ctx, CW: cw, Err: fwdErr, VirtualFree: virtualFree,
+						NoAuthProvider: isNoAuthProvider, Entry: entry, ConnID: connID,
+						Provider: modelInfo.Provider, Model: modelInfo.Model, ExcludeIDs: &excludeIDs,
+					})
+					if result.Upstream != nil {
+						retry.note(result.Upstream)
+						lastErr = result.Upstream
 					}
-					var ue *upstreamError
-					if errors.As(fwdErr, &ue) {
-						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
-							lastErr = ue
-							break
-						}
-						if providers.RetryableStatusCodes[ue.StatusCode] {
-							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
-						}
-						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
-							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
-							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
-						}
-						retry.note(ue)
-						lastErr = ue
-						if isKnownNoAuth {
-							break
-						}
-						continue
+					if result.StopRequest {
+						return
 					}
-					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-					if isKnownNoAuth {
+					if result.NextModel || isKnownNoAuth {
 						break
 					}
 					continue
