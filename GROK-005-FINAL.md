@@ -85,7 +85,7 @@ No se usaron credenciales reales, ni APIs de pago, ni bases de Oracle, Termux o 
 
 ## Ronda 2
 
-Fecha: 2026-10-21. Commit `9d585e411834877412de8020258bcb2d4fde1cef`. Misma rama `cursor/free-best-engine-f768`, mismo PR #142. No se fusionó y no hubo despliegue. Los PR #139, #140 y #141 no se incorporaron.
+Fecha: 2026-10-21. Commit de la implementación: `9d585e411834877412de8020258bcb2d4fde1cef`. Misma rama `cursor/free-best-engine-f768`, mismo PR #142. No se fusionó y no hubo despliegue. Los PR #139, #140 y #141 no se incorporaron.
 
 ### Diagnóstico
 
@@ -128,7 +128,7 @@ En la pasada `-race` que lanzó varios paquetes a la vez, `TestHandleMessagesCom
 
 `go test -race` de controlplane (discovery, registry, routing, scoring, sync, trust, verification), proxy, executor, oauth, providers y db terminó `ok` en esa pasada.
 
-CI del commit anterior del PR (runs `39663442772` y `39663442742`, 2026-10-21T19:38Z): jobs `test`, `Integration tests`, `Build Docker image` y `multiagent` en `success`. Esa CI no incluye los cambios de esta ronda. La CI de este commit se mira después del push; si no hay resultado en el informe, sigue pendiente.
+CI del commit `8568e0088378b1518b9106cc097124ee248f2bdc`, comprobada con `gh pr checks 142` y `gh run view` el 2026-10-21: los seis checks terminaron en éxito. Runs `39669531078` (CI) y `39669531052` (Capimux Multiagent PR Validation), ambos `conclusion: success` y `headSha` igual a ese commit. Jobs: `test` (2m11s), `Integration tests` (1m10s), `Build Docker image (verify only)` (1m29s), `multiagent` (1m38s), más los checks de preview de Vercel. Esa pasada de integración es la del workflow, con `-race`, no una repetición local. No se fusionó y no se desplegó a producción; el check de Vercel es el preview que el PR dispara solo.
 
 ### Protocolo Termux / HONOR 200
 
@@ -151,12 +151,11 @@ Si alguno de esos pasos llama a Groq, OpenAI, DeepSeek u otro host que no sea lo
 ### Qué falta para aprobar la fusión
 
 1. Revisión humana del diff de #142. Sigue en borrador. Este informe no la sustituye.
-2. CI verde del commit de esta ronda. La CI citada arriba es del commit anterior.
-3. Decisión explícita de dejar #139, #140 y #141 fuera. No están en esta rama y no se probaron junto con este motor.
-4. La cuota numérica remota (requests restantes, ventana de 5 h) no se lee. `quotaKnown: true` solo significa que un 402 o un 429 local dejó cooldown. Un saldo real desconocido sigue en `unknown`.
-5. El protocolo Termux/HONOR 200 de arriba no se corrió.
-6. No se volvió a correr la suite `integration` completa con `-race` sobre este commit. La corrida de esta ronda fue el filtro sin `-race`. La corrida completa con `-race` que está en CI es del commit anterior.
-7. No se corrió `go test -race ./...` de todo el módulo. Los paquetes listados arriba sí.
-8. El segundo pase del combo, con `Retry-After` dentro de 2s y sin bytes entregados, sigue existiendo. La prueba de 1s falló una vez bajo carga y luego pasó. No hay evidencia de bucle ilimitado: 12 cuentas con 401 produjeron como máximo 10 intentos, uno por cuenta.
-9. El estimador de usage puede anotar un costo de catálogo distinto de cero en un modelo `free_tier`. No se cambió la tabla de precios y no se hizo ninguna llamada de pago.
-10. Un 403 de proxy con cuerpo que nombra allowlist o túnel todavía se reintenta una vez por el transporte directo. Es el caso que el transporte directo existe para cubrir. Un 403 de aplicación no.
+2. Decisión explícita de dejar #139, #140 y #141 fuera. No están en esta rama y no se probaron junto con este motor.
+3. La cuota numérica remota (requests restantes, ventana de 5 h) no se lee. `quotaKnown: true` solo significa que un 402 o un 429 local dejó cooldown. Un saldo real desconocido sigue en `unknown`.
+4. El protocolo Termux/HONOR 200 de arriba no se corrió.
+5. La suite `integration` completa con `-race` pasó en el job `Integration tests` del commit `8568e00` (run `39669531078`). En local, sobre este commit, solo se corrió el filtro sin `-race`.
+6. No se corrió `go test -race ./...` de todo el módulo. Los paquetes listados arriba sí, y el job `test` de esa CI corrió `go test ./...` sin `-race` después de construir el SPA.
+7. El segundo pase del combo, con `Retry-After` dentro de 2s y sin bytes entregados, sigue existiendo. La prueba de 1s falló una vez bajo carga y luego pasó. No hay evidencia de bucle ilimitado: 12 cuentas con 401 produjeron como máximo 10 intentos, uno por cuenta.
+8. El estimador de usage puede anotar un costo de catálogo distinto de cero en un modelo `free_tier`. No se cambió la tabla de precios y no se hizo ninguna llamada de pago.
+9. Un 403 de proxy con cuerpo que nombra allowlist o túnel todavía se reintenta una vez por el transporte directo. Es el caso que el transporte directo existe para cubrir. Un 403 de aplicación no.
