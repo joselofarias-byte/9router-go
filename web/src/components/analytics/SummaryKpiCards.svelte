@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fmt, fmtCost, type StatsData } from './types'
+  import { cachePercent, fmtPercent, fmt, fmtCost, type StatsData } from './types'
 
   let { stats = {} }: { stats?: StatsData } = $props()
 </script>
@@ -18,6 +18,7 @@
   <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] flex min-w-0 flex-col gap-1 px-4 py-3">
     <span class="text-text-muted text-sm uppercase font-semibold">Cached Tokens</span>
     <span class="truncate text-2xl font-bold text-info">{fmt(stats.totalCachedTokens)}</span>
+    <span class="text-[10px] text-text-muted">{fmtPercent(cachePercent(stats.totalPromptTokens, stats.totalCachedTokens))} of input reused</span>
   </div>
 
   <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] flex min-w-0 flex-col gap-1 px-4 py-3">

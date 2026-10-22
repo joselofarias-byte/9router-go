@@ -4,9 +4,10 @@
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import { getIconPath } from '../connections/types'
-  import { cachedTokensFor, fmt, timeAgo, type RequestDetailItem } from './types'
+  import { cachedTokensFor, cachePercentFor, fmtPercent, fmtRate, fmtRequestCost, fmt, timeAgo, type RequestDetailItem } from './types'
 
   interface Props {
+    accountNames?: Record<string, string>
     details?: RequestDetailItem[]
     detailsTotal?: number
     detailsPage?: number
@@ -16,6 +17,7 @@
   }
 
   let {
+    accountNames = {},
     details = [],
     detailsTotal = 0,
     detailsPage = 1,
@@ -28,11 +30,14 @@
 
 </script>
 
+<svelte:window onkeydown={(event) => { if (event.key === 'Escape') selectedDetail = null }} />
+
 <Card padding="none" class="overflow-hidden border border-border">
   <div class="px-5 py-3 border-b border-border flex items-center justify-between bg-surface-2">
     <div>
       <h2 class="font-headline text-sm font-bold text-text-main">Recent Request Details</h2>
       <p class="font-body text-xs text-text-muted">Total recorded: {detailsTotal.toLocaleString()} requests</p>
+      <p class="font-body text-[10px] text-text-muted">Output tok/s includes total waiting time. ~ indicates an estimate; — means unavailable. Costs are not actual billing.</p>
     </div>
     <Button variant="secondary" size="sm" onclick={onRefresh} disabled={detailsLoading}>
       <RefreshCw class="w-3.5 h-3.5 mr-1 {detailsLoading ? 'animate-spin' : ''}" />
@@ -58,11 +63,15 @@
             <th class="py-3 px-4">Time</th>
             <th class="py-3 px-4">Provider</th>
             <th class="py-3 px-4">Model</th>
+            <th class="py-3 px-4">Account</th>
             <th class="py-3 px-4 text-right">TTFT</th>
             <th class="py-3 px-4 text-right">Total Latency</th>
             <th class="py-3 px-4 text-right">Prompt</th>
             <th class="py-3 px-4 text-right">Completion</th>
             <th class="py-3 px-4 text-right">Cached</th>
+            <th class="py-3 px-4 text-right">Cache %</th>
+            <th class="py-3 px-4 text-right" title="Output tokens divided by total request time, including waiting. Not decoding speed.">Output tok/s</th>
+            <th class="py-3 px-4 text-right">Est. cost (USD)</th>
             <th class="py-3 px-4 text-right">Actions</th>
           </tr>
         </thead>
@@ -107,6 +116,9 @@
                   <span class="truncate">{item.model}</span>
                 </div>
               </td>
+              <td class="py-3 px-4 text-text-muted max-w-[160px] truncate" title={accountNames[item.connectionId || ''] || item.connectionId || 'Not recorded'}>
+                {accountNames[item.connectionId || ''] || item.connectionId || '—'}
+              </td>
               <td class="py-3 px-4 text-right text-text-muted">
                 {item.latency?.ttft ? `${item.latency.ttft}ms` : '—'}
               </td>
@@ -122,6 +134,9 @@
               <td class="py-3 px-4 text-right text-info">
                 {fmt(cachedTokensFor(item))}
               </td>
+              <td class="py-3 px-4 text-right text-info">{fmtPercent(cachePercentFor(item))}</td>
+              <td class="py-3 px-4 text-right text-text-main">{fmtRate(item)}</td>
+              <td class="py-3 px-4 text-right text-warning whitespace-nowrap">{fmtRequestCost(item)}</td>
               <td class="py-3 px-4 text-right">
                 <button
                   type="button"
@@ -167,7 +182,7 @@
 
 <!-- Slide-over Request Inspector Modal -->
 {#if selectedDetail}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) selectedDetail = null }}>
     <div class="w-full max-w-2xl max-h-[85vh] rounded-2xl bg-surface border border-border shadow-2xl flex flex-col overflow-hidden">
       <!-- Modal Header -->
       <div class="px-6 py-4 border-b border-border flex items-center justify-between bg-surface-2">
@@ -219,6 +234,14 @@
               {fmt(cachedTokensFor(selectedDetail))}
             </div>
           </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div><span class="text-text-muted">Cache hit rate:</span> {fmtPercent(cachePercentFor(selectedDetail))}</div>
+          <div><span class="text-text-muted">Output tok/s (end-to-end):</span> {fmtRate(selectedDetail)}</div>
+          <div><span class="text-text-muted">Est. cost (USD):</span> {fmtRequestCost(selectedDetail)}</div>
+          <div><span class="text-text-muted">Account:</span> {accountNames[selectedDetail.connectionId || ''] || selectedDetail.connectionId || '—'}</div>
+          <div class="col-span-2"><span class="text-text-muted">Endpoint:</span> {selectedDetail.endpoint || '—'}</div>
         </div>
 
         <!-- Raw JSON details inspector -->
