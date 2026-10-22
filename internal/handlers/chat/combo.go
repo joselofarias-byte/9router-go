@@ -559,8 +559,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				return
 			case <-time.After(wait):
 			}
-			// Fresh pass: re-allow connections locked by the previous attempt
-			// (their cooldown has elapsed) and clear the error state.
+			// The wait matches the raw Retry-After, but the lock was stored
+			// rounded up. Drop only the locks this request wrote, then re-allow
+			// those connections. A lock from an earlier request stays put.
+			h.releaseRetriedLocks(retry.locked)
 			lastErr = nil
 			retry.reset()
 			excludeIDs = nil
@@ -659,6 +661,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						Ctx: ctx, CW: cw, Err: fwdErr, VirtualFree: virtualFree,
 						NoAuthProvider: isNoAuthProvider, Entry: entry, ConnID: connID,
 						Provider: modelInfo.Provider, Model: modelInfo.Model, ExcludeIDs: &excludeIDs,
+						NoteLock: retry.noteLock,
 					})
 					if result.Upstream != nil {
 						retry.note(result.Upstream)
@@ -743,8 +746,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				return
 			case <-time.After(wait):
 			}
-			// Fresh pass: re-allow connections locked by the previous attempt
-			// (their cooldown has elapsed) and clear the error state.
+			// Same as the OpenAI loop: a rounded-up lock must not hide the
+			// account from the pass that already waited out Retry-After.
+			h.releaseRetriedLocks(retry.locked)
 			lastErr = nil
 			retry.reset()
 			excludeIDs = nil
@@ -827,6 +831,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						Ctx: ctx, CW: cw, Err: fwdErr, VirtualFree: virtualFree,
 						NoAuthProvider: isNoAuthProvider, Entry: entry, ConnID: connID,
 						Provider: modelInfo.Provider, Model: modelInfo.Model, ExcludeIDs: &excludeIDs,
+						NoteLock: retry.noteLock,
 					})
 					if result.Upstream != nil {
 						retry.note(result.Upstream)
@@ -884,9 +889,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 // combo models on the same account, and Google rate-limited it forever. The
 // connection is also appended to excludeIDs so the remaining combo models in
 // this request skip it instead of re-hitting the same quota bucket.
-func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
+func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) bool {
 	if connID == "" {
-		return
+		return false
 	}
 	currentLevel := h.Repo.GetConnectionBackoffLevel(connID)
 	cls := providers.ClassifyError(ue.StatusCode, extractErrorText(ue.Body), currentLevel)
@@ -894,7 +899,7 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	// 409/422/...) must not lock the account — the bug is in the request,
 	// not the credential. Only lock when ShouldFallback is set.
 	if !cls.ShouldFallback || cls.CooldownMs <= 0 {
-		return
+		return false
 	}
 	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue)
 	lockKey := canonicalLockModel(provider, model)
@@ -912,6 +917,29 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	}
 	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
+	return true
+}
+
+// releaseRetriedLocks drops cooldowns this request wrote so the bounded second
+// pass can see the account again. Locks that belong to another request are
+// not in the list and stay in place.
+func (h *ChatHandler) releaseRetriedLocks(locks []retriedLock) {
+	if h == nil || h.Repo == nil {
+		return
+	}
+	for _, lock := range locks {
+		if err := h.Repo.ClearConnectionRateLimit(lock.connID); err != nil {
+			log.Warn("combo", "clear retried rate limit failed", "conn", lock.connID, "error", err)
+		}
+		if err := h.Repo.UnlockConnectionModel(lock.connID, lock.model); err != nil {
+			log.Warn("combo", "unlock retried model failed", "conn", lock.connID, "model", lock.model, "error", err)
+		}
+		if canon := canonicalLockModel(lock.provider, lock.model); canon != lock.model {
+			if err := h.Repo.UnlockConnectionModel(lock.connID, canon); err != nil {
+				log.Warn("combo", "unlock retried canonical model failed", "conn", lock.connID, "model", canon, "error", err)
+			}
+		}
+	}
 }
 
 // ---- Fusion (parallel fan-out + judge synthesis) ----

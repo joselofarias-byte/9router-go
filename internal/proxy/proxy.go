@@ -84,7 +84,7 @@ func proxyRefusalBody(resp *http.Response) bool {
 		return false
 	}
 	peeked, err := io.ReadAll(io.LimitReader(resp.Body, 512))
-	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), resp.Body))
+	resp.Body = PrefixReadCloser(peeked, resp.Body)
 	if err != nil && len(peeked) == 0 {
 		return false
 	}
@@ -107,7 +107,48 @@ func requestUsesProxy(client *http.Client, req *http.Request) bool {
 	if client == nil || req == nil {
 		return false
 	}
+	// FallbackTransport already replays a proxy refusal on its direct leg.
+	// Replaying again here would send the same request twice.
+	if _, already := client.Transport.(*FallbackTransport); already {
+		return false
+	}
 	return roundTripperUsesProxy(client.Transport, req)
+}
+
+// PrefixReadCloser puts prefix back in front of rest and closes rest when
+// the caller closes the result. io.NopCloser around a MultiReader drops that
+// Close, so the original HTTP body would stay open.
+func PrefixReadCloser(prefix []byte, rest io.ReadCloser) io.ReadCloser {
+	return &prefixBody{prefix: bytes.NewReader(prefix), rest: rest}
+}
+
+type prefixBody struct {
+	prefix *bytes.Reader
+	rest   io.ReadCloser
+}
+
+func (b *prefixBody) Read(p []byte) (int, error) {
+	if b.prefix != nil && b.prefix.Len() > 0 {
+		n, err := b.prefix.Read(p)
+		if err == io.EOF {
+			// The prefix ending is not the body ending: rest still follows.
+			err = nil
+		}
+		if n > 0 || err != nil {
+			return n, err
+		}
+	}
+	if b.rest == nil {
+		return 0, io.EOF
+	}
+	return b.rest.Read(p)
+}
+
+func (b *prefixBody) Close() error {
+	if b.rest == nil {
+		return nil
+	}
+	return b.rest.Close()
 }
 
 func roundTripperUsesProxy(rt http.RoundTripper, req *http.Request) bool {
@@ -122,6 +163,17 @@ func roundTripperUsesProxy(rt http.RoundTripper, req *http.Request) bool {
 		if rt == nil {
 			rt = http.DefaultTransport
 		}
+	}
+	for {
+		unwrapped, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			break
+		}
+		next := unwrapped.Unwrap()
+		if next == nil || next == rt {
+			break
+		}
+		rt = next
 	}
 	ht, ok := rt.(*http.Transport)
 	if !ok || ht.Proxy == nil {

@@ -17,6 +17,59 @@ import (
 	"9router/proxy/internal/db"
 )
 
+func TestComboSkipsLockedModelAndCallsTheOpenOne(t *testing.T) {
+	var lockedHits, openHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		switch req.Model {
+		case "llama-3.1-8b-instant":
+			lockedHits.Add(1)
+		case "llama-3.3-70b-versatile":
+			openHits.Add(1)
+		default:
+			t.Errorf("unexpected model %q", req.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[{"message":{"role":"assistant","content":"libre"}}]}`))
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'groq'`); err != nil {
+		t.Fatal(err)
+	}
+	seedConnDB(t, database, "groq", "acct-groq", "gsk-local", srv.URL)
+	repo := db.NewRepo(database)
+	if err := repo.LockConnectionModel("acct-groq", "llama-3.1-8b-instant", 300, 0); err != nil {
+		t.Fatal(err)
+	}
+	seedFreeRouteRegistry(t)
+	state := registry.GetActiveState()
+	state.ProviderModels["groq"]["llama-3.3-70b-versatile"] = &registry.ProviderModel{
+		ProviderID:    "groq",
+		ModelID:       "llama-3.3-70b-versatile",
+		UpstreamModel: "llama-3.3-70b-versatile",
+		PricingMode:   "free",
+		IsActive:      true,
+	}
+	h := NewChatHandler(repo)
+	rec := httptest.NewRecorder()
+	h.handleComboFallback(context.Background(), rec, []byte(`{"model":"free-best","messages":[{"role":"user","content":"hola"}]}`),
+		[]string{"groq/llama-3.1-8b-instant", "groq/llama-3.3-70b-versatile"},
+		"fallback", false, false, "model-lock", 0, true)
+	if lockedHits.Load() != 0 {
+		t.Fatalf("locked model hits=%d, want 0; status=%d body=%s", lockedHits.Load(), rec.Code, rec.Body.String())
+	}
+	if openHits.Load() != 1 || rec.Code != http.StatusOK {
+		t.Fatalf("open hits=%d status=%d body=%s", openHits.Load(), rec.Code, rec.Body.String())
+	}
+}
+
 func TestFreeBestSeveralAccountsFailThenNextFreeProvider(t *testing.T) {
 	var paidHits, unknownHits atomic.Int32
 	groqHits := make([]atomic.Int32, 3)

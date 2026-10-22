@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"9router/proxy/internal/controlplane/registry"
 	"9router/proxy/internal/db"
 )
 
@@ -95,6 +96,56 @@ func TestExplainFreeRouteSeparatesAccountStates(t *testing.T) {
 			t.Fatalf("unknown quota presented as %q on %#v", got.Quota, got)
 		}
 	}
+}
+
+func TestExplainFreeRouteShowsModelLockWithoutInventingQuota(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE provider = 'groq'`); err != nil {
+		t.Fatal(err)
+	}
+	seedConnDB(t, database, "groq", "acct-groq", "gsk-should-not-leak", "http://127.0.0.1:9")
+	repo := db.NewRepo(database)
+	if err := repo.LockConnectionModel("acct-groq", "llama-3.1-8b-instant", 300, 0); err != nil {
+		t.Fatal(err)
+	}
+	seedFreeRouteRegistry(t)
+	state := registry.GetActiveState()
+	state.ProviderModels["groq"]["llama-3.3-70b-versatile"] = &registry.ProviderModel{
+		ProviderID:    "groq",
+		ModelID:       "llama-3.3-70b-versatile",
+		UpstreamModel: "llama-3.3-70b-versatile",
+		PricingMode:   "free",
+		IsActive:      true,
+	}
+	h := NewChatHandler(repo)
+	diag := h.ExplainFreeRoute("free-best")
+	raw := mustJSON(t, diag)
+	for _, banned := range []string{"gsk-", `"quota":0`, `"quota":"0"`, `"quota":"available"`, `"remaining"`} {
+		if strings.Contains(raw, banned) {
+			t.Fatalf("diagnosis contained %q: %s", banned, raw)
+		}
+	}
+	locked := accountOnHop(t, diag, "llama-3.1-8b-instant", "acct-groq")
+	open := accountOnHop(t, diag, "llama-3.3-70b-versatile", "acct-groq")
+	if locked.State != accountStateModelLocked || locked.Quota != quotaUnknown || locked.QuotaKnown {
+		t.Fatalf("locked model shown as %#v", locked)
+	}
+	if open.State != accountStateEligible || open.Quota != quotaUnknown || open.QuotaKnown {
+		t.Fatalf("open model shown as %#v", open)
+	}
+}
+
+func accountOnHop(t *testing.T, diag FreeRouteDiagnosis, model, accountID string) FreeRouteAccount {
+	t.Helper()
+	for _, hop := range diag.Selected {
+		if hop.Model != model {
+			continue
+		}
+		return accountByID(t, hop.Accounts, accountID)
+	}
+	t.Fatalf("hop %s missing from %#v", model, diag.Selected)
+	return FreeRouteAccount{}
 }
 
 func TestClassifyAccountDoesNotTreatUnknownCooldownAsExhausted(t *testing.T) {

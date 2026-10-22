@@ -21,6 +21,9 @@ type comboAttempt struct {
 	Provider       string
 	Model          string
 	ExcludeIDs     *[]string
+	// NoteLock records a lock this request just wrote, so a bounded second
+	// pass can drop it. The lock must not outlive the wait it was copied from.
+	NoteLock func(connID, provider, model string)
 }
 
 // comboAttemptResult tells the combo loop whether to stop, leave this model,
@@ -63,7 +66,9 @@ func (h *ChatHandler) finishComboAttempt(a comboAttempt) comboAttemptResult {
 		return comboAttemptResult{NextModel: true, Upstream: ue}
 	}
 	if ue != nil && lock && a.ExcludeIDs != nil {
-		h.comboLockRetryable(a.ExcludeIDs, a.ConnID, a.Provider, a.Model, ue)
+		if h.comboLockRetryable(a.ExcludeIDs, a.ConnID, a.Provider, a.Model, ue) && a.NoteLock != nil {
+			a.NoteLock(a.ConnID, a.Provider, a.Model)
+		}
 	} else if decision == "next_account" && a.ExcludeIDs != nil && a.ConnID != "" {
 		*a.ExcludeIDs = append(*a.ExcludeIDs, a.ConnID)
 	}

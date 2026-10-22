@@ -159,3 +159,88 @@ Si alguno de esos pasos llama a Groq, OpenAI, DeepSeek u otro host que no sea lo
 7. El segundo pase del combo, con `Retry-After` dentro de 2s y sin bytes entregados, sigue existiendo. La prueba de 1s falló una vez bajo carga y luego pasó. No hay evidencia de bucle ilimitado: 12 cuentas con 401 produjeron como máximo 10 intentos, uno por cuenta.
 8. El estimador de usage puede anotar un costo de catálogo distinto de cero en un modelo `free_tier`. No se cambió la tabla de precios y no se hizo ninguna llamada de pago.
 9. Un 403 de proxy con cuerpo que nombra allowlist o túnel todavía se reintenta una vez por el transporte directo. Es el caso que el transporte directo existe para cubrir. Un 403 de aplicación no.
+
+## Ronda 3
+
+Fecha: 2026-10-22. Misma rama `cursor/free-best-engine-f768`, mismo PR #142 en borrador. No se fusionó, no hubo despliegue, no se tocó Oracle ni una base real, y no se usaron credenciales ni APIs de pago. Los PR #139, #140 y #141 siguen fuera.
+
+La referencia revisada al empezar era `a5bbb3313ddb12c22d684b53d3cb19b01622a5ae`. El hash de esta ronda es el de la implementación; la CI de ese hash no está en esta sección hasta que `gh` la confirme. La CI verde de la ronda 2 (`8568e00`) no cubre estos cambios.
+
+### Cierre del cuerpo HTTP
+
+`proxyRefusalBody` y `freebuffProxyRefusalBody` leían hasta 512 bytes y reconstruían el cuerpo con `io.NopCloser(io.MultiReader(...))`. `Close` de ese wrapper no hace nada, así que el cuerpo original quedaba abierto.
+
+`TestProxyRefusalPeekClosesOriginalBody` se escribió contra ese código y registró `original Close calls=0` tanto en el 403 corto de aplicación (`invalid api key`) como en el rechazo largo (`blocked-by-allowlist` más 4000 bytes). Esa corrida es anterior al arreglo.
+
+El arreglo es `PrefixReadCloser`: vuelve a poner delante los bytes ya leídos y, al cerrar, cierra el cuerpo original. `Read` no trata el fin del prefijo como fin del cuerpo, porque si no `io.ReadAll` se quedaba con los primeros 512 bytes. Los dos sitios de peek usan ese tipo. El contenido que el caller lee después es el mismo que llegó.
+
+`DoRequest` y `DoFreebuffHTTP` no añaden otro salto directo cuando el transporte del cliente ya es `FallbackTransport` (también si hay un wrapper cuyo `Unwrap` llega a ese tipo). `FallbackTransport` sigue haciendo su único reintento directo. Un 403 de aplicación no se reintenta en ninguna de las dos capas.
+
+### Diagnóstico y bloqueo por modelo
+
+La hipótesis era cierta en el código, y el test la fija. El combo y `getBestConnection` saltan una cuenta con `IsConnectionModelLocked` (`modelLock_<modelo>`). `classifyAccount` solo miraba `rateLimitedUntil`. Una cuenta con un modelo bloqueado y otro libre salía `eligible` en todos los hops.
+
+`ExplainFreeRoute` ahora clasifica cada hop con el modelo de esa ruta. Si el lock de ese modelo está en el futuro y la cuenta no tiene otro cooldown, el estado es `model_locked`, `quota` es `unknown` y `quotaKnown` es false. El otro modelo de la misma cuenta sigue `eligible` con la misma cuota desconocida. No se escribe un saldo.
+
+`TestComboSkipsLockedModelAndCallsTheOpenOne` usa los dos modelos gratis de Groq en un solo upstream local. El modelo bloqueado recibe 0 requests. El abierto recibe 1 y la respuesta es 200.
+
+### Retry-After
+
+`TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter` armaba un instante RFC3339 a un segundo. `Format(time.RFC3339)` tira la fracción, así que bajo carga la espera medida podía ser de unas decenas de milisegundos mientras el lock se redondeaba a 1s. El segundo pase no veía la cuenta y el test terminaba en ~0.04s con un solo golpe. No era una carrera de memoria.
+
+El header de esa prueba ahora es `Retry-After: 1` (delta-seconds, `application/json`). Antes del segundo pase, el combo suelta solo los locks que ese mismo request escribió (`ClearConnectionRateLimit` y `UnlockConnectionModel`, incluida la clave canónica si difiere). Un lock de otro modelo de la misma cuenta se queda. La tolerancia de 2s no cambió: un 429 más largo no gana otro pase.
+
+### Pruebas ejecutadas
+
+Go 1.27.0, `GOTOOLCHAIN=local`, `/tmp/go1.27/go/bin/go`, directorio `/workspace`. `go test` volvió a reescribir `go.mod`; se revirtió con `git checkout -- go.mod` y no entra en el commit. No hubo línea `DATA RACE` en ninguna pasada `-race` de esta ronda.
+
+| Comando | Resultado |
+| --- | --- |
+| `go test -count=1 -timeout 120s -run 'TestProxyRefusalPeekClosesOriginalBody\|TestDoRequestClosesPeekedBodies\|TestDoRequestDoesNotReplayAgainBehindFallbackTransport\|TestIsProxyFailure\|TestDoRequest' ./internal/proxy/` | `ok` 0.008s |
+| `go test -count=1 -timeout 180s -run 'TestFreebuffRefusalPeekClosesOriginalBody\|TestDoFreebuffHTTPClosesPeekedBodies\|TestDoFreebuffHTTPDoesNotReplayAgainBehindFallbackTransport\|TestFreebuffCountry' ./internal/proxy/executor/` | `ok` 0.007s |
+| `go test -count=1 -timeout 180s -run 'TestExplainFreeRoute\|TestClassifyAccount\|TestComboSkipsLockedModel\|TestReleaseRetriedLocks\|TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter\|TestHandleMessagesComboFallback_Retries\|TestFreeBestSeveralAccounts\|TestFreeBest429\|TestFreeBestClientCancel\|TestComboPartialStream\|TestMessagesComboDoesNotReplay\|TestAccountFallbackDoesNotReplay\|TestFreeBestFailoverMatrix\|TestFreeBestProductionRouter' ./internal/handlers/chat/` | `ok` 1.145s. El filtro `TestFreeBestProductionRouter` no selecciona nada en este paquete; esa prueba está en `internal/integration` y se corrió aparte. |
+| `go test -race -count=1 -timeout 240s ./internal/handlers/chat/ ./internal/proxy/ ./internal/db/` | `ok`. chat 23.317s, proxy 1.254s, db 2.819s. Incluye streaming, cancelación, la matriz free-only y el `Retry-After` de 1s. |
+| `go test -race -count=5 -timeout 120s -run 'TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter\|TestComboSkipsLockedModel\|TestExplainFreeRouteShowsModelLock\|TestReleaseRetriedLocks' ./internal/handlers/chat/` | `ok` 7.124s. Cinco repeticiones del retry de 1s, del lock de un modelo y de la liberación selectiva. |
+| `go test -race -count=1 -timeout 180s -run 'TestFreebuffRefusalPeekClosesOriginalBody\|TestDoFreebuffHTTPClosesPeekedBodies\|TestDoFreebuffHTTPDoesNotReplayAgainBehindFallbackTransport\|TestFreebuffCountry\|TestRequestFreebuffSession' ./internal/proxy/executor/` | `ok` 1.041s |
+| `go test -tags=integration -race -count=1 -timeout 180s -run 'TestFreeBestProductionRouterFailover' ./internal/integration/` | `ok` 1.187s. Router de producción, SQLite temporal, upstreams `httptest`. |
+| `go build ./...` | exit 0 |
+
+Cobertura que esos comandos sí ejercitaron:
+
+- Cuerpo corto y largo, 403 de aplicación y rechazo de proxy, transporte directo y transporte con proxy, en `DoRequest` y en `DoFreebuffHTTP`. El cierre del cuerpo original queda en 1. Un rechazo de proxy seguido de 200 directo es un golpe al proxy y uno al directo. Detrás de `FallbackTransport`, el upstream real de esa URL recibe 0: no hay un tercer salto.
+- Dos modelos gratis del mismo proveedor: el bloqueado no se llama; el abierto sí. El diagnóstico dice `model_locked` y `eligible`, ambos con `quota: unknown`.
+- `paid` y `unknown` siguen en la matriz y en `TestFreeBestSeveralAccountsFailThenNextFreeProvider`, dentro del `go test -race` del paquete `chat`.
+- `TestComboPartialStreamIsNotReplayed`, `TestMessagesComboDoesNotReplayPartialStream`, `TestAccountFallbackDoesNotReplayPartialStream` y `TestFreeBestClientCancelDoesNotWalkThePool` están en ese mismo paquete y la pasada `-race` del paquete terminó `ok`.
+
+### Afirmaciones no verificadas
+
+- La CI de GitHub Actions de este commit. La última CI confirmada con `gh pr checks` y `gh run view` sigue siendo la de `8568e0088378b1518b9106cc097124ee248f2bdc` (ronda 2). `a5bbb33` y el commit de esta ronda no son ese resultado.
+- `go test -race ./...` del módulo entero. No se lanzó.
+- La suite `integration` completa. En local solo se relanzó `TestFreeBestProductionRouterFailover` con `-race`.
+- Dashboard (`bun test`, `bun run build`). Esta ronda no tocó `web/`.
+- Protocolo Termux / HONOR 200. Sigue sin ejecutarse. El texto de la ronda 2 no cambió y no se corrió.
+- Cuota numérica remota. No se consultó ningún proveedor. `model_locked` no es un saldo.
+- Que un 429 de más de 2s siga sin segundo pase se apoya en las pruebas ya existentes del paquete `chat`, que pasaron en la pasada `-race` de esta ronda. No se rediseñó esa tolerancia y no se midió un proveedor real.
+- El costo de catálogo distinto de cero en un modelo `free_tier` no se volvió a medir.
+- Revisión humana del diff. Este informe no la sustituye.
+
+### Aptitud para fusión
+
+No está listo para fusionar. El PR sigue en borrador a propósito.
+
+Lo que sí quedó demostrado en esta máquina, con los comandos de la tabla:
+
+- el cuerpo original se cierra al cerrar el wrapper, y el contenido corto y largo se conserva;
+- `FallbackTransport` no se combina con un segundo reintento de `DoRequest` ni de `DoFreebuffHTTP`;
+- el diagnóstico y el selector coinciden cuando un modelo de la cuenta está bloqueado y el otro no;
+- el `Retry-After` de 1s produce dos golpes, cinco veces bajo `-race`, en menos de 5s por pasada del paquete filtrado;
+- el paquete `chat` entero, `proxy` y `db` pasan con `-race`;
+- `paid` y `unknown` no reciben tráfico en las pruebas de failover que ese paquete ya contiene.
+
+Lo que impide aprobar la fusión, y que esta ronda no cierra:
+
+1. No hay CI verde de este commit. La de `8568e00` no lo incluye.
+2. Falta la revisión humana. #139, #140 y #141 no están en la rama y no se probaron juntos.
+3. No hay `go test -race ./...` ni la suite de integración completa en esta ronda.
+4. No hay lectura de cuota remota, ni corrida en Termux/HONOR 200, ni llamada a un proveedor real.
+5. El segundo pase del combo, para un `Retry-After` de hasta 2s y sin bytes ya entregados, sigue siendo el comportamiento previsto. No es un bucle: el tope de cuentas y la tolerancia no se ampliaron.

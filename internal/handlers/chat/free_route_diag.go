@@ -104,7 +104,7 @@ func (h *ChatHandler) describeSelectedHops(entries []string) []FreeRouteHop {
 			Model:        model,
 			Pricing:      pricingModeForEntry(state, provider, model),
 			Availability: hopAvailability(health[entry]),
-			Accounts:     accountsForHop(provider, accounts),
+			Accounts:     accountsForHop(provider, model, accounts),
 		})
 	}
 	return hops
@@ -117,8 +117,8 @@ func hopAvailability(stat *freeRouteRecentHealth) string {
 	return availabilityUnknown
 }
 
-func accountsForHop(provider string, accounts accountIndex) []FreeRouteAccount {
-	listed := accounts.forProvider(provider)
+func accountsForHop(provider, model string, accounts accountIndex) []FreeRouteAccount {
+	listed := accounts.forModel(provider, model)
 	if len(listed) > 0 {
 		return listed
 	}
@@ -215,7 +215,7 @@ func accountDiscards(pm *registry.ProviderModel, accounts accountIndex) []FreeRo
 	noAuth := known && cfg.NoAuth
 	out := []FreeRouteDiscard{}
 	anyEligible := false
-	for _, acct := range accounts.forProvider(pm.ProviderID) {
+	for _, acct := range accounts.forModel(pm.ProviderID, routeModelName(pm)) {
 		switch acct.State {
 		case accountStateEligible:
 			anyEligible = true
@@ -250,12 +250,18 @@ func accountDiscards(pm *registry.ProviderModel, accounts accountIndex) []FreeRo
 	return out
 }
 
-func freeEntryOf(pm *registry.ProviderModel) string {
-	model := pm.UpstreamModel
-	if model == "" {
-		model = pm.ModelID
+func routeModelName(pm *registry.ProviderModel) string {
+	if pm == nil {
+		return ""
 	}
-	return pm.ProviderID + "/" + model
+	if pm.UpstreamModel != "" {
+		return pm.UpstreamModel
+	}
+	return pm.ModelID
+}
+
+func freeEntryOf(pm *registry.ProviderModel) string {
+	return pm.ProviderID + "/" + routeModelName(pm)
 }
 
 func splitRouteEntry(entry string) (string, string) {

@@ -95,7 +95,7 @@ func freebuffProxyRefusalBody(resp *http.Response) bool {
 		return false
 	}
 	peeked, err := io.ReadAll(io.LimitReader(resp.Body, 512))
-	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), resp.Body))
+	resp.Body = proxy.PrefixReadCloser(peeked, resp.Body)
 	if err != nil && len(peeked) == 0 {
 		return false
 	}
@@ -111,6 +111,22 @@ func freebuffClientUsesProxy(client *http.Client, req *http.Request) bool {
 	rt := client.Transport
 	if rt == nil {
 		rt = http.DefaultTransport
+	}
+	for {
+		// FallbackTransport already replays a proxy refusal on its direct leg.
+		// Looking through it would send the same request a second time.
+		if _, already := rt.(*proxy.FallbackTransport); already {
+			return false
+		}
+		unwrapped, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			break
+		}
+		next := unwrapped.Unwrap()
+		if next == nil || next == rt {
+			break
+		}
+		rt = next
 	}
 	ht, ok := rt.(*http.Transport)
 	if !ok || ht.Proxy == nil {
