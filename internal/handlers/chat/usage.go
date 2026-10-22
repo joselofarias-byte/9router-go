@@ -15,6 +15,8 @@ import (
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
+
+	"github.com/google/uuid"
 )
 
 var dailyUsageMu sync.Mutex
@@ -38,7 +40,7 @@ func (h *ChatHandler) LogFailure(
 		usage = &translator.OpenAIUsage{}
 	}
 	now := time.Now().UTC()
-	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
+	reqID := uuid.NewString()
 	tokens := map[string]int{
 		"prompt_tokens":               usage.PromptTokens,
 		"completion_tokens":           usage.CompletionTokens,
@@ -133,6 +135,8 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 		}
 	}
 
+	tokensEstimated := usage.PromptTokens == 0 || usage.CompletionTokens == 0
+
 	// Fallback token estimation if upstream emitted zero tokens
 	if usage.PromptTokens == 0 && len(requestBody) > 0 {
 		usage.PromptTokens = CountValueChars(requestBody) / 4
@@ -172,14 +176,20 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	}
 
 	now := time.Now().UTC()
-	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
+	reqID := uuid.NewString()
 	reqMsgs := extractRequestMessages(requestBody)
+	var detailCost *float64
+	if _, known := pricing.GetPricingForModel(info.Provider, info.Model); known {
+		detailCost = &cost
+	}
 
 	reqData, err := json.Marshal(map[string]any{
 		"id": reqID, "provider": info.Provider, "model": info.Model,
 		"connectionId": info.ConnectionID, "status": "success",
 		"timestamp": now.Format("2006-01-02T15:04:05.000Z"),
 		"latency":   map[string]int64{"ttft": ttftMs, "total": latencyMs},
+		"cost":      detailCost, "costEstimated": true, "tokensEstimated": tokensEstimated,
+		"endpoint": info.Endpoint,
 		"tokens": map[string]int{
 			"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens,
 			"cached_tokens": cachedTokens, "cache_creation_input_tokens": cacheCreationTokens,

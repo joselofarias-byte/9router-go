@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add Magpie-inspired request statistics: account, cache-hit percentage, end-to-end output tokens/s and six-decimal estimated USD cost. Unknown pricing and historical missing values remain unavailable rather than appearing free. Persist pricing/estimation metadata without changing routing. Use collision-safe request IDs so simultaneous requests remain distinct. Deliberate fork extension; inspected decolua/9router usage dashboard and stats contract.
+
 - Capimux adds a multimodel comparator with a server-backed model picker, independent ordered results, cancellation and bounded non-streaming responses. Both comparator APIs always require an admin session or local CLI token. Provider dispatch remains opt-in with an exact model allowlist; simulated runs never call providers. Deliberate fork extension beyond decolua/9router.
 
 - Codex OAuth can now delegate login end-to-end to the installed Codex CLI (AnyClaw-style): the CLI owns PKCE, the fixed loopback callback and token exchange inside an isolated temporary `CODEX_HOME`; 9router imports the completed account without exposing credentials in dashboard responses or logs. The existing in-process PKCE flow remains as a fallback when Codex CLI is unavailable. This is an intentional fork improvement beyond current decolua/9router parity.

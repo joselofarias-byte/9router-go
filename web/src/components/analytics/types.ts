@@ -41,6 +41,11 @@ export interface RequestDetailItem {
   timestamp?: string
   provider?: string
   model?: string
+  connectionId?: string
+  cost?: number | null
+  costEstimated?: boolean
+  tokensEstimated?: boolean
+  endpoint?: string
   latency?: {
     total?: number
     ttft?: number
@@ -105,4 +110,40 @@ export function timeAgo(timestamp?: string): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
   return `${Math.floor(diff / 86400)}d ago`
+}
+
+// prompt_tokens includes cached input: cache hits are a subset, not extra tokens.
+export function cachePercent(prompt?: number, cached?: number): number | null {
+  if (!Number.isFinite(prompt) || !Number.isFinite(cached) || !prompt || prompt < 0 || cached! < 0 || cached! > prompt) return null
+  return cached! / prompt * 100
+}
+
+export function cachePercentFor(detail: RequestDetailItem): number | null {
+  const cached = detail.tokens?.cached_tokens ?? detail.tokens?.cache_read_input_tokens
+  return cachePercent(detail.tokens?.prompt_tokens, cached)
+}
+
+// End-to-end throughput includes waiting and reasoning time. It is deliberately
+// not called decoding speed: old records do not identify streaming reliably.
+export function outputRateFor(detail: RequestDetailItem): number | null {
+  const tokens = detail.tokens?.completion_tokens
+  const total = detail.latency?.total
+  if (!Number.isFinite(tokens) || tokens! <= 0 || !Number.isFinite(total) || total! <= 0) return null
+  return tokens! * 1000 / total!
+}
+
+export function fmtPercent(value: number | null): string {
+  return value === null ? '—' : value.toFixed(1) + '%'
+}
+
+export function fmtRate(detail: RequestDetailItem): string {
+  const rate = outputRateFor(detail)
+  return rate === null ? '—' : (detail.tokensEstimated ? '~' : '') + rate.toFixed(1)
+}
+
+export function fmtRequestCost(detail: RequestDetailItem): string {
+  const cost = detail.cost
+  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) return '—'
+  const value = cost > 0 && cost < 0.000001 ? '<$0.000001' : '$' + cost.toFixed(6)
+  return (detail.costEstimated ? '~' : '') + value
 }
