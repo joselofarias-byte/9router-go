@@ -38,3 +38,10 @@ This is an original experimental Go telemetry collector inspired by the operatio
 - `main` branch and deployments.
 
 Reference: https://github.com/deepseek-ai/DeepInfer
+
+## V2 observational wiring (not deployed)
+The opt-in hook has been added to `internal/handlers/chat/fallback.go` at the final per-connection upstream outcome, after the existing trace logic. It reports per-provider/model elapsed time and success. Canceled requests are excluded. The environment variable `CAPIMUX_ADAPTIVE_SHADOW=1` enables the collector; all other values disable it. The in-memory collector is capped at 512 distinct routes and never stores payloads or connection IDs.
+
+**Limitations:** currently no authenticated metrics API and no persistence; observers can only consume `adaptive.ShadowSnapshot` within the Go process. Tokens and cost are not yet wired into the hook. A reactive OAuth retry remains part of one recorded connection attempt rather than one separate observation. This is intentional until attempt definitions and cost attribution are agreed. No shadow recommendation is applied to routing.
+
+Validation on a Go 1.27-compatible environment is still required: `go test ./internal/adaptive -race`, then `go test ./internal/handlers/chat ./internal/adaptive` and inspect any compilation or behavioral failures. The authoring environment did not have repository-clone connectivity or the required toolchain, so passing tests must **not** be claimed.
