@@ -2,6 +2,7 @@ package adaptive
 
 import (
  "math"
+ "fmt"
  "sync"
  "testing"
  "time"
@@ -33,4 +34,18 @@ func TestConcurrentObserve(t *testing.T) {
 func TestUnknownRouteIsNeutral(t *testing.T) {
  s:=NewCollector().Snapshot([]Route{{Provider:"new",Model:"unknown"}})
  if s[0].Score!=50 {t.Fatalf("unknown route score: %v",s[0].Score)}
+}
+
+func TestDisabledShadowDoesNotRecord(t *testing.T) {
+ t.Setenv("CAPIMUX_ADAPTIVE_SHADOW","0")
+ r:=Route{Provider:"disabled-shadow-test",Model:"demo"}
+ ObserveIfEnabled(Observation{Route:r,Latency:time.Second,Success:true})
+ if got:=ShadowSnapshot([]Route{r})[0].Samples;got!=0 {t.Fatalf("disabled shadow recorded %d",got)}
+}
+func TestCollectorBounded(t *testing.T) {
+ c:=NewCollector()
+ for i:=0;i<maxRoutes+10;i++ {
+  c.Observe(Observation{Route:Route{Provider:"p",Model:fmt.Sprintf("m%d",i)},Latency:time.Second,Success:true})
+ }
+ if len(c.routes)!=maxRoutes {t.Fatalf("route cap failed: %d",len(c.routes))}
 }
