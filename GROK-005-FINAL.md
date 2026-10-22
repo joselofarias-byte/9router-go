@@ -164,7 +164,7 @@ Si alguno de esos pasos llama a Groq, OpenAI, DeepSeek u otro host que no sea lo
 
 Fecha: 2026-10-22. Misma rama `cursor/free-best-engine-f768`, mismo PR #142 en borrador. No se fusionó, no hubo despliegue, no se tocó Oracle ni una base real, y no se usaron credenciales ni APIs de pago. Los PR #139, #140 y #141 siguen fuera.
 
-La referencia revisada al empezar era `a5bbb3313ddb12c22d684b53d3cb19b01622a5ae`. El hash de esta ronda es el de la implementación; la CI de ese hash no está en esta sección hasta que `gh` la confirme. La CI verde de la ronda 2 (`8568e00`) no cubre estos cambios.
+La referencia revisada al empezar era `a5bbb3313ddb12c22d684b53d3cb19b01622a5ae`. El código de esta ronda es `e0bf4a30b2a34f80ef7b53b4e74a130d5d8fcaf5`. La CI de ese commit, y la de cualquier commit posterior que solo lo nombre, no está en esta sección hasta que `gh` la confirme. La CI verde de la ronda 2 (`8568e00`) no cubre estos cambios.
 
 ### Cierre del cuerpo HTTP
 
