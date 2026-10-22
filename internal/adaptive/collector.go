@@ -4,6 +4,8 @@ package adaptive
 
 import (
  "math"
+ "os"
+ "strings"
  "sync"
  "time"
 )
@@ -38,6 +40,20 @@ type counters struct {
 }
 // Collector aggregates no prompts, responses, account identifiers or credentials.
 // A process restart resets all counters; concurrency is guarded by a mutex.
+const maxRoutes = 512
+
+var shadowCollector = NewCollector()
+
+// ObserveIfEnabled is disabled unless CAPIMUX_ADAPTIVE_SHADOW=1 is set.
+// The environment flag is deliberately read at each call to simplify opt-out.
+func ObserveIfEnabled(o Observation) {
+ if strings.TrimSpace(os.Getenv("CAPIMUX_ADAPTIVE_SHADOW"))!="1" {return}
+ shadowCollector.Observe(o)
+}
+
+// ShadowSnapshot gives diagnostics to in-package callers without HTTP exposure.
+func ShadowSnapshot(routes []Route) []Snapshot {return shadowCollector.Snapshot(routes)}
+
 type Collector struct {
  mu sync.RWMutex
  routes map[Route]counters
@@ -49,7 +65,8 @@ func (c *Collector) Observe(o Observation) {
  c.mu.Lock()
  defer c.mu.Unlock()
  if c.routes==nil { c.routes=make(map[Route]counters) }
- v:=c.routes[o.Route]
+ v,exists:=c.routes[o.Route]
+ if !exists && len(c.routes)>=maxRoutes {return}
  v.samples++
  if o.Success { v.successes++; v.tokens+=o.Tokens; v.durationS+=o.Latency.Seconds(); v.costUSD+=o.CostUSD }
  v.latencyMS+=float64(o.Latency)/float64(time.Millisecond)
