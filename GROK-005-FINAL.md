@@ -164,7 +164,7 @@ Si alguno de esos pasos llama a Groq, OpenAI, DeepSeek u otro host que no sea lo
 
 Fecha: 2026-10-22. Misma rama `cursor/free-best-engine-f768`, mismo PR #142 en borrador. No se fusionó, no hubo despliegue, no se tocó Oracle ni una base real, y no se usaron credenciales ni APIs de pago. Los PR #139, #140 y #141 siguen fuera.
 
-La referencia revisada al empezar era `a5bbb3313ddb12c22d684b53d3cb19b01622a5ae`. El código de esta ronda es `e0bf4a30b2a34f80ef7b53b4e74a130d5d8fcaf5`. La CI de ese commit, y la de cualquier commit posterior que solo lo nombre, no está en esta sección hasta que `gh` la confirme. La CI verde de la ronda 2 (`8568e00`) no cubre estos cambios.
+La referencia revisada al empezar era `a5bbb3313ddb12c22d684b53d3cb19b01622a5ae`. El código de esta ronda es `e0bf4a30b2a34f80ef7b53b4e74a130d5d8fcaf5`. El head que CI ejecutó es `3fa9fa49407addf97172e226ce714a6944332d6e` (el commit anterior más esta línea de hash). La CI verde de la ronda 2 (`8568e00`) no cubre estos cambios.
 
 ### Cierre del cuerpo HTTP
 
@@ -212,9 +212,26 @@ Cobertura que esos comandos sí ejercitaron:
 - `paid` y `unknown` siguen en la matriz y en `TestFreeBestSeveralAccountsFailThenNextFreeProvider`, dentro del `go test -race` del paquete `chat`.
 - `TestComboPartialStreamIsNotReplayed`, `TestMessagesComboDoesNotReplayPartialStream`, `TestAccountFallbackDoesNotReplayPartialStream` y `TestFreeBestClientCancelDoesNotWalkThePool` están en ese mismo paquete y la pasada `-race` del paquete terminó `ok`.
 
+### CI de GitHub
+
+Comprobada el 2026-10-22 con `gh pr checks 142` y `gh run view`, sobre el head `3fa9fa49407addf97172e226ce714a6944332d6e`. Los seis checks terminaron sin fallos. El PR seguía en borrador.
+
+| Check | Resultado | Run |
+| --- | --- | --- |
+| `test` | pass, 2m10s | `39702649625` |
+| `Integration tests` | pass, 45s | `39702649625` |
+| `Build Docker image (verify only)` | pass, 1m24s | `39702649625` |
+| `multiagent` | pass, 1m46s | `39702649794` |
+| Vercel | pass | preview del PR |
+| Vercel Preview Comments | pass | preview del PR |
+
+`gh run view 39702649625` y `gh run view 39702649794` devuelven `conclusion: success`, `status: completed` y `headSha` igual a ese commit. En `.github/workflows/ci.yml` el job `test` corre `go test ./...` y el job `integration` corre `go test -tags=integration -race -count=1 -timeout 10m ./internal/integration/...`. No descargué el log de cada step. El check de Vercel es el preview que el PR dispara. No es un despliegue a producción.
+
+El commit que escribe este párrafo arranca otra CI. Esa corrida no es el resultado de la tabla.
+
 ### Afirmaciones no verificadas
 
-- La CI de GitHub Actions de este commit. La última CI confirmada con `gh pr checks` y `gh run view` sigue siendo la de `8568e0088378b1518b9106cc097124ee248f2bdc` (ronda 2). `a5bbb33` y el commit de esta ronda no son ese resultado.
+- La CI del commit que solo documenta la tabla de arriba. La tabla es de `3fa9fa4`, no de ese seguimiento.
 - `go test -race ./...` del módulo entero. No se lanzó.
 - La suite `integration` completa. En local solo se relanzó `TestFreeBestProductionRouterFailover` con `-race`.
 - Dashboard (`bun test`, `bun run build`). Esta ronda no tocó `web/`.
@@ -237,10 +254,11 @@ Lo que sí quedó demostrado en esta máquina, con los comandos de la tabla:
 - el paquete `chat` entero, `proxy` y `db` pasan con `-race`;
 - `paid` y `unknown` no reciben tráfico en las pruebas de failover que ese paquete ya contiene.
 
+En GitHub, el head `3fa9fa4` tiene los seis checks en éxito, incluido `go test ./...` y la suite de integración con `-race`. Eso no sustituye la revisión humana.
+
 Lo que impide aprobar la fusión, y que esta ronda no cierra:
 
-1. No hay CI verde de este commit. La de `8568e00` no lo incluye.
-2. Falta la revisión humana. #139, #140 y #141 no están en la rama y no se probaron juntos.
-3. No hay `go test -race ./...` ni la suite de integración completa en esta ronda.
-4. No hay lectura de cuota remota, ni corrida en Termux/HONOR 200, ni llamada a un proveedor real.
-5. El segundo pase del combo, para un `Retry-After` de hasta 2s y sin bytes ya entregados, sigue siendo el comportamiento previsto. No es un bucle: el tope de cuentas y la tolerancia no se ampliaron.
+1. Falta la revisión humana. #139, #140 y #141 no están en la rama y no se probaron juntos.
+2. En local no se corrió `go test -race ./...` del módulo entero. El job `test` de `3fa9fa4` sí corrió `go test ./...` sin `-race`. El job `Integration tests` de ese mismo commit sí corrió la suite de integración con `-race`, según el workflow. En esta máquina solo se relanzó `TestFreeBestProductionRouterFailover`.
+3. No hay lectura de cuota remota, ni corrida en Termux/HONOR 200, ni llamada a un proveedor real.
+4. El segundo pase del combo, para un `Retry-After` de hasta 2s y sin bytes ya entregados, sigue siendo el comportamiento previsto. No es un bucle: el tope de cuentas y la tolerancia no se ampliaron.
