@@ -129,6 +129,8 @@ func TestAccountTransientFailureClassification(t *testing.T) {
 	}{
 		{"plain application error", errors.New("application failed"), false},
 		{"caller cancellation", context.Canceled, false},
+		{"per-hop deadline", context.DeadlineExceeded, true},
+		{"upstream 408", &upstreamError{StatusCode: http.StatusRequestTimeout}, true},
 		{"EOF before response", io.EOF, true},
 		{"partial body EOF", fmt.Errorf("wrapped: %w", io.ErrUnexpectedEOF), true},
 		{"connection refused", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, true},

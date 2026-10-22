@@ -230,13 +230,14 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := hits.Add(1)
 		if n == 1 {
-			// Upstream says "wait ~1s" (RFC3339). A 429 is only worth retrying
-			// inside brief429RetryTolerance — past that the account is out of
-			// quota and re-hitting it deepens the upstream's backoff — so the
-			// bound, not the old 8s cap, is what this covers.
-			ra := time.Now().Add(time.Second).Format(time.RFC3339)
+			// Delta-seconds, not an RFC3339 instant. Formatting a timestamp
+			// drops the fractional second, so under load the stored wait can
+			// be a few dozen milliseconds while the lock is rounded up to 1s
+			// and the second pass never sees the account.
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":{"retryAfter":"` + ra + `"}}`))
+			w.Write([]byte(`{"error":{"message":"rate limited"}}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -266,10 +267,54 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
 	}
 	rec := httptest.NewRecorder()
+	start := time.Now()
 	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-retry", 0)
+	elapsed := time.Since(start)
 
 	if got := hits.Load(); got != 2 {
-		t.Errorf("expected 2 upstream hits (1 failure + 1 retry), got %d", got)
+		t.Errorf("expected 2 upstream hits (1 failure + 1 retry), got %d in %s", got, elapsed)
+	}
+	if elapsed >= 5*time.Second {
+		t.Errorf("retry waited %s, want the 1s Retry-After and not a longer window", elapsed)
+	}
+}
+
+func TestReleaseRetriedLocksDropsOnlyThisPass(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.LockConnectionModel("conn-1", "deepseek-chat", 60, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.LockConnectionModel("conn-1", "deepseek-reasoner", 60, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.LockConnectionRateLimit("conn-1", time.Now().Add(time.Minute), 1, http.StatusTooManyRequests, "rate"); err != nil {
+		t.Fatal(err)
+	}
+	h := NewChatHandler(repo)
+	h.releaseRetriedLocks([]retriedLock{{connID: "conn-1", provider: "deepseek", model: "deepseek-chat"}})
+
+	locked, err := repo.IsConnectionModelLocked("conn-1", "deepseek-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked {
+		t.Fatal("model retried on this pass stayed locked")
+	}
+	other, err := repo.IsConnectionModelLocked("conn-1", "deepseek-reasoner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !other {
+		t.Fatal("a lock on a different model was cleared")
+	}
+	var raw string
+	if err := database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-1'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, cooling := db.ConnectionCooldownUntil(raw); cooling {
+		t.Fatal("account cooldown from this pass was still set")
 	}
 }
 

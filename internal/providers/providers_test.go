@@ -100,11 +100,17 @@ func TestRetryableStatusCodes(t *testing.T) {
 	if !RetryableStatusCodes[http.StatusUnauthorized] {
 		t.Error("expected 401 to be retryable")
 	}
+	if !RetryableStatusCodes[http.StatusPaymentRequired] {
+		t.Error("expected 402 to rotate accounts without treating the request as malformed")
+	}
 	if !RetryableStatusCodes[http.StatusTooManyRequests] {
 		t.Error("expected 429 to be retryable")
 	}
 	if RetryableStatusCodes[http.StatusBadRequest] {
 		t.Error("400 should not be retryable")
+	}
+	if RetryableStatusCodes[http.StatusRequestTimeout] {
+		t.Error("408 is a timeout, not an account quota lock")
 	}
 	if RetryableStatusCodes[http.StatusInternalServerError] {
 		t.Error("500 should not be retryable")

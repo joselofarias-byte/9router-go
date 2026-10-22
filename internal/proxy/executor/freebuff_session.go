@@ -73,18 +73,67 @@ var directFreebuffClient = &http.Client{
 }
 
 func isFreebuffProxyRefusal(err error, resp *http.Response) bool {
-	if resp != nil {
-		if resp.StatusCode == http.StatusForbidden && (resp.Header.Get("X-Proxy-Error") != "" || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/plain")) {
+	if resp != nil && resp.StatusCode == http.StatusForbidden {
+		if resp.Header.Get("X-Proxy-Error") != "" {
+			return true
+		}
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/plain") && freebuffProxyRefusalBody(resp) {
 			return true
 		}
 	}
 	if err != nil {
 		errStr := strings.ToLower(err.Error())
-		if strings.Contains(errStr, "proxy") || strings.Contains(errStr, "connect tunnel failed") || strings.Contains(errStr, "blocked-by-allowlist") || strings.Contains(errStr, "forbidden") {
+		if strings.Contains(errStr, "proxy") || strings.Contains(errStr, "connect tunnel failed") || strings.Contains(errStr, "blocked-by-allowlist") {
 			return true
 		}
 	}
 	return false
+}
+
+func freebuffProxyRefusalBody(resp *http.Response) bool {
+	if resp == nil || resp.Body == nil {
+		return false
+	}
+	peeked, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	resp.Body = proxy.PrefixReadCloser(peeked, resp.Body)
+	if err != nil && len(peeked) == 0 {
+		return false
+	}
+	lower := strings.ToLower(string(peeked))
+	return strings.Contains(lower, "proxy") || strings.Contains(lower, "connect tunnel") ||
+		strings.Contains(lower, "blocked-by-allowlist") || strings.Contains(lower, "tunnel failed")
+}
+
+func freebuffClientUsesProxy(client *http.Client, req *http.Request) bool {
+	if client == nil || req == nil {
+		return false
+	}
+	rt := client.Transport
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	for {
+		// FallbackTransport already replays a proxy refusal on its direct leg.
+		// Looking through it would send the same request a second time.
+		if _, already := rt.(*proxy.FallbackTransport); already {
+			return false
+		}
+		unwrapped, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			break
+		}
+		next := unwrapped.Unwrap()
+		if next == nil || next == rt {
+			break
+		}
+		rt = next
+	}
+	ht, ok := rt.(*http.Transport)
+	if !ok || ht.Proxy == nil {
+		return false
+	}
+	proxyURL, err := ht.Proxy(req)
+	return err == nil && proxyURL != nil
 }
 
 // DoFreebuffHTTP executes an HTTP request, falling back to direct connection if the proxy refuses it.
@@ -93,7 +142,7 @@ func DoFreebuffHTTP(ctx context.Context, client *http.Client, req *http.Request)
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
-	if isFreebuffProxyRefusal(err, resp) {
+	if isFreebuffProxyRefusal(err, resp) && freebuffClientUsesProxy(client, req) {
 		if resp != nil {
 			resp.Body.Close()
 		}

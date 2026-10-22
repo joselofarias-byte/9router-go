@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -560,14 +559,19 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				return
 			case <-time.After(wait):
 			}
-			// Fresh pass: re-allow connections locked by the previous attempt
-			// (their cooldown has elapsed) and clear the error state.
+			// The wait matches the raw Retry-After, but the lock was stored
+			// rounded up. Drop only the locks this request wrote, then re-allow
+			// those connections. A lock from an earlier request stays put.
+			h.releaseRetriedLocks(retry.locked)
 			lastErr = nil
 			retry.reset()
 			excludeIDs = nil
 		}
 
 		for _, entry := range models {
+			if ctx.Err() != nil {
+				return
+			}
 			if !h.AllowVirtualFreeHop(virtualFree, entry) {
 				continue
 			}
@@ -599,8 +603,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			}
 
 			var entrySuccess bool
-			// Try up to 10 connections for this model entry
+			// Try up to 10 connections for this model entry. A dead caller
+			// stops the walk: another account would repeat a canceled turn.
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				if ctx.Err() != nil {
+					return
+				}
 				cfg, known := providers.KnownProviders[modelInfo.Provider]
 				isNoAuthProvider := known && cfg.NoAuth
 				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
@@ -649,50 +657,20 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
-					if cw.IsCommitted() {
-						log.Error("combo", "upstream error after response started", "error", fwdErr)
+					result := h.finishComboAttempt(comboAttempt{
+						Ctx: ctx, CW: cw, Err: fwdErr, VirtualFree: virtualFree,
+						NoAuthProvider: isNoAuthProvider, Entry: entry, ConnID: connID,
+						Provider: modelInfo.Provider, Model: modelInfo.Model, ExcludeIDs: &excludeIDs,
+						NoteLock: retry.noteLock,
+					})
+					if result.Upstream != nil {
+						retry.note(result.Upstream)
+						lastErr = result.Upstream
+					}
+					if result.StopRequest {
 						return
 					}
-					if ctx.Err() != nil {
-						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
-						break
-					}
-					var ue *upstreamError
-					if errors.As(fwdErr, &ue) {
-						if isEmptyCompletionError(ue) {
-							// Empty output is model-scoped; it must not quarantine
-							// an account that can serve the next model in the pool.
-							if err := h.Repo.LockConnectionModel(connID, modelInfo.Model, 30, 0); err != nil {
-								log.Warn("combo", "empty model lock failed", "error", err)
-							}
-							if virtualFree && isNoAuthProvider {
-								now := time.Now().UTC()
-								virtualFreeModelQuarantine.Store(entry, virtualFreeQuarantineEntry{quarantinedAt: now, until: now.Add(30 * time.Second)})
-							}
-							lastErr = ue
-							break
-						}
-						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
-							lastErr = ue
-							break
-						}
-						if providers.RetryableStatusCodes[ue.StatusCode] {
-							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
-						}
-						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
-							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
-							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
-						}
-						retry.note(ue)
-						lastErr = ue
-						if isKnownNoAuth {
-							break
-						}
-						continue
-					}
-					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-					log.Warn("fallback", "upstream failed without structured status", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID, "error", fwdErr)
-					if isKnownNoAuth {
+					if result.NextModel || isKnownNoAuth {
 						break
 					}
 					continue
@@ -768,14 +746,18 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				return
 			case <-time.After(wait):
 			}
-			// Fresh pass: re-allow connections locked by the previous attempt
-			// (their cooldown has elapsed) and clear the error state.
+			// Same as the OpenAI loop: a rounded-up lock must not hide the
+			// account from the pass that already waited out Retry-After.
+			h.releaseRetriedLocks(retry.locked)
 			lastErr = nil
 			retry.reset()
 			excludeIDs = nil
 		}
 
 		for _, entry := range models {
+			if ctx.Err() != nil {
+				return
+			}
 			if !h.AllowVirtualFreeHop(virtualFree, entry) {
 				continue
 			}
@@ -801,8 +783,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 
 			var entrySuccess bool
-			// Try up to 10 connections for this model entry
+			// Try up to 10 connections for this model entry. A dead caller
+			// stops the walk: another account would repeat a canceled turn.
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				if ctx.Err() != nil {
+					return
+				}
 				cfg, known := providers.KnownProviders[modelInfo.Provider]
 				isNoAuthProvider := known && cfg.NoAuth
 				connID, connData, isKnownNoAuth, connErr := h.comboConnection(modelInfo, excludeIDs)
@@ -841,32 +827,20 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				})
 
 				if fwdErr != nil {
-					if ctx.Err() != nil {
-						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
-						break
+					result := h.finishComboAttempt(comboAttempt{
+						Ctx: ctx, CW: cw, Err: fwdErr, VirtualFree: virtualFree,
+						NoAuthProvider: isNoAuthProvider, Entry: entry, ConnID: connID,
+						Provider: modelInfo.Provider, Model: modelInfo.Model, ExcludeIDs: &excludeIDs,
+						NoteLock: retry.noteLock,
+					})
+					if result.Upstream != nil {
+						retry.note(result.Upstream)
+						lastErr = result.Upstream
 					}
-					var ue *upstreamError
-					if errors.As(fwdErr, &ue) {
-						if virtualFree && isNoAuthProvider && quarantineUnsupportedVirtualFreeModel(entry, ue) {
-							lastErr = ue
-							break
-						}
-						if providers.RetryableStatusCodes[ue.StatusCode] {
-							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
-						}
-						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
-							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
-							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
-						}
-						retry.note(ue)
-						lastErr = ue
-						if isKnownNoAuth {
-							break
-						}
-						continue
+					if result.StopRequest {
+						return
 					}
-					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-					if isKnownNoAuth {
+					if result.NextModel || isKnownNoAuth {
 						break
 					}
 					continue
@@ -915,9 +889,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 // combo models on the same account, and Google rate-limited it forever. The
 // connection is also appended to excludeIDs so the remaining combo models in
 // this request skip it instead of re-hitting the same quota bucket.
-func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
+func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) bool {
 	if connID == "" {
-		return
+		return false
 	}
 	currentLevel := h.Repo.GetConnectionBackoffLevel(connID)
 	cls := providers.ClassifyError(ue.StatusCode, extractErrorText(ue.Body), currentLevel)
@@ -925,7 +899,7 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	// 409/422/...) must not lock the account — the bug is in the request,
 	// not the credential. Only lock when ShouldFallback is set.
 	if !cls.ShouldFallback || cls.CooldownMs <= 0 {
-		return
+		return false
 	}
 	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue)
 	lockKey := canonicalLockModel(provider, model)
@@ -943,6 +917,29 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	}
 	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
+	return true
+}
+
+// releaseRetriedLocks drops cooldowns this request wrote so the bounded second
+// pass can see the account again. Locks that belong to another request are
+// not in the list and stay in place.
+func (h *ChatHandler) releaseRetriedLocks(locks []retriedLock) {
+	if h == nil || h.Repo == nil {
+		return
+	}
+	for _, lock := range locks {
+		if err := h.Repo.ClearConnectionRateLimit(lock.connID); err != nil {
+			log.Warn("combo", "clear retried rate limit failed", "conn", lock.connID, "error", err)
+		}
+		if err := h.Repo.UnlockConnectionModel(lock.connID, lock.model); err != nil {
+			log.Warn("combo", "unlock retried model failed", "conn", lock.connID, "model", lock.model, "error", err)
+		}
+		if canon := canonicalLockModel(lock.provider, lock.model); canon != lock.model {
+			if err := h.Repo.UnlockConnectionModel(lock.connID, canon); err != nil {
+				log.Warn("combo", "unlock retried canonical model failed", "conn", lock.connID, "model", canon, "error", err)
+			}
+		}
+	}
 }
 
 // ---- Fusion (parallel fan-out + judge synthesis) ----

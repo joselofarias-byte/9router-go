@@ -425,6 +425,10 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 		})
 
 		chatH := chat.NewChatHandler(repo, ts)
+		// Free Best diagnosis and route explanation are operational, not inference.
+		// Admin session or local CLI token only: an engine API key must not read them.
+		r.Get("/api/admin/free-best", chatH.HandleFreeBestDiagnosis)
+		r.Get("/api/admin/explain-route", chatH.HandleAdminExplainRoute)
 		r.Post("/api/version/update", chatH.HandleTriggerUpdate)
 		r.Post("/api/version/auto-update", chatH.HandleToggleAutoUpdate)
 		r.Post("/api/version/shutdown", HandleShutdown)
@@ -455,4 +459,3 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 
 	SetupConsoleLogRoutes(r, repo)
 }
-

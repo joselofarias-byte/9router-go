@@ -57,6 +57,22 @@ func ConnectionCooldownUntil(rawData string) (time.Time, bool) {
 	return readTimestampField(raw, "rateLimitedUntil")
 }
 
+// ConnectionModelLocked reports a future modelLock_<model> on the connection
+// blob. It is the same field IsConnectionModelLocked reads, so a diagnosis
+// can agree with the selector without a second query. A missing or
+// unparseable value is not a lock.
+func ConnectionModelLocked(rawData, model string) bool {
+	if model == "" {
+		return false
+	}
+	raw, ok := parseConnData(rawData)
+	if !ok {
+		return false
+	}
+	until, ok := readTimestampField(raw, modelLockPrefix+model)
+	return ok && time.Now().UTC().Before(until)
+}
+
 // LockConnectionRateLimit stores the account-scoped cooldown and the error
 // that caused it, mirroring upstream applyErrorState
 // (open-sse/services/accountFallback.js:216). The dashboard already reads

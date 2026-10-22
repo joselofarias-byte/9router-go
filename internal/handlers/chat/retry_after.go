@@ -73,9 +73,19 @@ func retryableCooldownSec(statusCode int, base time.Duration, ue *upstreamError)
 // repeating the pass, what to tell the client, and whether a 429 was among the
 // failures — and keeping them together stops the two endpoints from drifting
 // apart on a contract only one of them would enforce.
+// retriedLock is a cooldown this request wrote. The bounded second pass has
+// to release it: the stored duration is rounded up to a whole second, so the
+// account can still look locked after the raw Retry-After wait has elapsed.
+type retriedLock struct {
+	connID   string
+	provider string
+	model    string
+}
+
 type passRetry struct {
 	earliest    time.Duration
 	rateLimited bool
+	locked      []retriedLock
 }
 
 // note folds an upstream failure into the pass-wide wait.
@@ -86,6 +96,15 @@ func (p *passRetry) note(ue *upstreamError) {
 	if wait, ok := retryAfterWait(ue); ok && (p.earliest == 0 || wait < p.earliest) {
 		p.earliest = wait
 	}
+}
+
+// noteLock remembers a connection this pass parked, including the model the
+// selector will consult on the next pass.
+func (p *passRetry) noteLock(connID, provider, model string) {
+	if p == nil || connID == "" {
+		return
+	}
+	p.locked = append(p.locked, retriedLock{connID: connID, provider: provider, model: model})
 }
 
 // reset starts a fresh pass: the previous one's exclusions and waits do not
