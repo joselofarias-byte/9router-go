@@ -2,6 +2,8 @@ package adaptive
 
 import (
  "math"
+ "encoding/json"
+ "strings"
  "fmt"
  "sync"
  "testing"
@@ -62,4 +64,25 @@ func TestEnabledShadowRecordsOnlyExplicitFlag(t *testing.T) {
  t.Setenv("CAPIMUX_ADAPTIVE_SHADOW","0")
  ObserveIfEnabled(Observation{Route:r,Latency:time.Second,Success:false})
  if got:=ShadowSnapshot([]Route{r})[0].Samples;got!=1 {t.Fatalf("disabling shadow failed: got %d",got)}
+}
+
+func TestExportJSONDeterministicAndPrivate(t *testing.T) {
+ c:=NewCollector()
+ c.Observe(Observation{Route:Route{Provider:"z",Model:"last"},Latency:time.Second,Success:true})
+ c.Observe(Observation{Route:Route{Provider:"a",Model:"first"},Latency:2*time.Second,Success:false})
+ first,err:=c.ExportJSON();if err!=nil {t.Fatal(err)}
+ second,err:=c.ExportJSON();if err!=nil {t.Fatal(err)}
+ if string(first)!=string(second) {t.Fatal("JSON export is not stable")}
+ var decoded struct {SchemaVersion int `json:"schema_version"`; Routes []Snapshot `json:"routes"`}
+ if err:=json.Unmarshal(first,&decoded);err!=nil {t.Fatal(err)}
+ if decoded.SchemaVersion!=1||len(decoded.Routes)!=2||decoded.Routes[0].Route.Provider!="a" {
+  t.Fatalf("wrong export schema/order: %s",first)
+ }
+ for _,s:=range []string{"connection_id","api_key","prompt","response_body"} {
+  if strings.Contains(string(first),s){t.Fatalf("sensitive key emitted: %s",s)}
+ }
+}
+func TestEmptyExportJSON(t *testing.T) {
+ b,err:=NewCollector().ExportJSON();if err!=nil {t.Fatal(err)}
+ if !strings.Contains(string(b),`"routes":[]`) {t.Fatalf("expected empty routes array: %s",b)}
 }
