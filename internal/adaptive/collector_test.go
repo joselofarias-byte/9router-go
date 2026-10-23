@@ -49,3 +49,17 @@ func TestCollectorBounded(t *testing.T) {
  }
  if len(c.routes)!=maxRoutes {t.Fatalf("route cap failed: %d",len(c.routes))}
 }
+
+func TestEnabledShadowRecordsOnlyExplicitFlag(t *testing.T) {
+ r:=Route{Provider:"enabled-shadow-test",Model:"demo"}
+ t.Setenv("CAPIMUX_ADAPTIVE_SHADOW","true")
+ ObserveIfEnabled(Observation{Route:r,Latency:time.Second,Success:true})
+ if got:=ShadowSnapshot([]Route{r})[0].Samples;got!=0 {t.Fatalf("non-1 shadow flag recorded %d",got)}
+ t.Setenv("CAPIMUX_ADAPTIVE_SHADOW","1")
+ ObserveIfEnabled(Observation{Route:r,Latency:time.Second,Success:true})
+ snapshot:=ShadowSnapshot([]Route{r})[0]
+ if snapshot.Samples!=1 || snapshot.SuccessRate!=1 {t.Fatalf("expected one successful shadow observation: %+v",snapshot)}
+ t.Setenv("CAPIMUX_ADAPTIVE_SHADOW","0")
+ ObserveIfEnabled(Observation{Route:r,Latency:time.Second,Success:false})
+ if got:=ShadowSnapshot([]Route{r})[0].Samples;got!=1 {t.Fatalf("disabling shadow failed: got %d",got)}
+}
