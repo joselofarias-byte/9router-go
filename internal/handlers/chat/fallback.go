@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/adaptive"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -541,6 +542,15 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	})
 
 	usage := translator.GetAndClearUsage(ctx)
+	// Shadow-only telemetry: never changes routing, never persists raw payloads.
+	// A canceled stream is not a reliable success/failure signal.
+	if !isClientCanceled(ctx, fwdErr) {
+		adaptive.ObserveIfEnabled(adaptive.Observation{
+			Route: adaptive.Route{Provider: provider, Model: model},
+			Latency: time.Since(start),
+			Success: completed,
+		})
+	}
 	if completed {
 		// Clear any existing model lock on success (matching Next.js clearAccountError).
 		lockKey := canonicalLockModel(provider, model)

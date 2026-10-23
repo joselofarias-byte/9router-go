@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capimux Shadow Analytics</title><style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0c1220;color:#e7eefb}
+*{box-sizing:border-box}body{max-width:1150px;margin:auto;padding:30px 18px}
+h1{margin-bottom:4px;font-size:clamp(24px,4vw,40px)}p{color:#a6b6d0}
+.panel{background:#151e30;border:1px solid #2b3b57;border-radius:14px;padding:17px;margin:16px 0}
+textarea{width:100%;min-height:180px;background:#0a1020;color:#d4e3ff;border:1px solid #405371;border-radius:8px;padding:12px;font:12px monospace}
+button{cursor:pointer;border:0;border-radius:8px;padding:10px 16px;background:#68bafa;color:#081222;font-weight:700}
+button:focus-visible{outline:3px solid #fff}table{border-collapse:collapse;width:100%;font-size:14px}
+td,th{padding:12px 9px;text-align:left;border-bottom:1px solid #2b3b57}th{color:#92abd1}
+.nodata{color:#f1c876}.ok{color:#86e5bc}.scroll{overflow:auto}.muted{font-size:13px}
+</style></head><body>
+<header><h1>Capimux <span style="color:#68bafa">Shadow Analytics</span></h1>
+<p>Visor experimental local · no envía datos a servidores · no modifica el enrutamiento</p></header>
+<section class="panel"><h2>Importar diagnóstico JSON</h2>
+<p>Admite un arreglo de objetos <code>Snapshot</code> del módulo adaptive, o un objeto con propiedad <code>routes</code>. Se muestra únicamente información proporcionada: nunca se inventan métricas.</p>
+<label for="json">Datos JSON</label><textarea id="json" spellcheck="false" placeholder='[{"route":{"Provider":"example","Model":"demo"},"samples":0,"score":50}]'></textarea>
+<p><button id="render">Analizar localmente</button> <span id="msg" role="status" aria-live="polite">Sin datos importados</span></p></section>
+<section class="panel"><h2>Resultados por proveedor y modelo</h2><div class="scroll"><table><thead><tr>
+<th>Proveedor / modelo</th><th>Muestras</th><th>Éxito</th><th>Latencia media</th><th>Tokens/s</th><th>Coste USD</th><th>Puntuación</th>
+</tr></thead><tbody id="results"><tr><td colspan="7" class="nodata">Sin mediciones: importá un diagnóstico JSON</td></tr></tbody></table></div>
+<p class="muted">Tokens/s y coste permanecen como «Sin datos» hasta disponer de una procedencia válida. La puntuación es experimental; no elige proveedores.</p></section>
+<script>
+"use strict";
+const $=id=>document.getElementById(id),results=$("results"),msg=$("msg");
+function number(o,...keys){for(const key of keys){const n=o[key];if(typeof n==="number"&&Number.isFinite(n))return n}return null}
+function field(o,...keys){for(const k of keys)if(typeof o[k]==="string")return o[k];return ""}
+function cell(tr,v){const td=document.createElement("td");td.textContent=String(v);tr.append(td)}
+$("render").addEventListener("click",()=>{
+ let data;try{data=JSON.parse($("json").value)}catch{msg.textContent="JSON inválido";return}
+ if(!Array.isArray(data))data=data?.routes;
+ if(!Array.isArray(data)||data.length>512){msg.textContent="Se requiere un arreglo de hasta 512 rutas";return}
+ const fragment=document.createDocumentFragment();
+ for(const item of data){
+  if(!item||typeof item!=="object"||!item.route||typeof item.route!=="object"){msg.textContent="Formato Snapshot inválido";return}
+  const route=item.route;
+  const provider=field(route,"Provider","provider"),model=field(route,"Model","model");
+  const samples=number(item,"Samples","samples"),rate=number(item,"SuccessRate","success_rate"),latency=number(item,"MeanLatencyMS","mean_latency_ms"),score=number(item,"Score","score");
+  if(!provider||!model||samples===null||!Number.isInteger(samples)||samples<0||rate===null||rate<0||rate>1){msg.textContent="Faltan campos obligatorios válidos";return}
+  const tr=document.createElement("tr");cell(tr,provider+" / "+model);cell(tr,samples);
+  cell(tr,samples>0?(rate*100).toFixed(1)+" %":"Sin datos");
+  cell(tr,samples>0&&latency!==null?latency.toFixed(1)+" ms":"Sin datos");
+  // The current server hook has not wired token/cost attribution. Do not display false zeroes.
+  cell(tr,"Sin datos");cell(tr,"Sin datos");
+  cell(tr,score===null?"Sin datos":score.toFixed(1)+"/100");fragment.append(tr);
+ }
+ results.replaceChildren(fragment);
+ if(data.length===0){const tr=document.createElement("tr");const td=document.createElement("td");td.colSpan=7;td.textContent="No hay registros";tr.append(td);results.append(tr)}
+ msg.textContent=data.length+" rutas importadas";
+});
+</script></body></html>
